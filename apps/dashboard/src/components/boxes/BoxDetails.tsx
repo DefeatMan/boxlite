@@ -19,6 +19,7 @@ import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { LocalStorageKey } from '@/enums/LocalStorageKey'
 import { RoutePath } from '@/enums/RoutePath'
+import { useVolumesQuery } from '@/hooks/queries/useVolumesQuery'
 import { useDeleteBoxMutation } from '@/hooks/mutations/useDeleteBoxMutation'
 import { useRecoverBoxMutation } from '@/hooks/mutations/useRecoverBoxMutation'
 import { useStartBoxMutation } from '@/hooks/mutations/useStartBoxMutation'
@@ -43,7 +44,7 @@ import { isRecoverable, isStartable, isStoppable, isTransitioning } from '@/lib/
 import { Box, BoxState, OrganizationRolePermissionsEnum, OrganizationUserRoleEnum } from '@boxlite-ai/api-client'
 import { isAxiosError } from 'axios'
 import { Check, Container, Copy, MoreVertical, Pause, Play, RefreshCw, RotateCcw, Trash2 } from '@/components/ui/icon'
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useAuth } from 'react-oidc-context'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
@@ -163,6 +164,17 @@ export default function BoxDetails() {
   }, [clearOnboardingUrlParam, userId])
 
   const { data: box, isLoading, isError, error, refetch } = useBoxQuery(boxId ?? '')
+
+  // Volumes this box mounts, with the stored handle resolved back to a name.
+  const { data: allVolumes = [] } = useVolumesQuery()
+  const mountedVolumes = useMemo(() => {
+    const mounts = (box?.volumes ?? []) as { volumeId: string; mountPath: string; subpath?: string }[]
+    return mounts.map((mount) => {
+      const match = allVolumes.find((v) => v.id === mount.volumeId || v.name === mount.volumeId)
+      return { ...mount, displayName: match?.name ?? mount.volumeId }
+    })
+  }, [box?.volumes, allVolumes])
+
   const isNotFound = isError && isAxiosError(error.cause) && error.cause?.status === 404
   useBoxWsSync({ boxId })
 
@@ -436,6 +448,30 @@ export default function BoxDetails() {
               <SpecRow label="cpu">{box.cpu} vcpu</SpecRow>
               <SpecRow label="memory">{box.memory} gib</SpecRow>
               <SpecRow label="disk">{box.disk} gib</SpecRow>
+
+              {/* Read-only by construction: mounts are fixed when the box is
+                  created and there is no attach/detach endpoint, so this
+                  answers "where is my data" and nothing more. Stored volumeId
+                  may be a name or an id — the API accepts either — so resolve
+                  it back to the readable name when we know it. */}
+              {mountedVolumes.length > 0 && (
+                <>
+                  <SectionHeader title="volumes" />
+                  {mountedVolumes.map((mount) => (
+                    <SpecRow key={`${mount.volumeId}:${mount.mountPath}`} label={mount.displayName}>
+                      <button
+                        type="button"
+                        onClick={() => navigate(RoutePath.VOLUMES)}
+                        className="transition-colors hover:text-brand"
+                        title="Go to volumes"
+                      >
+                        {mount.mountPath}
+                        {mount.subpath ? ` (${mount.subpath})` : ''}
+                      </button>
+                    </SpecRow>
+                  ))}
+                </>
+              )}
 
               <SectionHeader title="timestamps" />
               <SpecRow label="created">{getRelativeTimeString(box.createdAt).relativeTimeString}</SpecRow>

@@ -40,6 +40,7 @@ import Boxes from './pages/Boxes'
 const Keys = React.lazy(() => import('./pages/Keys'))
 // Billing pulls in the plan/wallet/usage sections (and recharts) behind this one chunk.
 const Billing = React.lazy(() => import('./pages/Billing'))
+const Volumes = React.lazy(() => import('./pages/Volumes'))
 const EmailVerify = React.lazy(() => import('./pages/EmailVerify'))
 const OrganizationSettings = React.lazy(() => import('@/pages/OrganizationSettings'))
 const BoxDetails = React.lazy(() => import('./components/boxes').then((m) => ({ default: m.BoxDetails })))
@@ -52,7 +53,6 @@ import { BoxSessionProvider } from './providers/BoxSessionProvider'
 
 const HIDDEN_DASHBOARD_ROUTES = [
   RoutePath.IMAGES,
-  RoutePath.VOLUMES,
   RoutePath.MEMBERS,
   RoutePath.ROLES,
   RoutePath.AUDIT_LOGS,
@@ -183,6 +183,7 @@ function App() {
         <Route index element={<Navigate to={boxesRedirect} replace />} />
         <Route path={getRouteSubPath(RoutePath.KEYS)} element={<Keys />} />
         <Route path={getRouteSubPath(RoutePath.BOXES)} element={<Boxes />} />
+        <Route path={getRouteSubPath(RoutePath.VOLUMES)} element={<Volumes />} />
         {/* Plan, wallet and usage are sections of the one Billing page. The old
             per-surface paths stay as redirects so existing links keep working.
             The route is open to any member: the wallet/tier data is owner-scoped by

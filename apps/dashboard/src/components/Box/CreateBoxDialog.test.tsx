@@ -8,6 +8,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CreateBoxDialog, resolvePerBoxLimits } from './CreateBoxDialog'
+import { validateMountPath, validateMounts } from '@/lib/cloudBox'
 
 // Mutable org returned by the mocked hook; each test sets `state.org`.
 const state = vi.hoisted(() => ({ org: null as unknown }))
@@ -18,6 +19,9 @@ const mutationMocks = vi.hoisted(() => ({
 
 vi.mock('@/hooks/useSelectedOrganization', () => ({
   useSelectedOrganization: () => ({ selectedOrganization: state.org }),
+}))
+vi.mock('@/hooks/queries/useVolumesQuery', () => ({
+  useVolumesQuery: () => ({ data: [{ id: 'vol-1', name: 'subtitle-models', state: 'ready' }] }),
 }))
 vi.mock('@/hooks/mutations/useCreateBoxMutation', () => ({
   useCreateBoxMutation: () => ({ mutateAsync: mutationMocks.createBox }),
@@ -82,9 +86,14 @@ describe('CreateBoxDialog per-org resource cap', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     await rerenderOpen(host)
-    // Reveal the CPU/Memory/Disk steppers (advanced options are collapsed by default).
-    const advanced = [...document.querySelectorAll('button')].find((b) => /Advanced Options/i.test(b.textContent ?? ''))
-    await act(async () => advanced?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    // Reveal the CPU/Memory/Disk steppers: Size defaults to the "Small" chip,
+    // and "Custom" is what exposes the raw fields. Scoped to the Size group —
+    // Lifecycle has its own identically-labelled "Custom" chip.
+    const sizeGroup = document.querySelector('[aria-label="Size"]')
+    const custom = sizeGroup
+      ? [...sizeGroup.querySelectorAll<HTMLButtonElement>('button')].find((b) => /^Custom/.test(b.textContent ?? ''))
+      : undefined
+    await act(async () => custom?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
     await flush()
   }
 
@@ -94,6 +103,16 @@ describe('CreateBoxDialog per-org resource cap', () => {
     await act(async () => {
       root ??= createRoot(host)
       root.render(<CreateBoxDialog open onOpenChange={() => {}} />)
+    })
+    await flush()
+  }
+
+  async function rerenderOpenWith(props: { prefillVolume?: string }) {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    await act(async () => {
+      root ??= createRoot(host)
+      root.render(<CreateBoxDialog open onOpenChange={() => {}} {...props} />)
     })
     await flush()
   }
@@ -205,6 +224,42 @@ describe('CreateBoxDialog per-org resource cap', () => {
     expect(note).toMatch(/Disk\s*10\s*GiB/)
   })
 
+  // Size presets replaced the old collapsed "Advanced Options" toggle — this
+  // pins that picking a named tier actually drives the three underlying values.
+  it("applies a Size preset's cpu/memory/disk", async () => {
+    await rerenderOpen()
+    const sizeGroup = document.querySelector('[aria-label="Size"]')
+    if (!sizeGroup) throw new Error('expected the Size group to be rendered')
+    const medium = [...sizeGroup.querySelectorAll<HTMLButtonElement>('button')].find(
+      (b) => b.textContent === 'Medium',
+    )
+    expect(medium).toBeTruthy()
+
+    await act(async () => medium?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    await flush()
+
+    expect(document.body.textContent).toMatch(/2 vCPU.*4 GiB.*10 GiB/)
+  })
+
+  // Regression guard for the Size preset clamp: picking "Large" (4/8/50) against
+  // a tighter org cap must clamp immediately and say so, not leave the screen
+  // showing a number the org will reject on submit.
+  it('clamps a Size preset that exceeds the org cap and explains why immediately', async () => {
+    state.org = makeOrg({ maxCpuPerBox: 2, maxMemoryPerBox: 8, maxDiskPerBox: 10 })
+    await rerenderOpen()
+    const sizeGroup = document.querySelector('[aria-label="Size"]')
+    if (!sizeGroup) throw new Error('expected the Size group to be rendered')
+    const large = [...sizeGroup.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent === 'Large')
+
+    await act(async () => large?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    await flush()
+
+    // Large asks for 4 vCPU; the org caps at 2 — clamped, not silently dropped.
+    expect(document.body.textContent).toMatch(/2 vCPU.*8 GiB.*10 GiB/)
+    expect(document.body.textContent).toContain('support@boxlite.ai')
+    expect(document.body.textContent).toMatch(/CPU\s*2\s*vCPU/)
+  })
+
   it('clears the hint once the value is brought back under the max', async () => {
     await renderOpen()
     const input = cpuInput()
@@ -221,6 +276,37 @@ describe('CreateBoxDialog per-org resource cap', () => {
     expect(document.body.textContent).not.toContain('support@boxlite.ai')
   })
 
+  // Radix's DropdownMenuTrigger opens on `pointerdown`, not `click` (see
+  // @radix-ui/react-dropdown-menu's Trigger) — a plain click dispatch leaves it
+  // closed. jsdom has no PointerEvent constructor, but React only reads
+  // `button`/`ctrlKey` off the event, so a MouseEvent typed as 'pointerdown'
+  // satisfies it. Selecting an item, in contrast, *is* a plain click
+  // (@radix-ui/react-menu's Item).
+  async function openDropdown(ariaLabel: string) {
+    const trigger = document.querySelector<HTMLButtonElement>(`button[aria-label="${ariaLabel}"]`)
+    expect(trigger).toBeTruthy()
+    await act(async () =>
+      trigger?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, button: 0 })),
+    )
+    await flush()
+  }
+
+  async function selectMenuItem(text: string) {
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((el) => el.textContent === text)
+    expect(item).toBeTruthy()
+    await act(async () => item?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })))
+    await flush()
+  }
+
+  async function submit() {
+    const createButton = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
+      (button) => button.textContent === 'Create Box',
+    )
+    expect(createButton?.disabled).toBe(false)
+    await act(async () => createButton?.click())
+    await flush()
+  }
+
   it('defaults auto-resume to enabled and submits the toggle state with create params', async () => {
     await renderOpen()
 
@@ -229,9 +315,7 @@ describe('CreateBoxDialog per-org resource cap', () => {
     if (!name) throw new Error('expected name input to be rendered')
     await act(async () => typeInto(name, 'resume-test'))
 
-    const autoResumeSwitch = document.querySelector<HTMLButtonElement>(
-      'button[aria-label="Auto-resume on proxy access"]',
-    )
+    const autoResumeSwitch = document.querySelector<HTMLButtonElement>('button[aria-label="Wake on access"]')
     expect(autoResumeSwitch).toBeTruthy()
     expect(autoResumeSwitch?.getAttribute('data-state')).toBe('checked')
 
@@ -239,11 +323,7 @@ describe('CreateBoxDialog per-org resource cap', () => {
     await flush()
     expect(autoResumeSwitch?.getAttribute('data-state')).toBe('unchecked')
 
-    const createButton = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
-      (button) => button.textContent === 'Create Box',
-    )
-    await act(async () => createButton?.click())
-    await flush()
+    await submit()
 
     expect(mutationMocks.createBox).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -251,5 +331,176 @@ describe('CreateBoxDialog per-org resource cap', () => {
         autoResume: false,
       }),
     )
+  })
+
+  it('defaults to stop-when-idle with no auto-delete, matching the previous defaults', async () => {
+    await renderOpen()
+    await submit()
+
+    expect(mutationMocks.createBox).toHaveBeenCalledWith(
+      expect.objectContaining({ autoStopIntervalSeconds: 900, autoDelete: 0, autoResume: true }),
+    )
+  })
+
+  // The delete is entered as a delay *after* the stop, so the absolute value the
+  // API receives is always strictly later than the stop threshold — the
+  // relationship `validateLifecyclePolicy` enforces cannot be violated from the
+  // UI, which is why the Create button no longer needs to block on it.
+  it('submits auto-delete as an absolute value strictly later than auto-stop', async () => {
+    await renderOpen()
+
+    await openDropdown('Delete after stopping')
+    await selectMenuItem('1 hour')
+
+    await submit()
+
+    const params = mutationMocks.createBox.mock.calls.at(-1)?.[0]
+    expect(params.autoStopIntervalSeconds).toBe(900)
+    // 15m stop + the 1h delay picked above.
+    expect(params.autoDelete).toBe(900 + 3600)
+    expect(params.autoDelete).toBeGreaterThan(params.autoStopIntervalSeconds)
+  })
+
+  // Stop/Delete are already plain-English rows with real values ("15 min",
+  // "1 hour") — a third line re-deriving their sum, plus a raw `auto_delete=`
+  // payload line, restated what those two rows already say. Cut entirely
+  // rather than reworded; the submitted value is covered by the test above.
+  it('does not restate the stop+delay sum or the raw auto_delete payload', async () => {
+    await renderOpen()
+
+    await openDropdown('Delete after stopping')
+    await selectMenuItem('1 hour')
+
+    expect(document.body.textContent).not.toContain('Deletes')
+    expect(document.body.textContent).not.toContain('auto_delete=')
+  })
+
+  // "Never" (0) must be reachable only by deliberately picking it from a fixed
+  // list — the whole point of moving off free text was to make the old bug
+  // (clearing an input to retype silently sent 0) structurally impossible.
+  it('sends auto_stop=0 when "Never" is deliberately selected, and only then', async () => {
+    await renderOpen()
+    await submit()
+    expect(mutationMocks.createBox.mock.calls.at(-1)?.[0].autoStopIntervalSeconds).toBe(900)
+
+    await openDropdown('Stop when idle')
+    await selectMenuItem('Never')
+    await submit()
+
+    expect(mutationMocks.createBox.mock.calls.at(-1)?.[0].autoStopIntervalSeconds).toBe(0)
+  })
+
+  // Delete is framed as "after stopping" only while a stop is set; with Stop
+  // on "Never" there is no stop to be after, so the label switches to the
+  // idle-relative framing instead — same field, same aria-label, different copy.
+  it('relabels the delete field to "when idle" once Stop is set to Never', async () => {
+    await renderOpen()
+    await openDropdown('Stop when idle')
+    await selectMenuItem('Never')
+
+    expect(document.body.textContent).toContain('Delete when idle')
+    expect(document.body.textContent).not.toContain('Delete after stopping')
+  })
+
+  // The mount path rules are enforced server-side; replicating them in the form
+  // is only useful if the replica actually matches, so pin the set that must be
+  // rejected against apps/api/src/box/utils/volume-mount-path-validation.util.ts.
+  it('rejects exactly the mount paths the API rejects', () => {
+    expect(validateMountPath('/data')).toBeNull()
+    expect(validateMountPath('/mnt/models')).toBeNull()
+
+    expect(validateMountPath('')).toBeTruthy()
+    expect(validateMountPath('data')).toBeTruthy() // not absolute
+    expect(validateMountPath('/')).toBeTruthy()
+    expect(validateMountPath('//')).toBeTruthy()
+    expect(validateMountPath('/a/../b')).toBeTruthy()
+    expect(validateMountPath('/a/./b')).toBeTruthy()
+    expect(validateMountPath('/a//b')).toBeTruthy()
+    for (const dir of ['/proc', '/sys', '/dev', '/boot', '/etc', '/bin', '/sbin', '/lib', '/lib64']) {
+      expect(validateMountPath(dir)).toBeTruthy()
+      expect(validateMountPath(`${dir}/nested`)).toBeTruthy()
+    }
+  })
+
+  it('refuses two volumes on one mount path', () => {
+    expect(
+      validateMounts([
+        { volumeId: 'a', mountPath: '/data' },
+        { volumeId: 'b', mountPath: '/data' },
+      ]),
+    ).toMatch(/mount path/i)
+    expect(
+      validateMounts([
+        { volumeId: 'a', mountPath: '/data' },
+        { volumeId: 'b', mountPath: '/models' },
+      ]),
+    ).toBeNull()
+  })
+
+  // Mounts exist only at create time, so whatever the form holds has to reach
+  // the create call — there is no later chance to attach it.
+  it('submits the mounts it was pre-filled with', async () => {
+    await rerenderOpenWith({ prefillVolume: 'subtitle-models' })
+
+    const name = nameInput()
+    if (!name) throw new Error('expected name input to be rendered')
+    await act(async () => typeInto(name, 'with-volume'))
+
+    await submit()
+
+    expect(mutationMocks.createBox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'with-volume',
+        volumes: [{ volumeId: 'subtitle-models', mountPath: '/data' }],
+      }),
+    )
+  })
+
+  it('explains a volume without restating what Disk above already says', async () => {
+    await rerenderOpen()
+    expect(document.body.textContent).toContain('A volume persists independently of this box')
+    expect(document.body.textContent).not.toContain('scratch space')
+  })
+
+  // "Custom…" is a per-field escape hatch for a value the fixed list doesn't
+  // cover — not a second bundled-preset system. Picking it must swap in a
+  // plain amount+unit entry and actually change what gets submitted.
+  it('lets Stop when idle take an arbitrary value via "Custom…"', async () => {
+    await renderOpen()
+
+    await openDropdown('Stop when idle')
+    await selectMenuItem('Custom…')
+
+    const stopInput = document.querySelector<HTMLInputElement>('input[aria-label="Stop when idle"]')
+    expect(stopInput).toBeTruthy()
+    if (!stopInput) throw new Error('expected the custom stop input to be rendered')
+
+    await act(async () => typeInto(stopInput, '45'))
+    await act(async () => stopInput.dispatchEvent(new FocusEvent('focusout', { bubbles: true })))
+    await flush()
+
+    await submit()
+
+    const params = mutationMocks.createBox.mock.calls.at(-1)?.[0]
+    expect(params.autoStopIntervalSeconds).toBe(45 * 60)
+  })
+
+  // After committing a custom value, the control must revert to its normal
+  // dropdown form (not stay stuck in text-entry mode) so the field still reads
+  // and behaves like the others once a value is set.
+  it('returns to dropdown form after a custom value is committed, showing that value', async () => {
+    await renderOpen()
+
+    await openDropdown('Stop when idle')
+    await selectMenuItem('Custom…')
+    const stopInput = document.querySelector<HTMLInputElement>('input[aria-label="Stop when idle"]')
+    if (!stopInput) throw new Error('expected the custom stop input to be rendered')
+    await act(async () => typeInto(stopInput, '45'))
+    await act(async () => stopInput.dispatchEvent(new FocusEvent('focusout', { bubbles: true })))
+    await flush()
+
+    const trigger = document.querySelector<HTMLButtonElement>('button[aria-label="Stop when idle"]')
+    expect(trigger).toBeTruthy()
+    expect(trigger?.textContent).toBe('45m')
   })
 })

@@ -13,6 +13,8 @@ import {
   MOCK_ORGANIZATION,
   MOCK_ORGANIZATION_MEMBER,
   MOCK_PAGINATED_BOXES,
+  MOCK_VOLUMES,
+  MOCK_VOLUME_USAGE,
   buildMockConfig,
 } from './fixtures'
 
@@ -37,6 +39,48 @@ export const handlers = [
     const box = MOCK_BOXES.find((b) => b.id === params.boxIdOrName) ?? MOCK_BOXES[0]
     return box ? HttpResponse.json(box) : new HttpResponse(null, { status: 404 })
   }),
+  // Volumes. Deletion mirrors the real service (volume.service.ts:74-113):
+  // a volume still mounted by a live box is refused with 409, and a successful
+  // delete only moves the row to `pending_delete` — the reconciler finishes it
+  // later, so the row must not vanish from the list.
+  http.get(`${API_URL}/volumes`, () => HttpResponse.json(MOCK_VOLUMES)),
+  http.post(`${API_URL}/volumes`, async ({ request }) => {
+    const body = (await request.json()) as { name?: string }
+    const created = {
+      id: `vol-${Math.abs(Date.now() % 100000000)}`,
+      name: body?.name || 'unnamed-volume',
+      organizationId: MOCK_ORGANIZATION.id,
+      state: 'creating',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }
+    MOCK_VOLUMES.unshift(created as (typeof MOCK_VOLUMES)[number])
+    // Creation is asynchronous upstream; become mountable shortly after.
+    setTimeout(() => {
+      const row = MOCK_VOLUMES.find((v) => v.id === created.id)
+      if (row) row.state = 'ready' as (typeof row)['state']
+    }, 2500)
+    return HttpResponse.json(created, { status: 201 })
+  }),
+  http.delete(`${API_URL}/volumes/:volumeId`, ({ params }) => {
+    const id = String(params.volumeId)
+    const inUse = MOCK_VOLUME_USAGE[id] ?? []
+    if (inUse.length > 0) {
+      return HttpResponse.json(
+        {
+          statusCode: 409,
+          message: `Volume cannot be deleted because it is in use by one or more boxes (e.g. ${inUse[0].boxName})`,
+          error: 'Conflict',
+        },
+        { status: 409 },
+      )
+    }
+    const row = MOCK_VOLUMES.find((v) => v.id === id)
+    if (!row) return new HttpResponse(null, { status: 404 })
+    row.state = 'pending_delete' as (typeof row)['state']
+    return new HttpResponse(null, { status: 204 })
+  }),
+
   http.get(`${API_URL}/shared-regions`, () => HttpResponse.json([])),
   http.get(`${API_URL}/regions`, () => HttpResponse.json([])),
   http.get(`${API_URL}/api-keys`, () => HttpResponse.json([])),

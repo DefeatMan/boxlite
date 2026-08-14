@@ -65,6 +65,8 @@ import { toast } from 'sonner'
 
 interface BoxesLocationState {
   openCreateBox?: boolean
+  /** Volume name to pre-mount, set when arriving from the Volumes page. */
+  mountVolume?: string
 }
 
 const Boxes: React.FC = () => {
@@ -81,6 +83,7 @@ const Boxes: React.FC = () => {
   const { selectedOrganization, authenticatedUserOrganizationMember, authenticatedUserHasPermission } =
     useSelectedOrganization()
   const [createBoxOpen, setCreateBoxOpen] = useState(false)
+  const [prefillVolume, setPrefillVolume] = useState<string | undefined>(undefined)
   const [showOnboardingDialog, setShowOnboardingDialog] = useState(false)
   const [onboardingProgress, setOnboardingProgress] = useState<OnboardingProgress>(() => readOnboardingProgress(userId))
 
@@ -671,6 +674,7 @@ const Boxes: React.FC = () => {
     }
 
     setShowOnboardingDialog(false)
+    setPrefillVolume(state.mountVolume)
     setCreateBoxOpen(true)
     navigate({ pathname: location.pathname, search: location.search }, { replace: true, state: null })
   }, [location.pathname, location.search, location.state, navigate])
@@ -758,6 +762,7 @@ const Boxes: React.FC = () => {
             triggerClassName="h-11 justify-center sm:h-9"
             open={createBoxOpen}
             onOpenChange={setCreateBoxOpen}
+            prefillVolume={prefillVolume}
             onCreated={() => {
               updateOnboardingProgress({ boxCreated: true })
               setShowOnboardingDialog(false)
