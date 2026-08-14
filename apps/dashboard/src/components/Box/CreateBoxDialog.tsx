@@ -23,7 +23,7 @@ import { VolumeState } from '@boxlite-ai/api-client'
 import { cn } from '@/lib/utils'
 import type { Box } from '@boxlite-ai/api-client'
 import { ChevronDown, Plus } from '@/components/ui/icon'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { generatePath, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 
@@ -404,13 +404,11 @@ function SelectField({
 function MountRow({
   mount,
   volumes,
-  usedElsewhere,
   onChange,
   onRemove,
 }: {
   mount: BoxVolumeMount
   volumes: { id: string; name: string; state: string }[]
-  usedElsewhere: boolean
   onChange: (next: BoxVolumeMount) => void
   onRemove: () => void
 }) {
@@ -436,8 +434,14 @@ function MountRow({
                 <DropdownMenuItem
                   key={v.id}
                   disabled={!ready}
-                  className={cn('cursor-pointer', v.name === mount.volumeId && 'text-brand')}
-                  onClick={() => ready && onChange({ ...mount, volumeId: v.name })}
+                  className={cn('cursor-pointer', v.id === mount.volumeId && 'text-brand')}
+                  // Submit the id, never the name. The API accepts either for
+                  // validation, but it persists whatever it is given verbatim
+                  // (box.service.ts resolveVolumes), while the delete guard
+                  // matches `box.volumes @> [{volumeId: <uuid>}]`. A name stored
+                  // here is invisible to that guard, so the volume could be
+                  // deleted out from under this box with no 409.
+                  onClick={() => ready && onChange({ ...mount, volumeId: v.id })}
                 >
                   {v.name}
                   {!ready && <span className="ml-2 text-muted-foreground">({v.state})</span>}
@@ -466,12 +470,6 @@ function MountRow({
           ✕
         </button>
       </div>
-      {/* Nothing stops two boxes mounting one volume — `validateVolumes` checks
-          only existence and readiness — and the FUSE layer is not transactional,
-          so concurrent writers are last-write-wins. Say so; do not block it. */}
-      {usedElsewhere && (
-        <PanelNote>Already mounted by another box. Concurrent writes to the same file are last-write-wins.</PanelNote>
-      )}
     </div>
   )
 }
@@ -585,18 +583,6 @@ export const CreateBoxDialog = ({
   const autoDelete = deleteDelaySeconds > 0 ? stopSeconds + deleteDelaySeconds : 0
   const lifecycleError = validateLifecyclePolicy({ autoStopIntervalSeconds, autoDelete })
   const mountError = validateMounts(mounts)
-
-  // Volumes some other box already holds. Mounting one anyway is allowed — the
-  // server does not check — so this only drives the warning on the row.
-  const mountedElsewhere = useMemo(() => {
-    const usage =
-      (globalThis as { __BOXLITE_VOLUME_USAGE__?: Record<string, { boxId: string }[]> }).__BOXLITE_VOLUME_USAGE__ ?? {}
-    const names = new Set<string>()
-    for (const volume of availableVolumes) {
-      if ((usage[volume.id]?.length ?? 0) > 0) names.add(volume.name)
-    }
-    return names
-  }, [availableVolumes])
 
   // Unlike Lifecycle's direct selects, a Size preset can collide with an org ceiling
   // (e.g. "Large" wants 4 vCPU but the org caps at 2) — so this clamps and
@@ -838,7 +824,6 @@ export const CreateBoxDialog = ({
                     key={index}
                     mount={mount}
                     volumes={availableVolumes}
-                    usedElsewhere={mountedElsewhere.has(mount.volumeId)}
                     onChange={(next) => setMounts((prev) => prev.map((m, i) => (i === index ? next : m)))}
                     onRemove={() => setMounts((prev) => prev.filter((_, i) => i !== index))}
                   />

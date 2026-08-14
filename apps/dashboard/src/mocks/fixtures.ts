@@ -36,6 +36,12 @@ const nowDate = new Date()
 const epochDate = new Date(0)
 const now = nowDate.toISOString()
 
+// Declared before the boxes so a box can be given a realistic age. A volume's
+// `lastUsedAt` is derived from its holders' `createdAt` (see MOCK_VOLUMES), so
+// the two sets of timestamps have to be expressible in the same terms.
+const hoursAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString()
+const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString()
+
 export function buildMockConfig(billingApiUrl: string): BoxliteConfiguration {
   return {
     version: '0.0.0-mock',
@@ -125,6 +131,7 @@ export const MOCK_BOXES: Box[] = [
     id: 'mock-box-running',
     name: 'web-api',
     state: BoxState.STARTED,
+    createdAt: hoursAgo(2),
     volumes: [
       { volumeId: 'subtitle-models', mountPath: '/models' },
       { volumeId: 'customer-data', mountPath: '/data', subpath: 'acme' },
@@ -134,6 +141,7 @@ export const MOCK_BOXES: Box[] = [
     id: 'mock-box-stopped',
     name: 'batch-worker',
     state: BoxState.STOPPED,
+    createdAt: daysAgo(5),
     desiredState: BoxDesiredState.STOPPED,
     image: 'ghcr.io/boxlite-ai/boxlite-agent-python:mock',
     cpu: 2,
@@ -162,8 +170,6 @@ export const MOCK_PAGINATED_BOXES: PaginatedBoxes = {
 // volume, one nobody has mounted for a month (the cleanup candidate the list
 // exists to surface), a soft-deleted one still sitting in `pending_delete`
 // because removal is asynchronous, one still coming up, and a failed one.
-const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString()
-
 function buildVolume(overrides: Partial<VolumeDto> & Pick<VolumeDto, 'id' | 'name' | 'state'>): VolumeDto {
   return {
     organizationId: MOCK_ORGANIZATION_ID,
@@ -175,19 +181,26 @@ function buildVolume(overrides: Partial<VolumeDto> & Pick<VolumeDto, 'id' | 'nam
 }
 
 export const MOCK_VOLUMES: VolumeDto[] = [
+  // `lastUsedAt` is not free-form: the API sets it to the `createdAt` of the
+  // most recently created box that mounts the volume (volume.service.ts,
+  // BoxEvents.CREATED). So each value below is the newest holder's age in
+  // MOCK_VOLUME_USAGE — otherwise the page renders a state the real system
+  // cannot produce (a live holder alongside an older "latest mount").
   buildVolume({
     id: 'vol-a1b2c3d4',
     name: 'subtitle-models',
     state: VolumeState.READY,
     createdAt: daysAgo(31),
-    lastUsedAt: new Date(Date.now() - 2 * 3_600_000).toISOString(),
+    // held by web-api (2h) and batch-worker (5d) — newest wins
+    lastUsedAt: hoursAgo(2),
   }),
   buildVolume({
     id: 'vol-e5f6g7h8',
     name: 'customer-data',
     state: VolumeState.READY,
     createdAt: daysAgo(12),
-    lastUsedAt: new Date(Date.now() - 3_600_000).toISOString(),
+    // held by web-api only
+    lastUsedAt: hoursAgo(2),
   }),
   buildVolume({
     id: 'vol-i9j0k1l2',

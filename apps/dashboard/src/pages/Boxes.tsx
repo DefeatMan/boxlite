@@ -667,17 +667,30 @@ const Boxes: React.FC = () => {
     }, 220)
   }, [clearOnboardingUrlParam, userId])
 
+  // Two channels open this dialog: router state for a same-tab navigation, and
+  // query params for anything that has to survive being opened in a new tab
+  // (router state does not cross a tab boundary) — e.g. the Volumes page's
+  // "create a box with this volume".
   useEffect(() => {
     const state = location.state as BoxesLocationState | null
-    if (!state?.openCreateBox) {
+    const fromUrl = searchParams.get('createBox') === '1'
+    if (!state?.openCreateBox && !fromUrl) {
       return
     }
 
     setShowOnboardingDialog(false)
-    setPrefillVolume(state.mountVolume)
+    setPrefillVolume(state?.mountVolume ?? searchParams.get('volume') ?? undefined)
     setCreateBoxOpen(true)
+
+    if (fromUrl) {
+      const nextParams = new URLSearchParams(searchParams)
+      nextParams.delete('createBox')
+      nextParams.delete('volume')
+      setSearchParams(nextParams, { replace: true })
+      return
+    }
     navigate({ pathname: location.pathname, search: location.search }, { replace: true, state: null })
-  }, [location.pathname, location.search, location.state, navigate])
+  }, [location.pathname, location.search, location.state, navigate, searchParams, setSearchParams])
 
   // Fleet stat cards — real data, independent of the table's current filter/page.
   const orgId = selectedOrganization?.id

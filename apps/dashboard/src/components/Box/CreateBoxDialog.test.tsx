@@ -440,7 +440,7 @@ describe('CreateBoxDialog per-org resource cap', () => {
   // Mounts exist only at create time, so whatever the form holds has to reach
   // the create call — there is no later chance to attach it.
   it('submits the mounts it was pre-filled with', async () => {
-    await rerenderOpenWith({ prefillVolume: 'subtitle-models' })
+    await rerenderOpenWith({ prefillVolume: 'vol-1' })
 
     const name = nameInput()
     if (!name) throw new Error('expected name input to be rendered')
@@ -451,9 +451,34 @@ describe('CreateBoxDialog per-org resource cap', () => {
     expect(mutationMocks.createBox).toHaveBeenCalledWith(
       expect.objectContaining({
         name: 'with-volume',
-        volumes: [{ volumeId: 'subtitle-models', mountPath: '/data' }],
+        volumes: [{ volumeId: 'vol-1', mountPath: '/data' }],
       }),
     )
+  })
+
+  // Data-loss guard, not a preference. The API validates a mount by id OR name
+  // but persists the string verbatim, while its delete guard matches
+  // `box.volumes @> [{volumeId: <uuid>}]`. Submitting the name would store a
+  // value that guard cannot see, letting a mounted volume be deleted with no
+  // 409 — so picking from the list must yield the id.
+  it('submits the volume id, never the display name', async () => {
+    await rerenderOpen()
+
+    const addMount = [...document.querySelectorAll('button')].find((b) => /Mount a volume/.test(b.textContent ?? ''))
+    await act(async () => addMount?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    await flush()
+
+    await openDropdown('Volume')
+    await selectMenuItem('subtitle-models')
+
+    const name = nameInput()
+    if (!name) throw new Error('expected name input to be rendered')
+    await act(async () => typeInto(name, 'picked-from-list'))
+    await submit()
+
+    const params = mutationMocks.createBox.mock.calls.at(-1)?.[0]
+    expect(params.volumes).toEqual([{ volumeId: 'vol-1', mountPath: '/data' }])
+    expect(JSON.stringify(params.volumes)).not.toContain('subtitle-models')
   })
 
   it('explains a volume without restating what Disk above already says', async () => {
