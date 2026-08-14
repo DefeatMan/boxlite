@@ -330,9 +330,10 @@ jobs:
     # build scripts, Nx/Jest), so it must not carry write scopes.
     permissions:
       contents: read
-    # Redis lets the quota engine's real-Lua integration spec run and Postgres
-    # lets the usage ledger's spec run (each self-skips without its env vars);
-    # the rest of the api suite is pure/mocked.
+    # Redis lets the quota engine's real-Lua integration spec run, Postgres lets
+    # the usage ledger's and the migration specs run, and the box-migration
+    # drain spec needs both (each self-skips without its env vars); the rest of
+    # the api suite is pure/mocked.
     services:
       redis:
         image: redis:7
