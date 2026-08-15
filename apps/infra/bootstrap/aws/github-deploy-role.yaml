@@ -208,13 +208,148 @@ Resources:
                   - lambda:*
                   - logs:*
                   - rds:*
-                  - s3:*
                   - secretsmanager:*
                   - servicediscovery:*
-                  - ssm:*
+                  # s3 and ssm are deliberately absent. Both reach the SST backing store, which holds
+                  # every stage's state and secrets under one bucket and one parameter tree — the live
+                  # bucket carries secret/boxlite/dev.json beside secret/boxlite/prod.json. Granted
+                  # account-wide, a job bound to the dev Environment could read prod's configuration,
+                  # and this change makes that configuration authoritative. Scoped below instead.
                   - tag:GetResources
                   - tag:GetTagKeys
                   - tag:GetTagValues
+                Resource: '*'
+              # The SST backing store, scoped to this stage. Every prefix SST writes is
+              # `<kind>/<app>/<stage>`; the five that exist in the live bucket were read from it, and
+              # lock/ and summary/ came from sst v4.6.11 pkg/project/provider/provider.go because a
+              # lock exists only while an update runs — `list-objects` cannot see one, and a policy
+              # built from a listing fails at the moment a deploy takes its lock.
+              - Sid: SstStateForThisStage
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:ListBucketVersions
+                  - s3:GetBucketLocation
+                Resource:
+                  # Bucket scope, because SST enumerates before it reads. That reveals other stages'
+                  # key NAMES but not their contents; the object grants below are per stage.
+                  - !Sub arn:${AWS::Partition}:s3:::sst-state-*
+                  - !Sub arn:${AWS::Partition}:s3:::sst-asset-*
+              - Sid: SstStateObjectsForThisStage
+                Effect: Allow
+                Action:
+                  - s3:AbortMultipartUpload
+                  - s3:DeleteObject
+                  - s3:DeleteObjectVersion
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::sst-state-*/app/boxlite/${GitHubEnvironment}.json
+                  - !Sub arn:${AWS::Partition}:s3:::sst-state-*/secret/boxlite/${GitHubEnvironment}.json
+                  - !Sub arn:${AWS::Partition}:s3:::sst-state-*/eventlog/boxlite/${GitHubEnvironment}/*
+                  - !Sub arn:${AWS::Partition}:s3:::sst-state-*/snapshot/boxlite/${GitHubEnvironment}/*
+                  - !Sub arn:${AWS::Partition}:s3:::sst-state-*/update/boxlite/${GitHubEnvironment}/*
+                  - !Sub arn:${AWS::Partition}:s3:::sst-state-*/lock/boxlite/${GitHubEnvironment}
+                  - !Sub arn:${AWS::Partition}:s3:::sst-state-*/lock/boxlite/${GitHubEnvironment}.json
+                  - !Sub arn:${AWS::Partition}:s3:::sst-state-*/summary/boxlite/${GitHubEnvironment}/*
+                  # Deployment assets are content-addressed and carry no stage in the key, so this is
+                  # the one object grant that is NOT stage-scoped and cannot be: SST derives the key
+                  # from the content hash and every stage writes into the same bucket. A write is
+                  # therefore idempotent — same bytes, same key — but a DELETE is not bounded that way,
+                  # so a stage could remove an object another stage's next update expects to find. It
+                  # stays because `sst remove` needs it; the blast radius is a redeploy, since assets
+                  # are rebuilt from the checkout rather than recovered from the bucket.
+                  - !Sub arn:${AWS::Partition}:s3:::sst-asset-*/*
+              # `sst secret set --fallback` stores under the literal stage `_fallback`, which every
+              # stage of the app reads. It cannot be stage-scoped, so it gets READ access only: a
+              # deploy consumes a fallback, setting one is a deliberate operator action.
+              - Sid: SstFallbackSecretsRead
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::sst-state-*/secret/boxlite/_fallback.json
+              # The buckets this stack owns. Same prefixes the runtime boundary allows, so a rename has
+              # to widen both together — see shared/resource-name.ts.
+              #
+              # Four of the six prefixes are stage-scoped and two are not: boxlite-volume-* carries no
+              # stage in its name, so this grants s3:* over every stage's volume buckets, not just this
+              # one. That is the naming, not an oversight here — the runtime boundary allows the same
+              # unscoped prefix — but it means "the buckets this stack owns" is true only of the
+              # boxlite-<stage>-* and boxlite-app-<stage>-* pairs. Scoping it needs the bucket name to
+              # carry the stage first, which is a rename across the boundary, the stack, and buckets
+              # that already exist.
+              - Sid: BoxLiteStageBuckets
+                Effect: Allow
+                Action: s3:*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::boxlite-${GitHubEnvironment}-*
+                  - !Sub arn:${AWS::Partition}:s3:::boxlite-${GitHubEnvironment}-*/*
+                  - !Sub arn:${AWS::Partition}:s3:::boxlite-app-${GitHubEnvironment}-*
+                  - !Sub arn:${AWS::Partition}:s3:::boxlite-app-${GitHubEnvironment}-*/*
+                  - !Sub arn:${AWS::Partition}:s3:::boxlite-volume-*
+                  - !Sub arn:${AWS::Partition}:s3:::boxlite-volume-*/*
+              # /sst/bootstrap is account-wide by construction: it names the buckets every stage shares
+              # and SST reads it before it knows which stage it is running. That makes it the one
+              # parameter here a stage must not be able to WRITE — rewriting it repoints every other
+              # stage's state, deleting it breaks them all — so it gets a read-only statement of its
+              # own. Creating it is a bootstrap action, done by an operator with admin credentials
+              # before CI ever deploys.
+              - Sid: SstSharedBootstrapRead
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/sst/bootstrap
+              # The passphrase decrypts this stage's state, so that is the one that must not be shared.
+              - Sid: SstParametersForThisStage
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:PutParameter
+                  - ssm:DeleteParameter
+                  - ssm:AddTagsToResource
+                  - ssm:ListTagsForResource
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/sst/passphrase/boxlite/${GitHubEnvironment}
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/boxlite/${GitHubEnvironment}/*
+              - Sid: SstFallbackPassphraseRead
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/sst/passphrase/boxlite/_fallback
+              # Runner binary upgrades run as SSM commands against the stage's instances
+              # (runner/update.ts). SendCommand takes instance and document ARNs; the describe and
+              # invocation reads are list-shaped and have no resource of their own.
+              #
+              # instance/* is account-wide, and unscoped only because there is no way to scope it here:
+              # an instance ARN carries no stage, so narrowing this means a Condition on an instance tag
+              # the stack sets — a change to what the Runner launch template tags, verifiable only
+              # against real instances. Until then this is the widest grant the deploy role holds: a job
+              # bound to one stage can run a shell command on any instance in the account, which is more
+              # than reading another stage's configuration. Stated in docs/security.md rather than left
+              # to read as stage-scoped.
+              - Sid: RunnerCommandChannel
+                Effect: Allow
+                Action:
+                  - ssm:SendCommand
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunShellScript
+              - Sid: RunnerCommandStatus
+                Effect: Allow
+                Action:
+                  - ssm:DescribeInstanceInformation
+                  - ssm:GetCommandInvocation
+                  - ssm:ListCommandInvocations
+                  - ssm:ListCommands
+                  - ssm:DescribeParameters
                 Resource: '*'
               - Sid: ReadIamAndAccountMetadata
                 Effect: Allow
@@ -238,6 +373,46 @@ Resources:
                 Condition:
                   StringEquals:
                     iam:PermissionsBoundary: !Ref BoxLiteRuntimePermissionsBoundary
+              # Two escalation paths, both closed the same way, because an IAM Allow cannot express
+              # "every boxlite-* resource except this one" — only a Deny can.
+              #
+              # First: this role is itself named boxlite-<stage>-github-deploy, so it matches the
+              # role/boxlite-* resource of the IAM grants below. iam:PutRolePolicy aimed at itself
+              # writes it any permission at all, with nothing to stop it — the runtime boundary
+              # constrains the roles SST creates, not this role's own inline policy.
+              #
+              # Second, and less obvious: the boundary IS a managed policy named
+              # boxlite-<stage>-runtime-boundary, which matches the policy/boxlite-* resource of
+              # ManageBoxLitePolicies. Widening it, then creating a bounded role under the widened
+              # version and passing it to a service, reaches anything the widened boundary allows. So
+              # the boundary policy is denied mutation too.
+              #
+              # Neither is something a deploy does: both this role and the boundary are created by
+              # `cloudformation deploy` under an operator's admin credentials, never by SST.
+              - Sid: DenySelfPrivilegeEscalation
+                Effect: Deny
+                Action:
+                  - iam:AttachRolePolicy
+                  - iam:DeleteRole
+                  - iam:DeleteRolePermissionsBoundary
+                  - iam:DeleteRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePermissionsBoundary
+                  - iam:PutRolePolicy
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:UpdateRole
+                  - iam:UpdateRoleDescription
+                  - iam:CreatePolicyVersion
+                  - iam:DeletePolicy
+                  - iam:DeletePolicyVersion
+                  - iam:SetDefaultPolicyVersion
+                Resource:
+                  # Every stage's, not just this one's. role/boxlite-* covers a SIBLING stage's deploy
+                  # role too, so without the wildcard here a dev-bound job could rewrite prod's trust
+                  # policy and assume it. No deploy ever modifies one of these — they are CloudFormation
+                  # resources an operator creates — so denying all of them costs nothing.
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/boxlite-*-github-deploy
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/boxlite-*-runtime-boundary
               - Sid: ManageBoxLiteRoles
                 Effect: Allow
                 Action:

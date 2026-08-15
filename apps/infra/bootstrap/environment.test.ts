@@ -3,24 +3,36 @@
 
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+import { parse as parseDotenv } from 'dotenv'
 
 import {
   GITHUB_OIDC_PROVIDER_URL,
   cloudFormationDeployChanged,
   cloudFormationParameterOverrides,
-  decideSsmOverwrite,
+  deployableStageConfig,
+  githubDeployRoleName,
   githubDeployRoleStackName,
   hasGitHubOidcProvider,
   isAwsCliVersionAtLeast,
   parseAwsCliVersion,
+  prepareStageConfigLoad,
   runtimeBoundaryPolicyArn,
+  serializeStageConfig,
   ssmParameterName,
   sstPlatformState,
   validateGitHubRepo,
 } from './environment.js'
+import {
+  STAGE_CONFIG_DIGEST_KEY,
+  STAGE_CONFIG_MANIFEST_KEY,
+  hydrateStageConfig,
+  parseSecretList,
+  parseStageConfigManifest,
+} from '../deployment/stage-config.js'
 
 test('runtimeBoundaryPolicyArn matches sst.config.ts interpolation', () => {
   assert.equal(
@@ -73,14 +85,279 @@ test('ssmParameterName is stage-scoped', () => {
   assert.throws(() => ssmParameterName('dev', ''), /param is required/)
 })
 
-test('decideSsmOverwrite skips an existing parameter unless --force is set', () => {
-  assert.equal(decideSsmOverwrite({ exists: true, force: false }), 'skip')
-  assert.equal(decideSsmOverwrite({ exists: true, force: true }), 'prompt')
+test('githubDeployRoleName matches the RoleName the CloudFormation template declares', () => {
+  // The workflows compose the deploy role ARN from this name, and the template creates the role, so
+  // a drift between them is a deploy that cannot assume its own role. Read from the template rather
+  // than restated, so editing either side alone fails here.
+  const template = readFileSync(new URL('./aws/github-deploy-role.yaml', import.meta.url), 'utf8')
+  assert.match(template, /RoleName: !Sub boxlite-\$\{GitHubEnvironment\}-github-deploy$/m)
+  assert.equal(githubDeployRoleName('dev'), 'boxlite-dev-github-deploy')
+  assert.throws(() => githubDeployRoleName('dev_blue'), /must match/)
 })
 
-test('decideSsmOverwrite always prompts when the parameter does not exist yet', () => {
-  assert.equal(decideSsmOverwrite({ exists: false, force: false }), 'prompt')
-  assert.equal(decideSsmOverwrite({ exists: false, force: true }), 'prompt')
+test('deployableStageConfig stores stage configuration and keeps local-only keys out', () => {
+  const { config, excluded } = deployableStageConfig(
+    [
+      'STACK_DOMAIN=dev.boxlite.ai',
+      'OIDC_AUDIENCE=https://dev.boxlite.ai/api',
+      // Legitimate locally — stack/app.ts reads it — so it must be kept out rather than reject
+      // the whole file and leave an operator on a named profile unable to bootstrap.
+      'AWS_PROFILE=developer',
+      'AWS_CLI_PATH=/opt/local/bin/aws',
+      // The selector CI owns: a stage-wide store entry redirecting it would deploy an artifact no
+      // workflow run ever approved.
+      'BOXLITE_ARTIFACT_SOURCE=release',
+      '# a comment',
+      'PROXY_TEMPLATE_URL=',
+    ].join('\n'),
+  )
+
+  assert.deepEqual(config, {
+    OIDC_AUDIENCE: 'https://dev.boxlite.ai/api',
+    PROXY_TEMPLATE_URL: '',
+    STACK_DOMAIN: 'dev.boxlite.ai',
+  })
+  assert.deepEqual(excluded, ['AWS_CLI_PATH', 'AWS_PROFILE', 'BOXLITE_ARTIFACT_SOURCE'])
+})
+
+/*
+ * What `sst secret load` then `sst secret list` do to the payload, without sst.
+ *
+ * Load parses the file as dotenv; list prints `key=value` back under a `# <app>/<stage>` heading. The
+ * round trip matters because bootstrap writes the digest and the deploy wrapper recomputes it: any
+ * disagreement between serializeStageConfig's quoting and parseSecretList's reading surfaces as a
+ * digest mismatch on every deploy, not as a parse error anyone would trace back here.
+ */
+function throughSecretStore(payload: Record<string, string>) {
+  const stored = parseDotenv(serializeStageConfig(payload))
+  const printed = ['# fallback', '# boxlite/dev']
+  for (const [key, value] of Object.entries(stored)) printed.push(`${key}=${value}`)
+  return parseSecretList(printed.join('\n'), { app: 'boxlite', stage: 'dev' })
+}
+
+const STAGE_ENV_SOURCE = [
+  'STACK_DOMAIN=dev.boxlite.ai',
+  'OIDC_AUDIENCE=https://dev.boxlite.ai/api',
+  'AWS_PROFILE=developer',
+  'PROXY_TEMPLATE_URL=',
+].join('\n')
+
+test('the digest bootstrap writes is the one hydration recomputes', () => {
+  // The two halves of the generation check are computed by different modules from different inputs —
+  // bootstrap from .env, the wrapper from what the store prints back. They have to agree on every
+  // value that survives quoting, or the fail-closed check rejects a store that is perfectly intact.
+  const { payload } = prepareStageConfigLoad(STAGE_ENV_SOURCE)
+  const { recordedDigest, actualDigest, apply } = hydrateStageConfig({
+    stored: throughSecretStore(payload),
+    environment: {},
+  })
+
+  assert.notEqual(recordedDigest, '', 'bootstrap must write a digest for the check to have anything to do')
+  assert.equal(recordedDigest, actualDigest)
+  assert.deepEqual(apply, {
+    OIDC_AUDIENCE: 'https://dev.boxlite.ai/api',
+    PROXY_TEMPLATE_URL: '',
+    STACK_DOMAIN: 'dev.boxlite.ai',
+  })
+})
+
+test('a value left behind by an interrupted load is caught', () => {
+  // `secret load` is a read-modify-write of one document and is not atomic, so an interrupted one
+  // leaves some keys new and some old. The manifest cannot see it — every name it lists is still
+  // present — which is the whole reason the digest exists.
+  const { payload } = prepareStageConfigLoad(STAGE_ENV_SOURCE)
+  const stored = throughSecretStore(payload)
+  stored.STACK_DOMAIN = 'stale.boxlite.ai'
+
+  const { recordedDigest, actualDigest } = hydrateStageConfig({ stored, environment: {} })
+  assert.notEqual(recordedDigest, actualDigest)
+})
+
+test('an app-wide fallback cannot supply a stage its manifest or digest', () => {
+  /*
+   * `sst secret set --fallback` writes under the literal stage `_fallback`, which every stage reads.
+   * If the bookkeeping keys came from there, a stage nobody bootstrapped would inherit a manifest and
+   * a digest that agree with each other, sail through both fail-closed checks, and deploy another
+   * source's configuration — the exact case those checks exist to stop.
+   */
+  const printed = [
+    '# fallback',
+    `${STAGE_CONFIG_MANIFEST_KEY}=STACK_DOMAIN`,
+    `${STAGE_CONFIG_DIGEST_KEY}=${'a'.repeat(64)}`,
+    'STACK_DOMAIN=shared.example.test',
+    '# boxlite/dev',
+  ].join('\n')
+
+  const stored = parseSecretList(printed, { app: 'boxlite', stage: 'dev' })
+  assert.equal(stored[STAGE_CONFIG_MANIFEST_KEY], undefined, 'a fallback must not name a stage manifest')
+  assert.equal(stored[STAGE_CONFIG_DIGEST_KEY], undefined, 'nor supply the digest that would match it')
+  // An ordinary value still falls back, which is what the feature is for — it simply cannot be
+  // hydrated until the stage's own manifest names it.
+  assert.equal(stored.STACK_DOMAIN, 'shared.example.test')
+
+  const { apply } = hydrateStageConfig({ stored, environment: {} })
+  assert.deepEqual(apply, {}, 'with no stage manifest, nothing is hydrated')
+})
+
+test('a store with a manifest but no digest reads as torn, not as unverifiable', () => {
+  // The first interrupted load is exactly this shape: the manifest landed, the digest did not. Treating
+  // an absent digest as "cannot verify, carry on" would let that one case through unchecked — and it is
+  // the only case that can occur, since no bootstrap has ever written a manifest without a digest.
+  const { payload } = prepareStageConfigLoad(STAGE_ENV_SOURCE)
+  const stored = throughSecretStore(payload)
+  delete stored[STAGE_CONFIG_DIGEST_KEY]
+
+  const { recordedDigest, actualDigest } = hydrateStageConfig({ stored, environment: {} })
+  assert.equal(recordedDigest, '')
+  assert.notEqual(actualDigest, '', 'the recomputed digest is what makes the absence detectable')
+  assert.notEqual(recordedDigest, actualDigest, 'the wrapper compares these two and must see a mismatch')
+})
+
+test('a value the manifest does not name is outside the digest, as it is outside hydration', () => {
+  // The store also holds hand-set sst.Secret values whose rotation has nothing to do with this
+  // configuration. If they counted, every `sst secret set` would read as a torn load.
+  const { payload } = prepareStageConfigLoad(STAGE_ENV_SOURCE)
+  const stored = throughSecretStore(payload)
+  stored.OIDC_CLIENT_ID = 'rotated-by-hand'
+
+  const { recordedDigest, actualDigest, apply, unlisted } = hydrateStageConfig({ stored, environment: {} })
+  assert.equal(recordedDigest, actualDigest, 'an unrelated secret must not read as a torn load')
+  assert.equal(apply.OIDC_CLIENT_ID, undefined, 'the stack reads it through sst.Secret, not process.env')
+  assert.ok(unlisted.includes('OIDC_CLIENT_ID'))
+})
+
+test('a .env with nothing storable in it is refused', () => {
+  // main() runs this before the OIDC provider, the GitHub Environment and a non-idempotent Auth0 app
+  // are created. A file of only local-only keys would otherwise store a manifest naming nothing, and
+  // the deploy wrapper would fail with the stage half-bootstrapped.
+  assert.throws(
+    () => prepareStageConfigLoad('AWS_PROFILE=developer\nAWS_CLI_PATH=/opt/local/bin/aws\n'),
+    /no deployable stage configuration/,
+  )
+})
+
+test('the manifest names exactly the keys bootstrap stored', () => {
+  // Not "everything in the store": the leftover from a key deleted from .env has to stay unnamed, and
+  // the Cloudflare credentials are refused by the allowlist anyway — naming them would claim a
+  // hydration that cannot happen.
+  const { payload, storedKeys } = prepareStageConfigLoad(STAGE_ENV_SOURCE)
+  // Sorted on both sides: the manifest is serialized in sorted order and hydration reads it into a
+  // Set, so .env's line order is not part of the contract.
+  assert.deepEqual(parseStageConfigManifest(payload[STAGE_CONFIG_MANIFEST_KEY]), [...storedKeys].sort())
+  assert.deepEqual([...storedKeys].sort(), ['OIDC_AUDIENCE', 'PROXY_TEMPLATE_URL', 'STACK_DOMAIN'])
+  assert.deepEqual(
+    Object.keys(payload).filter((key) => key.startsWith('CLOUDFLARE_')),
+    [],
+    'the credentials that cannot live in the store must not be named as if they could',
+  )
+})
+
+test('deployableStageConfig keeps the Cloudflare credentials out of the store', () => {
+  // .env.example ships both keys at column 0, so a filled-in .env almost always holds the token.
+  // Copying it into the store would be circular (reading the store initializes that provider) as well
+  // as putting a live credential in a second place.
+  const { config, excluded } = deployableStageConfig(
+    [
+      'CLOUDFLARE_API_TOKEN=synthetic-token',
+      'CLOUDFLARE_DEFAULT_ACCOUNT_ID=synthetic-account',
+      'AWS_REGION=eu-west-1',
+      'SST_STAGE=dev',
+      'VERSION=1.2.3',
+      'STACK_DOMAIN=dev.boxlite.ai',
+    ].join('\n'),
+  )
+
+  assert.deepEqual(config, { STACK_DOMAIN: 'dev.boxlite.ai' })
+  assert.deepEqual(excluded, [
+    'AWS_REGION',
+    'CLOUDFLARE_API_TOKEN',
+    'CLOUDFLARE_DEFAULT_ACCOUNT_ID',
+    'SST_STAGE',
+    'VERSION',
+  ])
+})
+
+test('deployableStageConfig keeps out the AWS_ENDPOINT_URL_<SERVICE> family, not just the bare name', () => {
+  // A prefix rather than a name, so a membership test on its own would store every member of it
+  // and let a store entry point the deploy at an attacker-controlled endpoint.
+  const { config, excluded } = deployableStageConfig('AWS_ENDPOINT_URL_S3=https://s3.invalid\nSTACK_DOMAIN=dev.boxlite.ai\n')
+  assert.deepEqual(Object.keys(config), ['STACK_DOMAIN'])
+  assert.deepEqual(excluded, ['AWS_ENDPOINT_URL_S3'])
+})
+
+test('serializeStageConfig emits the single-quoted form sst secret load reads literally', () => {
+  // Pinned, not incidental: sst's double-quoted branch unescapes \" \n \r \t, so that form cannot
+  // carry a value holding one of those sequences literally.
+  assert.equal(
+    serializeStageConfig({ STACK_DOMAIN: 'dev.boxlite.ai', BOXLITE_SYSTEM_IMAGES: 'a=ghcr.io/x:1' }),
+    "BOXLITE_SYSTEM_IMAGES='a=ghcr.io/x:1'\nSTACK_DOMAIN='dev.boxlite.ai'\n",
+  )
+  assert.equal(serializeStageConfig({}), '')
+})
+
+test('serializeStageConfig round-trips the values a stage config actually holds', () => {
+  const config = {
+    // `#` would start a comment unquoted, `=` must survive the split-on-first-`=`, and the spaces
+    // would be eaten by the trim. `C:\new` is the one that rules out the double-quoted form: its
+    // literal backslash-n goes through that form's unescape pass and comes back as a newline.
+    BOXLITE_SYSTEM_IMAGES: 'base=ghcr.io/acme/base:v1,py=ghcr.io/acme/py:v1',
+    OIDC_ISSUER_BASE_URL: 'https://tenant.auth0.com/',
+    PADDED: '  leading and trailing  ',
+    WINDOWS_PATH: 'C:\\new\\thing',
+    WITH_HASH: 'value # not a comment',
+  }
+  assert.deepEqual(parseDotenv(serializeStageConfig(config)), config)
+})
+
+test('a value containing an apostrophe survives the round trip', () => {
+  // Generated passwords and tokens contain apostrophes routinely, and refusing them outright blocked
+  // bootstrap over a value that is perfectly valid. Asserted by parsing the output rather than by
+  // matching the quoting, since what matters is the value that comes back out.
+  const config = {
+    OIDC_AUDIENCE: "it's-a-token",
+    STACK_DOMAIN: "quote'and\"double",
+  }
+  assert.deepEqual(parseDotenv(serializeStageConfig({ OIDC_AUDIENCE: config.OIDC_AUDIENCE })), {
+    OIDC_AUDIENCE: "it's-a-token",
+  })
+  // A `#` is safe inside quotes — it would otherwise start a comment — so it round-trips.
+  assert.deepEqual(parseDotenv(serializeStageConfig({ OIDC_AUDIENCE: "it's a #hash" })), {
+    OIDC_AUDIENCE: "it's a #hash",
+  })
+  // Both quote kinds together cannot be expressed without escapes the parser would reinterpret, so
+  // that one is still refused — loudly, rather than stored as something else.
+  assert.throws(() => serializeStageConfig({ STACK_DOMAIN: config.STACK_DOMAIN }), /cannot be quoted/)
+})
+
+test('serializeStageConfig refuses a value it cannot represent, without echoing it', () => {
+  // A newline cannot go on one line at all; a value mixing both quote kinds cannot be quoted without
+  // escapes the parser would reinterpret. Either way the message must not repeat the value — this runs
+  // over credentials, and the error reaches a terminal and whatever collects it.
+  const unrepresentable: Array<[string, RegExp]> = [
+    ['first\nsecond', /GHCR_TOKEN contains a newline/],
+    ['carriage\rreturn', /GHCR_TOKEN contains a newline/],
+    /*
+     * Everything the double-quoted form cannot carry, which is the branch an apostrophe falls into.
+     * The backslash mangles `C:\new` through the unescape pass. The `$` and the backtick are refused
+     * for the store's actual reader: `sst secret load` is Go, and godotenv expands `$VAR` inside
+     * double quotes — JavaScript's dotenv does not, so testing only against that would bless a value
+     * sst stores differently.
+     */
+    [`it's "quoted"`, /GHCR_TOKEN mixes a single quote/],
+    ["it's C:\\new", /GHCR_TOKEN mixes a single quote/],
+    ["it's $HOME", /GHCR_TOKEN mixes a single quote/],
+    ["it's `whoami`", /GHCR_TOKEN mixes a single quote/],
+  ]
+  for (const [value, expected] of unrepresentable) {
+    assert.throws(
+      () => serializeStageConfig({ GHCR_TOKEN: value }),
+      (error: any) => {
+        assert.match(error.message, expected)
+        assert.equal(error.message.includes(value), false)
+        return true
+      },
+    )
+  }
 })
 
 test('parseAwsCliVersion reads the real `aws --version` banner', () => {

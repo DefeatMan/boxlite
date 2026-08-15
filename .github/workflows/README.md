@@ -245,11 +245,28 @@ deployment Environments block before the job can obtain AWS credentials.
 matching Runner GitHub Release assets, verifies both before SST runs, and
 compiles neither component.
 
-Required Environment configuration (per stage):
+Required GitHub configuration:
 
-- Variable `AWS_DEPLOY_ROLE_ARN`
-- Variable `AWS_REGION` (defaults to `ap-southeast-1`)
-- Secret `DEPLOY_ENV` containing the stage's dotenv configuration
+- Environment variables `AWS_ACCOUNT_ID` and `AWS_REGION`, per stage. Neither can come
+  from the stage's secret store like everything else, because
+  `configure-aws-credentials` reads both before any AWS credentials exist.
+  - `AWS_ACCOUNT_ID` is **required**. The workflows compose
+    `arn:aws:iam::<id>:role/boxlite-<stage>-github-deploy` from it; only the account id
+    is unknown, since the role name follows from the stage.
+  - `AWS_REGION` is **optional**, and only for a stage outside the default. The
+    workflows fall back to `DEFAULT_AWS_REGION` as a literal, pinned to the code by a
+    test; set the variable when the stage lives elsewhere.
+
+- Environment secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_DEFAULT_ACCOUNT_ID`,
+  per stage. These cannot come from the SST secret store: reading it initializes the
+  Cloudflare provider, so a token kept there would be needed in order to read itself.
+
+A stage's other configuration lives in its SST secret store, seeded by
+`npm run bootstrap` and read by `apps/infra/deployment/sst.ts`; it is not
+configured on the GitHub side. Each stage still needs its Environment to *exist*,
+under exactly the stage name — the deploy role's trust policy pins
+`repo:<owner>/<repo>:environment:<stage>` — and that is where required reviewers
+are enforced.
 
 Bootstrap the scoped role, runtime permissions boundary, immutable API ECR
 repository, and private Runner artifact bucket with
