@@ -579,6 +579,7 @@ impl BoxOptions {
             ));
         }
 
+        self.advanced.validate_privileged_capability_conflict()?;
         self.advanced.capabilities.validate()?;
 
         if matches!(self.network, NetworkSpec::Disabled) && !self.ports.is_empty() {
@@ -1282,6 +1283,73 @@ mod tests {
 
         let legacy: BoxOptions = serde_json::from_str("{}").unwrap();
         assert!(!legacy.advanced.nested_virtualization);
+    }
+
+    #[test]
+    fn privileged_option_roundtrips() {
+        let stored: BoxOptions =
+            serde_json::from_str(r#"{"advanced":{"privileged":true}}"#).unwrap();
+        assert!(stored.advanced.privileged);
+        assert_eq!(
+            serde_json::to_value(stored).unwrap()["advanced"]["privileged"],
+            serde_json::Value::Bool(true)
+        );
+
+        let legacy: BoxOptions = serde_json::from_str("{}").unwrap();
+        assert!(!legacy.advanced.privileged);
+    }
+
+    #[test]
+    fn privileged_rejects_explicit_capability_overrides() {
+        let options: BoxOptions = serde_json::from_str(
+            r#"{"advanced":{"privileged":true,"capabilities":{"add":["SYS_ADMIN"],"drop":["NET_RAW"]}}}"#,
+        )
+        .unwrap();
+
+        let error = options
+            .advanced
+            .validate_privileged_capability_conflict()
+            .expect_err("privileged capability overrides must be rejected");
+
+        assert!(error.to_string().contains("cannot be combined"));
+    }
+
+    #[test]
+    fn privileged_canonical_capability_shape_remains_accepted() {
+        let mut options: BoxOptions = serde_json::from_str(
+            r#"{"advanced":{"privileged":true,"capabilities":{"add":["ALL"],"drop":[]}}}"#,
+        )
+        .unwrap();
+
+        options
+            .advanced
+            .validate_privileged_capability_conflict()
+            .expect("normalized privileged shape should be accepted");
+        options.advanced.normalize_privileged();
+
+        assert_eq!(options.advanced.capabilities.add, ["ALL"]);
+        assert!(options.advanced.capabilities.drop.is_empty());
+    }
+
+    #[test]
+    fn privileged_security_is_resolved_before_guest_init() {
+        let options = BoxOptions {
+            advanced: crate::AdvancedBoxOptions {
+                privileged: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let resolved = options
+            .advanced
+            .resolve_container_security()
+            .expect("privileged security should resolve");
+
+        assert!(resolved.linux.readonly_paths.is_empty());
+        assert!(!resolved.mount.options.contains(&"rro".to_string()));
+        assert_eq!(resolved.process.capabilities.add, ["ALL"]);
+        assert!(resolved.process.capabilities.drop.is_empty());
     }
 
     #[test]
