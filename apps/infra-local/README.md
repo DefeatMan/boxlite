@@ -17,7 +17,7 @@ binaries, `logs/`).
 ## Quick start
 
 Prereqs: macOS Apple Silicon; the BoxLite Python SDK (`pip install -e
-../../sdks/python`); Go 1.25+; Node + yarn (corepack); Python 3.10+.
+../../sdks/python`); Go 1.25+; Node + yarn (corepack); Python 3.11+.
 
 ```bash
 cd apps/infra-local
@@ -78,6 +78,40 @@ runner path against a separate Docker stack. The direct-SDK capability this stac
 relies on — read-write host volumes + host port mapping — is pinned by
 `sdks/python/tests/test_volume_port_persistence.py`.
 
+For load rather than smoke, the `stress/` package drives the running stack with
+concurrent box/runner operations while SIGKILLing (and restarting) the runners it
+started, mirroring every box write into Postgres (`stress.truth`) and comparing
+the two at the end:
+
+```bash
+python3 -m stress doctor                                    # preflight only
+python3 -m stress run --duration 300 --runners 3 --workers 4
+python3 -m stress run --no-chaos --drain-after 90           # drain → migrate → decommission
+python3 -m stress ops                                       # registered operations + weights
+```
+
+It only ever kills runners it started itself, and removes its boxes, runner
+processes and runner rows on exit — including the rows the API refuses to delete
+while a box still points at a dead runner.
+
+A crash is modelled as crash-then-restart: the runner comes back after a random
+delay on a **new** port, which is also what proves the control plane re-learned
+the endpoint (`--restart-after-kill 0` leaves it dead instead). Every box is
+written to as soon as it starts, so a box that later migrates always has content
+to verify.
+
+The drain path additionally needs **stopped** boxes to be eligible to move
+(`BoxRepository.lockParkedBoxes`), so a scheduled drain stops the runner's boxes
+first; without that a drained runner keeps its boxes and never decommissions.
+Both the stress runners and `make up`'s own runner carry the minio credentials
+for migration archives, so either can serve as a migration target.
+
+Its own correctness suite needs no stack and takes under a second:
+
+```bash
+python3 -m unittest discover -s stress/tests -t .
+```
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -96,7 +130,8 @@ relies on — read-write host volumes + host port mapping — is pinned by
 
 ## Layout
 
-Everything is the `compose` package + four root files (no `scripts/`, no `configs/`):
+Two packages — `compose` brings the stack up, `stress` loads it — plus four root
+files (no `scripts/`, no `configs/`):
 
 ```text
 apps/infra-local/
@@ -104,15 +139,29 @@ apps/infra-local/
 ├── README.md
 ├── pyproject.toml
 ├── api.env           # API .env template (copied to apps/api/.env on first `up`)
-└── compose/
-    ├── __main__.py   # the `python -m compose` CLI (up/down/status/logs/restart/reset/nuke)
-    ├── config.py     # InfraConfig (single source of truth)
-    ├── services.py   # the L1 ServiceSpec registry + SERVICES
-    ├── orchestrator.py  # L1 box lifecycle (BoxLite SDK)
-    ├── native.py     # L2 native-process supervision (subprocess/pidfiles/signals)
-    ├── doctor.py     # preflight checks
-    └── _sdk.py       # BoxLite SDK import shim
+├── compose/
+│   ├── __main__.py   # the `python -m compose` CLI (up/down/status/logs/restart/reset/nuke)
+│   ├── config.py     # InfraConfig (single source of truth)
+│   ├── services.py   # the L1 ServiceSpec registry + SERVICES
+│   ├── orchestrator.py  # L1 box lifecycle (BoxLite SDK)
+│   ├── native.py     # L2 native-process supervision (subprocess/pidfiles/signals)
+│   ├── doctor.py     # preflight checks
+│   └── _sdk.py       # BoxLite SDK import shim
+└── stress/           # chaos + consistency stress harness (stdlib only)
+    ├── DESIGN.md     # the layer rules and why each seam is where it is
+    ├── __main__.py   # the `python -m stress` CLI (run/config/ops/doctor)
+    ├── clients/      # HTTP + psql transport
+    ├── store/        # truth store (postgres | sqlite) + control-plane ledger
+    ├── domain/       # runners, boxes, the drain contract
+    ├── ops/          # the operation registry and the built-in operations
+    ├── run/          # driver, sweep, teardown
+    ├── report/       # console + JSON
+    └── tests/        # correctness suite (no stack required)
 ```
 
 **Add an L1 service**: one `ServiceSpec` + a `SERVICES` entry in `services.py`;
 its host port is the literal in `ServiceSpec.ports`.
+
+**Add a stress operation**: one class with `@register_op("name", weight=N)` in
+`stress/ops/`, or in your own module loaded with `--ops-module` — no edit to the
+harness either way.

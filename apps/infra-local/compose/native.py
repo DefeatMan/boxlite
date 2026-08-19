@@ -213,7 +213,18 @@ class _Component:
     pkill_pattern: str    # orphan-sweep fallback (matches the bash pkill -f)
 
 
-def _components(p: _Paths) -> dict[str, _Component]:
+# Orphan-sweep patterns, kept out of `_components` so stopping a component does
+# not have to build the table that describes how to *start* everything — which
+# is what forced the start-time configuration to be reachable from the stop path.
+_PKILL_PATTERNS = {
+    "api": "nx.*serve.*api",
+    "runner": "boxlite-runner$",
+    "proxy": "boxlite-proxy$",
+    "dashboard": "nx.*serve.*dashboard",
+}
+
+
+def _components(p: _Paths, cfg: InfraConfig) -> dict[str, _Component]:
     apps = p.apps
     api_env = {
         # M5-native dev override: the runner reports system-wide CPU/mem/disk
@@ -229,7 +240,7 @@ def _components(p: _Paths) -> dict[str, _Component]:
     return {
         "api": _Component(
             "api", PORT_API, "http", f"http://localhost:{PORT_API}/api/health", 180,
-            ["corepack", "yarn", "nx", "serve", "api"], apps, api_env, "nx.*serve.*api",
+            ["corepack", "yarn", "nx", "serve", "api"], apps, api_env, _PKILL_PATTERNS["api"],
         ),
         "runner": _Component(
             "runner", PORT_RUNNER, "tcp", "", 60,
@@ -243,10 +254,21 @@ def _components(p: _Paths) -> dict[str, _Component]:
                 "BOXLITE_HOME_DIR": str(p.runner_home),
                 "INSECURE_REGISTRIES": "127.0.0.1:25000",
                 "AWS_REGION": "us-east-1",
+                # Box migration moves a box as an archive through object storage,
+                # so a runner without these fails every IMPORT_BOX/EXPORT_BOX job
+                # with "migration archive store is not configured" — and because
+                # the control plane picks migration targets itself, one
+                # unconfigured runner is enough to strand a draining one: it is
+                # chosen as the import target, the import fails, the boxes never
+                # move, and the drained runner never decommissions.
+                "AWS_ENDPOINT_URL": f"http://127.0.0.1:{cfg.minio_host_port}",
+                "AWS_ACCESS_KEY_ID": cfg.minio_user,
+                "AWS_SECRET_ACCESS_KEY": cfg.minio_password,
+                "AWS_DEFAULT_BUCKET": cfg.minio_bucket,
                 "OTEL_TRACING_ENABLED": "true",
                 "OTEL_EXPORTER_OTLP_ENDPOINT": _OTEL_OTLP_HTTP_URL,
             },
-            "boxlite-runner$",
+            _PKILL_PATTERNS["runner"],
         ),
         "proxy": _Component(
             "proxy", PORT_PROXY, "tcp", "", 30,
@@ -265,14 +287,14 @@ def _components(p: _Paths) -> dict[str, _Component]:
                 "OTEL_TRACING_ENABLED": "true",
                 "OTEL_EXPORTER_OTLP_ENDPOINT": _OTEL_OTLP_HTTP_URL,
             },
-            "boxlite-proxy$",
+            _PKILL_PATTERNS["proxy"],
         ),
         # VITE_API_URL=/api routes dashboard API calls through the Vite dev proxy
         # (→ localhost:3001) instead of the hard-coded prod default.
         "dashboard": _Component(
             "dashboard", PORT_DASHBOARD, "http", f"http://localhost:{PORT_DASHBOARD}", 120,
             ["corepack", "yarn", "nx", "serve", "dashboard"], apps, {"VITE_API_URL": "/api"},
-            "nx.*serve.*dashboard",
+            _PKILL_PATTERNS["dashboard"],
         ),
     }
 
@@ -343,9 +365,9 @@ def stop_component(p: _Paths, name: str) -> None:
         _pid_file(p, name).unlink(missing_ok=True)
         ok(f"{name} stopped")
     # belt-and-suspenders: sweep any orphan by name (only for this component)
-    comp = _components(p).get(name)
-    if comp:
-        subprocess.run(["pkill", "-TERM", "-f", comp.pkill_pattern], check=False)
+    pattern = _PKILL_PATTERNS.get(name)
+    if pattern:
+        subprocess.run(["pkill", "-TERM", "-f", pattern], check=False)
 
 
 # ── L1 helpers (talk to the BoxLite SDK via orchestrator) ──────────────────
@@ -541,7 +563,7 @@ def up(cfg: InfraConfig, components: list[str] | None = None) -> int:
     _seed_api_env(p, agent_img)
 
     # 5. start the requested L2 components
-    table = _components(p)
+    table = _components(p, cfg)
     healthy = True
     for name in comps:
         healthy &= start_component(p, table[name])
@@ -645,7 +667,7 @@ def restart(cfg: InfraConfig, names: list[str]) -> int:
     the host sleeps and its clock drifts). The host data volume survives.
     """
     p = _paths(cfg)
-    table = _components(p)
+    table = _components(p, cfg)
     l2 = [n for n in names if n in ALL_COMPONENTS]
     l1 = [n for n in names if n in SERVICES]
     unknown = [n for n in names if n not in ALL_COMPONENTS and n not in SERVICES]

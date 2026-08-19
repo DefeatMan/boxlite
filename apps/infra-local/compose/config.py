@@ -79,6 +79,10 @@ class InfraConfig:
     pg_db: str = "boxlite"
     minio_user: str = "minioadmin"
     minio_password: str = field(default="minioadmin", repr=False)
+    # Created by the minio-init one-shot and read back by the runner as
+    # AWS_DEFAULT_BUCKET; box migration archives are written here, so the two
+    # sides have to name the same bucket.
+    minio_bucket: str = "boxlite"
     pgadmin_email: str = "admin@boxlite.dev"
     pgadmin_password: str = field(default="boxlite", repr=False)
 

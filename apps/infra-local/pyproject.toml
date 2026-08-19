@@ -5,9 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "infra-local"
 version = "0.1.0"
-description = "Local dev-stack orchestrator for apps/infra-local (the `compose` package)."
-requires-python = ">=3.10"
+description = "Local dev-stack orchestrator (`compose`) and stress harness (`stress`) for apps/infra-local."
+# 3.11 for enum.StrEnum, which `stress` uses for its outcome/verdict enums.
+requires-python = ">=3.11"
 dependencies = ["boxlite>=0.8"]
 
 [tool.setuptools.packages.find]
-include = ["compose*"]
+include = ["compose*", "stress*"]

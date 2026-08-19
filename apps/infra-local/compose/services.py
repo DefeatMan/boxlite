@@ -139,8 +139,8 @@ for i in 1 2 3 4 5; do
   sleep 2
 done
 mc alias set boxlite "$MINIO_URL" "$MINIO_USER" "$MINIO_PASSWORD"
-mc mb --ignore-existing boxlite/boxlite
-echo "init: ok - boxlite bucket ready"
+mc mb --ignore-existing "boxlite/$MINIO_BUCKET"
+echo "init: ok - $MINIO_BUCKET bucket ready"
 """
 
 
@@ -158,6 +158,7 @@ SPEC_MINIO_INIT = ServiceSpec(
         "MINIO_URL": f"http://{cfg.host_hub}:{cfg.minio_host_port}",
         "MINIO_USER": cfg.minio_user,
         "MINIO_PASSWORD": cfg.minio_password,
+        "MINIO_BUCKET": cfg.minio_bucket,
     },
     volumes=lambda cfg: [],
     healthcheck=None,
