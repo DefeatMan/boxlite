@@ -13,6 +13,7 @@ api/jobs-api.ts
 api/object-storage-api.ts
 api/organizations-api.ts
 api/preview-api.ts
+api/ratchetjq-api.ts
 api/regions-api.ts
 api/runners-api.ts
 api/users-api.ts
@@ -40,6 +41,9 @@ docs/BoxLabels.md
 docs/BoxState.md
 docs/BoxVolume.md
 docs/BoxliteConfiguration.md
+docs/ClaimRatchetJQJobsRequest.md
+docs/ClaimRatchetJQJobsResponse.md
+docs/ClaimedRatchetJQJob.md
 docs/ConfigApi.md
 docs/CreateApiKey.md
 docs/CreateLinkedAccount.md
@@ -83,12 +87,15 @@ docs/PollJobsResponse.md
 docs/PortPreviewUrl.md
 docs/PosthogConfig.md
 docs/PreviewApi.md
+docs/RatchetjqApi.md
 docs/RateLimitConfig.md
 docs/RateLimitEntry.md
 docs/RegenerateApiKeyResponse.md
 docs/Region.md
 docs/RegionType.md
 docs/RegionsApi.md
+docs/ReportRatchetJQJobRequest.md
+docs/ReportRatchetJQJobResponse.md
 docs/Runner.md
 docs/RunnerFull.md
 docs/RunnerHealthMetrics.md
@@ -137,6 +144,9 @@ models/box-state.ts
 models/box-volume.ts
 models/box.ts
 models/boxlite-configuration.ts
+models/claim-ratchet-jqjobs-request.ts
+models/claim-ratchet-jqjobs-response.ts
+models/claimed-ratchet-jqjob.ts
 models/create-api-key.ts
 models/create-linked-account.ts
 models/create-organization-invitation.ts
@@ -180,6 +190,8 @@ models/rate-limit-entry.ts
 models/regenerate-api-key-response.ts
 models/region-type.ts
 models/region.ts
+models/report-ratchet-jqjob-request.ts
+models/report-ratchet-jqjob-response.ts
 models/runner-full.ts
 models/runner-health-metrics.ts
 models/runner-healthcheck.ts

@@ -20,8 +20,12 @@ import (
 	"github.com/boxlite-ai/runner/internal"
 	"github.com/boxlite-ai/runner/internal/metrics"
 	"github.com/boxlite-ai/runner/pkg/api"
+	runnerapiclient "github.com/boxlite-ai/runner/pkg/apiclient"
 	"github.com/boxlite-ai/runner/pkg/backend"
 	blclient "github.com/boxlite-ai/runner/pkg/boxlite"
+	"github.com/boxlite-ai/runner/pkg/ratchetjq"
+	"github.com/boxlite-ai/runner/pkg/ratchetjq/jobs"
+	ratchetjqtransfer "github.com/boxlite-ai/runner/pkg/ratchetjq/transfer"
 	"github.com/boxlite-ai/runner/pkg/runner"
 	"github.com/boxlite-ai/runner/pkg/runner/v2/executor"
 	"github.com/boxlite-ai/runner/pkg/runner/v2/healthcheck"
@@ -212,14 +216,57 @@ func run() int {
 		}()
 	}
 
+	// RatchetJQ EXECUTOR. Startup registers every job type — a type that could
+	// never be dispatched to fails the process here rather than on the first
+	// job that names it — and starts the poller when a Transfer is configured.
+	//
+	// The Transfer is left nil unless the pulled path is switched on, which is
+	// what keeps the two job services side by side: without it this runner only
+	// runs what the control plane pushes to it over SyncRun, and claims nothing.
+	// The interface variable stays nil-typed on that branch, since a typed nil
+	// pointer would read as "configured" to Startup.
+	var ratchetJQTransfer ratchetjq.Transfer
+	if cfg.RatchetJQEnablePoller {
+		// The same client the legacy poller uses: it already carries the base
+		// URL, the runner's bearer token — which is the whole of the runner's
+		// identity to both endpoints — and the traced transport.
+		apiClient, err := runnerapiclient.GetApiClient()
+		if err != nil {
+			logger.Error("Failed to build the API client for the RatchetJQ transfer", "error", err)
+			return 2
+		}
+
+		ratchetJQTransfer, err = ratchetjqtransfer.NewControlPlane(ratchetjqtransfer.ControlPlaneConfig{
+			Client: apiClient,
+			Logger: logger,
+		})
+		if err != nil {
+			logger.Error("Failed to create the RatchetJQ transfer", "error", err)
+			return 2
+		}
+	}
+
+	ratchetJQFactory, err := ratchetjq.Startup(ctx, ratchetjq.StartupConfig{
+		JobTypes:  jobs.JobTypes(),
+		Transfer:  ratchetJQTransfer,
+		Logger:    logger,
+		PollWait:  cfg.RatchetJQPollWait,
+		ChanLimit: cfg.RatchetJQChanLimit,
+	})
+	if err != nil {
+		logger.Error("Failed to start the RatchetJQ executor", "error", err)
+		return 2
+	}
+
 	apiServer := api.NewApiServer(api.ApiServerConfig{
-		Logger:      logger,
-		ApiPort:     cfg.ApiPort,
-		ApiToken:    cfg.ApiToken,
-		TLSCertFile: cfg.TLSCertFile,
-		TLSKeyFile:  cfg.TLSKeyFile,
-		EnableTLS:   cfg.EnableTLS,
-		LogRequests: cfg.ApiLogRequests,
+		Logger:           logger,
+		ApiPort:          cfg.ApiPort,
+		ApiToken:         cfg.ApiToken,
+		TLSCertFile:      cfg.TLSCertFile,
+		TLSKeyFile:       cfg.TLSKeyFile,
+		EnableTLS:        cfg.EnableTLS,
+		LogRequests:      cfg.ApiLogRequests,
+		RatchetJQFactory: ratchetJQFactory,
 	})
 
 	apiServerErrChan := make(chan error)
