@@ -29,6 +29,7 @@ import (
 	"github.com/boxlite-ai/runner/pkg/api/docs"
 	"github.com/boxlite-ai/runner/pkg/api/middlewares"
 	"github.com/boxlite-ai/runner/pkg/common"
+	"github.com/boxlite-ai/runner/pkg/ratchetjq"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 
@@ -51,30 +52,37 @@ type ApiServerConfig struct {
 	TLSKeyFile  string
 	EnableTLS   bool
 	LogRequests bool
+	// RatchetJQFactory builds the job a RatchetJQ job type names. Leaving it
+	// nil keeps the RatchetJQ routes unregistered, so a runner that has not
+	// been given a factory answers 404 there rather than panicking on the
+	// first pushed job.
+	RatchetJQFactory *ratchetjq.JobFactory
 }
 
 func NewApiServer(config ApiServerConfig) *ApiServer {
 	return &ApiServer{
-		logger:      config.Logger.With(slog.String("component", "server")),
-		apiPort:     config.ApiPort,
-		apiToken:    config.ApiToken,
-		tlsCertFile: config.TLSCertFile,
-		tlsKeyFile:  config.TLSKeyFile,
-		enableTLS:   config.EnableTLS,
-		logRequests: config.LogRequests,
+		logger:           config.Logger.With(slog.String("component", "server")),
+		apiPort:          config.ApiPort,
+		apiToken:         config.ApiToken,
+		tlsCertFile:      config.TLSCertFile,
+		tlsKeyFile:       config.TLSKeyFile,
+		enableTLS:        config.EnableTLS,
+		logRequests:      config.LogRequests,
+		ratchetJQFactory: config.RatchetJQFactory,
 	}
 }
 
 type ApiServer struct {
-	logger      *slog.Logger
-	apiPort     int
-	apiToken    string
-	tlsCertFile string
-	tlsKeyFile  string
-	enableTLS   bool
-	httpServer  *http.Server
-	router      *gin.Engine
-	logRequests bool
+	logger           *slog.Logger
+	apiPort          int
+	apiToken         string
+	tlsCertFile      string
+	tlsKeyFile       string
+	enableTLS        bool
+	httpServer       *http.Server
+	router           *gin.Engine
+	logRequests      bool
+	ratchetJQFactory *ratchetjq.JobFactory
 }
 
 func (a *ApiServer) Start(ctx context.Context) error {
@@ -158,6 +166,15 @@ func (a *ApiServer) Start(ctx context.Context) error {
 		boxliteApi.GET("/:boxId/files", controllers.BoxliteFileDownload)
 		boxliteApi.GET("/:boxId/metrics", controllers.BoxliteMetrics)
 		boxliteApi.Handle(http.MethodConnect, "/:boxId/network/tunnel", controllers.BoxliteNetworkTunnel(boxControllerLogger))
+	}
+
+	// RatchetJQ EXECUTOR — the control plane's pushed synchronous path.
+	if a.ratchetJQFactory != nil {
+		ratchetJQLogger := a.logger.With(slog.String("component", "ratchetjq_controller"))
+		ratchetJQApi := protected.Group("/ratchetjq/jobs")
+		{
+			ratchetJQApi.POST("/sync", controllers.SyncRatchetJob(a.ratchetJQFactory, ratchetJQLogger))
+		}
 	}
 
 	a.httpServer = &http.Server{

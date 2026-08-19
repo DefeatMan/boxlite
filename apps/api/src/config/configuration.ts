@@ -147,6 +147,96 @@ export function usageExportConfig(env: NodeJS.ProcessEnv = process.env) {
   return { ...settings, url: requiredHttpUrl(rawUrl, 'USAGE_EXPORT_URL') }
 }
 
+/**
+ * RatchetJQ scheduling limits.
+ *
+ * `attemptMaxN` is the spec's ATTEMPT_MAXN: the highest round number that may
+ * still be scheduled, so `attempt > attemptMaxN` is what makes a job a timeout.
+ * The backoff between rounds is `attempt⁴` seconds, so raising this by one adds
+ * far more waiting than the previous value did — 5 rounds is roughly ten minutes
+ * of backoff in total, 6 is roughly twenty-two.
+ *
+ * `claimBatchSize` is the spec's LIMIT {N}: how many rows one claim statement
+ * may take. It bounds the work a single poll hands over, not the queue.
+ *
+ * `maxBlockSeconds` caps how long a claim waits for a wake-up hint, and is also
+ * the ceiling the wait time is clamped to in SQL. It is what stops an executor
+ * with no upcoming work from waiting indefinitely, so a job pushed to it later
+ * is still picked up within this long even if the hint is lost. Raising it holds
+ * an HTTP request and a Redis connection open for that long, so it wants to stay
+ * under whatever timeout the executors and any proxy in front of them use.
+ *
+ * `blockingCommandTimeoutBufferMs` is added on top of the wait when the blocking
+ * Redis client is created. It has to be positive: with no headroom ioredis would
+ * abandon BRPOP at the same moment the server is deciding to return, turning
+ * every idle wait into a logged error.
+ *
+ * Exported so its rules can be tested directly rather than through an import
+ * whose side effect is reading the process environment.
+ */
+export function ratchetjqConfig(env: NodeJS.ProcessEnv = process.env) {
+  const settings = {
+    attemptMaxN: requiredCount(env.RATCHETJQ_ATTEMPT_MAX_N, 5, 'RATCHETJQ_ATTEMPT_MAX_N'),
+    claimBatchSize: requiredCount(env.RATCHETJQ_CLAIM_BATCH_SIZE, 100, 'RATCHETJQ_CLAIM_BATCH_SIZE'),
+    acceptMaxN: requiredCount(env.RATCHETJQ_ACCEPT_MAX_N, 16, 'RATCHETJQ_ACCEPT_MAX_N'),
+    maxBlockSeconds: requiredCount(env.RATCHETJQ_MAX_BLOCK_SECONDS, 60, 'RATCHETJQ_MAX_BLOCK_SECONDS'),
+    blockingCommandTimeoutBufferMs: requiredCount(
+      env.RATCHETJQ_BLOCKING_COMMAND_TIMEOUT_BUFFER_MS,
+      3_000,
+      'RATCHETJQ_BLOCKING_COMMAND_TIMEOUT_BUFFER_MS',
+    ),
+    scannerMaxN: requiredCount(env.RATCHETJQ_SCANNER_MAX_N, 4, 'RATCHETJQ_SCANNER_MAX_N'),
+    scannerMinN: requiredCount(env.RATCHETJQ_SCANNER_MIN_N, 2, 'RATCHETJQ_SCANNER_MIN_N'),
+    scannerSlotTtlSeconds: requiredCount(
+      env.RATCHETJQ_SCANNER_SLOT_TTL_SECONDS,
+      30,
+      'RATCHETJQ_SCANNER_SLOT_TTL_SECONDS',
+    ),
+    scannerSlotRenewSeconds: requiredCount(
+      env.RATCHETJQ_SCANNER_SLOT_RENEW_SECONDS,
+      25,
+      'RATCHETJQ_SCANNER_SLOT_RENEW_SECONDS',
+    ),
+    emptyRoundLimit: requiredCount(env.RATCHETJQ_EMPTY_ROUND_LIMIT, 5, 'RATCHETJQ_EMPTY_ROUND_LIMIT'),
+    emptyRoundSleepMs: requiredCount(env.RATCHETJQ_EMPTY_ROUND_SLEEP_MS, 5_000, 'RATCHETJQ_EMPTY_ROUND_SLEEP_MS'),
+    timeToForceSeconds: requiredCount(env.RATCHETJQ_TIME_TO_FORCE_SECONDS, 60, 'RATCHETJQ_TIME_TO_FORCE_SECONDS'),
+  }
+
+  // The relationships the spec calls out as selection constraints (§8.4), plus
+  // the one the accept segment adds. Each is silent when violated, which is why
+  // they are refused at boot rather than left to be inferred from a Scanner pool
+  // behaving oddly.
+  if (settings.scannerMaxN < settings.scannerMinN) {
+    throw new Error(
+      `RATCHETJQ_SCANNER_MAX_N must be at least RATCHETJQ_SCANNER_MIN_N (${settings.scannerMinN}), got "${settings.scannerMaxN}"`,
+    )
+  }
+  // The floor also carries the run segment's global backstop, so one Scanner is
+  // not a floor — losing it leaves nothing to recover a silent runner's jobs.
+  if (settings.scannerMinN < 2) {
+    throw new Error(`RATCHETJQ_SCANNER_MIN_N must be at least 2, got "${settings.scannerMinN}"`)
+  }
+  // The accept ceiling is the Scanner's fan-out width, not just a statement
+  // LIMIT: it takes that many rows and runs that many acceptors at once. Above
+  // the claim batch it would be claiming more per accept round than the run
+  // segment takes per claim, which is backwards — an accept costs a handler call
+  // and a write, a force-advance costs part of one statement.
+  if (settings.acceptMaxN > settings.claimBatchSize) {
+    throw new Error(
+      `RATCHETJQ_ACCEPT_MAX_N must not exceed RATCHETJQ_CLAIM_BATCH_SIZE (${settings.claimBatchSize}), got "${settings.acceptMaxN}"`,
+    )
+  }
+  // Renewing no sooner than the slot expires means the slot lapses between
+  // renewals, and another process takes it while this Scanner is still running.
+  if (settings.scannerSlotRenewSeconds >= settings.scannerSlotTtlSeconds) {
+    throw new Error(
+      `RATCHETJQ_SCANNER_SLOT_RENEW_SECONDS must be below RATCHETJQ_SCANNER_SLOT_TTL_SECONDS (${settings.scannerSlotTtlSeconds}), got "${settings.scannerSlotRenewSeconds}"`,
+    )
+  }
+
+  return settings
+}
+
 // The object-store key namespace migration archives land in by default, inside
 // whichever bucket each runner is configured with.
 const DEFAULT_MIGRATION_ARCHIVE_PREFIX = 'box-migrations/'
@@ -353,6 +443,7 @@ const configuration = {
   billingApiUrl: process.env.BILLING_API_URL,
   analyticsApiUrl: process.env.ANALYTICS_API_URL,
   usageExport: usageExportConfig(),
+  ratchetjq: ratchetjqConfig(),
   defaultRunner: {
     domain: process.env.DEFAULT_RUNNER_DOMAIN,
     apiKey: process.env.DEFAULT_RUNNER_API_KEY,
@@ -507,10 +598,7 @@ const configuration = {
     // runner reporting the box as started is allowed to close it out. This is
     // a backstop for a lost job-completion callback, not a fast path: raise it
     // if legitimate startups ever get closed out ahead of their own callback.
-    startConfirmationStallSeconds: parseInt(
-      process.env.BOX_SYNC_START_CONFIRMATION_STALL_SECONDS || '60',
-      10,
-    ),
+    startConfirmationStallSeconds: parseInt(process.env.BOX_SYNC_START_CONFIRMATION_STALL_SECONDS || '60', 10),
   },
   encryption: {
     key: process.env.ENCRYPTION_KEY,

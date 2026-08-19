@@ -5,6 +5,7 @@ api.ts
 api/box-api.ts
 api/boxlite-api.ts
 api/default-api.ts
+api/ratchetjq-api.ts
 api/snapshots-api.ts
 base.ts
 common.ts
@@ -24,6 +25,7 @@ docs/InspectSnapshotInRegistryRequest.md
 docs/IsRecoverableDTO.md
 docs/IsRecoverableResponse.md
 docs/PullSnapshotRequestDTO.md
+docs/RatchetjqApi.md
 docs/RecoverBoxDTO.md
 docs/RegistryDTO.md
 docs/RunnerInfoResponseDTO.md
@@ -35,6 +37,8 @@ docs/SnapshotInfoResponse.md
 docs/SnapshotsApi.md
 docs/StartBoxResponse.md
 docs/StopBoxDTO.md
+docs/SyncRatchetJobDTO.md
+docs/SyncRatchetJobResponseDTO.md
 docs/TagImageRequestDTO.md
 docs/UpdateNetworkSettingsDTO.md
 git_push.sh
@@ -62,5 +66,7 @@ models/snapshot-exists-response.ts
 models/snapshot-info-response.ts
 models/start-box-response.ts
 models/stop-box-dto.ts
+models/sync-ratchet-job-dto.ts
+models/sync-ratchet-job-response-dto.ts
 models/tag-image-request-dto.ts
 models/update-network-settings-dto.ts

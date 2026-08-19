@@ -3924,6 +3924,75 @@ paths:
       summary: Get box metrics
       tags:
       - box
+  /ratchetjq/jobs/claim:
+    post:
+      description: "Long poll for the jobs this runner may run now. Returns as soon\
+        \ as any are available, otherwise blocks until the next job falls due, for\
+        \ at most 60 seconds. Claiming takes ownership: it advances the jobs it returns\
+        \ and moves their leases."
+      operationId: claimRatchetJQJobs
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClaimRatchetJQJobsRequest"
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimRatchetJQJobsResponse"
+          description: The jobs this runner may run now
+      security:
+      - bearer: []
+      - oauth2:
+        - openid
+        - profile
+        - email
+      summary: Claim RatchetJQ jobs
+      tags:
+      - ratchetjq
+  /ratchetjq/jobs/{jobId}/report:
+    post:
+      description: "Hand back what this runner produced for a job it claimed. The\
+        \ outcome is recorded, an accept round is started for it, and the response\
+        \ comes as that round starts rather than when it decides — the verdict is\
+        \ the control plane’s to act on. A run that failed is not reported at all:\
+        \ its lease is what retries it."
+      operationId: reportRatchetJQJob
+      parameters:
+      - description: ID of the claimed job the outcome belongs to
+        explode: false
+        in: path
+        name: jobId
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReportRatchetJQJobRequest"
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReportRatchetJQJobResponse"
+          description: Whether the outcome was recorded
+      security:
+      - bearer: []
+      - oauth2:
+        - openid
+        - profile
+        - email
+      summary: Report a RatchetJQ job outcome
+      tags:
+      - ratchetjq
 components:
   schemas:
     Announcement:
@@ -7129,6 +7198,123 @@ components:
           type: array
       required:
       - series
+      type: object
+    ClaimRatchetJQJobsRequest:
+      example:
+        limit: 16
+        ignoreLeaseExpire: false
+      properties:
+        limit:
+          description: How many jobs to hand over at most — the executor’s remaining
+            concurrency budget. Capped by the server’s own batch size. Omitting it
+            asks for a full batch.
+          example: 16
+          minimum: 1
+          type: number
+        ignoreLeaseExpire:
+          default: false
+          description: "Set on the first claim after the runner starts. Takes back\
+            \ its interrupted jobs without waiting out leases granted to the process\
+            \ that died, and without spending a retry round on the restart."
+          type: boolean
+      type: object
+    ClaimedRatchetJQJob:
+      example:
+        id: 3f1c7b9e-9a1e-4c3a-9d2b-0f7a5e6c1d20
+        type: echo
+        resourceId: box123
+        inParams:
+          key: ""
+        leaseExpiresAt: 2026-08-20T12:34:56Z
+      properties:
+        id:
+          description: "The ID of the job, which its outcome is reported against"
+          example: 3f1c7b9e-9a1e-4c3a-9d2b-0f7a5e6c1d20
+          type: string
+        type:
+          description: "The job type to run this job, matching the name the executor\
+            \ registers it under"
+          example: echo
+          type: string
+        resourceId:
+          description: The resource the job acts on
+          example: box123
+          type: string
+        inParams:
+          additionalProperties: true
+          description: "The job input, shaped by the job type"
+          type: object
+        leaseExpiresAt:
+          description: "When this claim on the job lapses. The executor must stop\
+            \ running it by then: past this moment the job is claimable again, so\
+            \ anything still working on it is racing whoever picked it up next."
+          example: 2026-08-20T12:34:56Z
+          format: date-time
+          type: string
+      required:
+      - id
+      - leaseExpiresAt
+      - resourceId
+      - type
+      type: object
+    ClaimRatchetJQJobsResponse:
+      example:
+        jobs:
+        - id: 3f1c7b9e-9a1e-4c3a-9d2b-0f7a5e6c1d20
+          type: echo
+          resourceId: box123
+          inParams:
+            key: ""
+          leaseExpiresAt: 2026-08-20T12:34:56Z
+        - id: 3f1c7b9e-9a1e-4c3a-9d2b-0f7a5e6c1d20
+          type: echo
+          resourceId: box123
+          inParams:
+            key: ""
+          leaseExpiresAt: 2026-08-20T12:34:56Z
+      properties:
+        jobs:
+          description: The jobs this executor may run now
+          items:
+            $ref: "#/components/schemas/ClaimedRatchetJQJob"
+          type: array
+      required:
+      - jobs
+      type: object
+    ReportRatchetJQJobRequest:
+      example:
+        status: ok
+        outParams:
+          key: ""
+      properties:
+        status:
+          description: The business result the executor reached
+          enum:
+          - ok
+          - rejected
+          - timeout
+          example: ok
+          type: string
+        outParams:
+          additionalProperties: true
+          description: "The job output, shaped by the job type. Omitted when the job\
+            \ produces nothing."
+          type: object
+      required:
+      - status
+      type: object
+    ReportRatchetJQJobResponse:
+      example:
+        accepted: true
+      properties:
+        accepted:
+          description: "Whether the outcome was recorded. False means this executor\
+            \ held no running job of that id — a repeat report, or a job whose lease\
+            \ it had already lost."
+          example: true
+          type: boolean
+      required:
+      - accepted
       type: object
     WebhookController_getStatus_200_response:
       example:
