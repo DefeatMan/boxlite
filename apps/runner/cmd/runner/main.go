@@ -22,6 +22,8 @@ import (
 	"github.com/boxlite-ai/runner/pkg/api"
 	"github.com/boxlite-ai/runner/pkg/backend"
 	blclient "github.com/boxlite-ai/runner/pkg/boxlite"
+	"github.com/boxlite-ai/runner/pkg/ratchetjq"
+	"github.com/boxlite-ai/runner/pkg/ratchetjq/jobs"
 	"github.com/boxlite-ai/runner/pkg/runner"
 	"github.com/boxlite-ai/runner/pkg/runner/v2/executor"
 	"github.com/boxlite-ai/runner/pkg/runner/v2/healthcheck"
@@ -212,14 +214,31 @@ func run() int {
 		}()
 	}
 
+	// RatchetJQ EXECUTOR. Startup registers every job type — a type that could
+	// never be dispatched to fails the process here rather than on the first
+	// job that names it — and would start the poller if a Transfer were
+	// configured. Transfer is left out until the control plane exposes
+	// ClaimJobs and Report; the pushed SyncRun path below works without it.
+	ratchetJQFactory, err := ratchetjq.Startup(ctx, ratchetjq.StartupConfig{
+		JobTypes:  jobs.JobTypes(),
+		Logger:    logger,
+		PollWait:  cfg.RatchetJQPollWait,
+		ChanLimit: cfg.RatchetJQChanLimit,
+	})
+	if err != nil {
+		logger.Error("Failed to start the RatchetJQ executor", "error", err)
+		return 2
+	}
+
 	apiServer := api.NewApiServer(api.ApiServerConfig{
-		Logger:      logger,
-		ApiPort:     cfg.ApiPort,
-		ApiToken:    cfg.ApiToken,
-		TLSCertFile: cfg.TLSCertFile,
-		TLSKeyFile:  cfg.TLSKeyFile,
-		EnableTLS:   cfg.EnableTLS,
-		LogRequests: cfg.ApiLogRequests,
+		Logger:           logger,
+		ApiPort:          cfg.ApiPort,
+		ApiToken:         cfg.ApiToken,
+		TLSCertFile:      cfg.TLSCertFile,
+		TLSKeyFile:       cfg.TLSKeyFile,
+		EnableTLS:        cfg.EnableTLS,
+		LogRequests:      cfg.ApiLogRequests,
+		RatchetJQFactory: ratchetJQFactory,
 	})
 
 	apiServerErrChan := make(chan error)
