@@ -147,6 +147,46 @@ export function usageExportConfig(env: NodeJS.ProcessEnv = process.env) {
   return { ...settings, url: requiredHttpUrl(rawUrl, 'USAGE_EXPORT_URL') }
 }
 
+/**
+ * RatchetJQ scheduling limits.
+ *
+ * `attemptMaxN` is the spec's ATTEMPT_MAXN: the highest round number that may
+ * still be scheduled, so `attempt > attemptMaxN` is what makes a job a timeout.
+ * The backoff between rounds is `attempt⁴` seconds, so raising this by one adds
+ * far more waiting than the previous value did — 5 rounds is roughly ten minutes
+ * of backoff in total, 6 is roughly twenty-two.
+ *
+ * `claimBatchSize` is the spec's LIMIT {N}: how many rows one claim statement
+ * may take. It bounds the work a single poll hands over, not the queue.
+ *
+ * `maxBlockSeconds` caps how long a claim waits for a wake-up hint, and is also
+ * the ceiling the wait time is clamped to in SQL. It is what stops an executor
+ * with no upcoming work from waiting indefinitely, so a job pushed to it later
+ * is still picked up within this long even if the hint is lost. Raising it holds
+ * an HTTP request and a Redis connection open for that long, so it wants to stay
+ * under whatever timeout the executors and any proxy in front of them use.
+ *
+ * `blockingCommandTimeoutBufferMs` is added on top of the wait when the blocking
+ * Redis client is created. It has to be positive: with no headroom ioredis would
+ * abandon BRPOP at the same moment the server is deciding to return, turning
+ * every idle wait into a logged error.
+ *
+ * Exported so its rules can be tested directly rather than through an import
+ * whose side effect is reading the process environment.
+ */
+export function ratchetjqConfig(env: NodeJS.ProcessEnv = process.env) {
+  return {
+    attemptMaxN: requiredCount(env.RATCHETJQ_ATTEMPT_MAX_N, 5, 'RATCHETJQ_ATTEMPT_MAX_N'),
+    claimBatchSize: requiredCount(env.RATCHETJQ_CLAIM_BATCH_SIZE, 100, 'RATCHETJQ_CLAIM_BATCH_SIZE'),
+    maxBlockSeconds: requiredCount(env.RATCHETJQ_MAX_BLOCK_SECONDS, 60, 'RATCHETJQ_MAX_BLOCK_SECONDS'),
+    blockingCommandTimeoutBufferMs: requiredCount(
+      env.RATCHETJQ_BLOCKING_COMMAND_TIMEOUT_BUFFER_MS,
+      3_000,
+      'RATCHETJQ_BLOCKING_COMMAND_TIMEOUT_BUFFER_MS',
+    ),
+  }
+}
+
 // The object-store key namespace migration archives land in by default, inside
 // whichever bucket each runner is configured with.
 const DEFAULT_MIGRATION_ARCHIVE_PREFIX = 'box-migrations/'
@@ -353,6 +393,7 @@ const configuration = {
   billingApiUrl: process.env.BILLING_API_URL,
   analyticsApiUrl: process.env.ANALYTICS_API_URL,
   usageExport: usageExportConfig(),
+  ratchetjq: ratchetjqConfig(),
   defaultRunner: {
     domain: process.env.DEFAULT_RUNNER_DOMAIN,
     apiKey: process.env.DEFAULT_RUNNER_API_KEY,
@@ -507,10 +548,7 @@ const configuration = {
     // runner reporting the box as started is allowed to close it out. This is
     // a backstop for a lost job-completion callback, not a fast path: raise it
     // if legitimate startups ever get closed out ahead of their own callback.
-    startConfirmationStallSeconds: parseInt(
-      process.env.BOX_SYNC_START_CONFIRMATION_STALL_SECONDS || '60',
-      10,
-    ),
+    startConfirmationStallSeconds: parseInt(process.env.BOX_SYNC_START_CONFIRMATION_STALL_SECONDS || '60', 10),
   },
   encryption: {
     key: process.env.ENCRYPTION_KEY,
