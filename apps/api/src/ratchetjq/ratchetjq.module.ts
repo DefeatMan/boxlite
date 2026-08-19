@@ -12,6 +12,7 @@ import { RATCHETJQ_JOB_ACCEPTORS, RatchetJQJobAcceptorRegistry } from './common/
 import { RatchetJQScannerPool } from './common/scanner-pool'
 import { RatchetJQTransferController } from './controllers/ratchetjq-transfer.controller'
 import { RatchetJQJob } from './entities/ratchetjq-job.entity'
+import { RatchetJQScannerService } from './services/ratchetjq-scanner.service'
 import { RatchetJQTransferService } from './services/ratchetjq-transfer.service'
 
 /**

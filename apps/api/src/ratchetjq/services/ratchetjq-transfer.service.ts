@@ -11,25 +11,7 @@ import { Repository } from 'typeorm'
 import { TypedConfigService } from '../../config/typed-config.service'
 import { RatchetJQJob } from '../entities/ratchetjq-job.entity'
 import { RatchetJQJobPeriod } from '../enums/ratchetjq-job-period.enum'
-
-/** Seconds of backoff owed to a round, as SQL over an attempt expression. */
-function backoffSeconds(attemptExpression: string): string {
-  return `POW(${attemptExpression}, 4)`
-}
-
-/**
- * When a row taking `attemptExpression`'s round may be claimed again: the later
- * of the stage's own budget and that round's backoff, so one column answers
- * both questions (spec §2.3).
- */
-function claimableAgainAt(attemptExpression: string): string {
-  return `now() + GREATEST("ttlSeconds", ${backoffSeconds(attemptExpression)}) * interval '1 second'`
-}
-
-/** When that round's backoff alone elapses (spec §2.3). */
-function backoffElapsesAt(attemptExpression: string): string {
-  return `now() + ${backoffSeconds(attemptExpression)} * interval '1 second'`
-}
+import { backoffElapsesAt, claimableAgainAt } from '../common/lease-sql'
 
 /**
  * TRANSFER — where claimed jobs come from (spec §6).
@@ -182,7 +164,7 @@ export class RatchetJQTransferService {
    */
   private async retryExpiredLeases(executor: string, executorId: string, budget: number): Promise<RatchetJQJob[]> {
     return this.claimWith(
-      `SET "leaseExpiresAt" = ${claimableAgainAt('"attempt"')},
+      `SET "leaseExpiresAt" = ${claimableAgainAt('ttlSeconds', '"attempt"')},
            "visibleAt" = ${backoffElapsesAt('"attempt"')},
            "attempt" = "attempt" + 1`,
       `WHERE "executor" = $1 AND "executorId" = $2 AND "period" = $3
@@ -213,7 +195,7 @@ export class RatchetJQTransferService {
    */
   private async reclaimAfterRestart(executor: string, executorId: string, budget: number): Promise<RatchetJQJob[]> {
     return this.claimWith(
-      `SET "leaseExpiresAt" = ${claimableAgainAt('"attempt" - 1')},
+      `SET "leaseExpiresAt" = ${claimableAgainAt('ttlSeconds', '"attempt" - 1')},
            "visibleAt" = ${backoffElapsesAt('"attempt" - 1')}`,
       `WHERE "executor" = $1 AND "executorId" = $2 AND "period" = $3
              AND "visibleAt" <= now()

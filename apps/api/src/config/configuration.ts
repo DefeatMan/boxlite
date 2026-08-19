@@ -175,16 +175,66 @@ export function usageExportConfig(env: NodeJS.ProcessEnv = process.env) {
  * whose side effect is reading the process environment.
  */
 export function ratchetjqConfig(env: NodeJS.ProcessEnv = process.env) {
-  return {
+  const settings = {
     attemptMaxN: requiredCount(env.RATCHETJQ_ATTEMPT_MAX_N, 5, 'RATCHETJQ_ATTEMPT_MAX_N'),
     claimBatchSize: requiredCount(env.RATCHETJQ_CLAIM_BATCH_SIZE, 100, 'RATCHETJQ_CLAIM_BATCH_SIZE'),
+    acceptMaxN: requiredCount(env.RATCHETJQ_ACCEPT_MAX_N, 16, 'RATCHETJQ_ACCEPT_MAX_N'),
     maxBlockSeconds: requiredCount(env.RATCHETJQ_MAX_BLOCK_SECONDS, 60, 'RATCHETJQ_MAX_BLOCK_SECONDS'),
     blockingCommandTimeoutBufferMs: requiredCount(
       env.RATCHETJQ_BLOCKING_COMMAND_TIMEOUT_BUFFER_MS,
       3_000,
       'RATCHETJQ_BLOCKING_COMMAND_TIMEOUT_BUFFER_MS',
     ),
+    scannerMaxN: requiredCount(env.RATCHETJQ_SCANNER_MAX_N, 4, 'RATCHETJQ_SCANNER_MAX_N'),
+    scannerMinN: requiredCount(env.RATCHETJQ_SCANNER_MIN_N, 2, 'RATCHETJQ_SCANNER_MIN_N'),
+    scannerSlotTtlSeconds: requiredCount(
+      env.RATCHETJQ_SCANNER_SLOT_TTL_SECONDS,
+      30,
+      'RATCHETJQ_SCANNER_SLOT_TTL_SECONDS',
+    ),
+    scannerSlotRenewSeconds: requiredCount(
+      env.RATCHETJQ_SCANNER_SLOT_RENEW_SECONDS,
+      25,
+      'RATCHETJQ_SCANNER_SLOT_RENEW_SECONDS',
+    ),
+    emptyRoundLimit: requiredCount(env.RATCHETJQ_EMPTY_ROUND_LIMIT, 5, 'RATCHETJQ_EMPTY_ROUND_LIMIT'),
+    emptyRoundSleepMs: requiredCount(env.RATCHETJQ_EMPTY_ROUND_SLEEP_MS, 5_000, 'RATCHETJQ_EMPTY_ROUND_SLEEP_MS'),
+    timeToForceSeconds: requiredCount(env.RATCHETJQ_TIME_TO_FORCE_SECONDS, 60, 'RATCHETJQ_TIME_TO_FORCE_SECONDS'),
   }
+
+  // The relationships the spec calls out as selection constraints (§8.4), plus
+  // the one the accept segment adds. Each is silent when violated, which is why
+  // they are refused at boot rather than left to be inferred from a Scanner pool
+  // behaving oddly.
+  if (settings.scannerMaxN < settings.scannerMinN) {
+    throw new Error(
+      `RATCHETJQ_SCANNER_MAX_N must be at least RATCHETJQ_SCANNER_MIN_N (${settings.scannerMinN}), got "${settings.scannerMaxN}"`,
+    )
+  }
+  // The floor also carries the run segment's global backstop, so one Scanner is
+  // not a floor — losing it leaves nothing to recover a silent runner's jobs.
+  if (settings.scannerMinN < 2) {
+    throw new Error(`RATCHETJQ_SCANNER_MIN_N must be at least 2, got "${settings.scannerMinN}"`)
+  }
+  // The accept ceiling is the Scanner's fan-out width, not just a statement
+  // LIMIT: it takes that many rows and runs that many acceptors at once. Above
+  // the claim batch it would be claiming more per accept round than the run
+  // segment takes per claim, which is backwards — an accept costs a handler call
+  // and a write, a force-advance costs part of one statement.
+  if (settings.acceptMaxN > settings.claimBatchSize) {
+    throw new Error(
+      `RATCHETJQ_ACCEPT_MAX_N must not exceed RATCHETJQ_CLAIM_BATCH_SIZE (${settings.claimBatchSize}), got "${settings.acceptMaxN}"`,
+    )
+  }
+  // Renewing no sooner than the slot expires means the slot lapses between
+  // renewals, and another process takes it while this Scanner is still running.
+  if (settings.scannerSlotRenewSeconds >= settings.scannerSlotTtlSeconds) {
+    throw new Error(
+      `RATCHETJQ_SCANNER_SLOT_RENEW_SECONDS must be below RATCHETJQ_SCANNER_SLOT_TTL_SECONDS (${settings.scannerSlotTtlSeconds}), got "${settings.scannerSlotRenewSeconds}"`,
+    )
+  }
+
+  return settings
 }
 
 // The object-store key namespace migration archives land in by default, inside

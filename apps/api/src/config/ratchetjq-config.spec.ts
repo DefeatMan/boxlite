@@ -12,8 +12,16 @@ describe('ratchetjqConfig', () => {
     expect(ratchetjqConfig({})).toEqual({
       attemptMaxN: 5,
       claimBatchSize: 100,
+      acceptMaxN: 16,
       maxBlockSeconds: 60,
       blockingCommandTimeoutBufferMs: 3_000,
+      scannerMaxN: 4,
+      scannerMinN: 2,
+      scannerSlotTtlSeconds: 30,
+      scannerSlotRenewSeconds: 25,
+      emptyRoundLimit: 5,
+      emptyRoundSleepMs: 5_000,
+      timeToForceSeconds: 60,
     })
   })
 
@@ -21,16 +29,61 @@ describe('ratchetjqConfig', () => {
     const config = ratchetjqConfig({
       RATCHETJQ_ATTEMPT_MAX_N: '7',
       RATCHETJQ_CLAIM_BATCH_SIZE: '25',
+      RATCHETJQ_ACCEPT_MAX_N: '4',
       RATCHETJQ_MAX_BLOCK_SECONDS: '30',
       RATCHETJQ_BLOCKING_COMMAND_TIMEOUT_BUFFER_MS: '1500',
+      RATCHETJQ_SCANNER_MAX_N: '8',
+      RATCHETJQ_SCANNER_MIN_N: '3',
+      RATCHETJQ_SCANNER_SLOT_TTL_SECONDS: '20',
+      RATCHETJQ_SCANNER_SLOT_RENEW_SECONDS: '15',
+      RATCHETJQ_EMPTY_ROUND_LIMIT: '9',
+      RATCHETJQ_EMPTY_ROUND_SLEEP_MS: '2500',
+      RATCHETJQ_TIME_TO_FORCE_SECONDS: '45',
     })
 
     expect(config).toEqual({
       attemptMaxN: 7,
       claimBatchSize: 25,
+      acceptMaxN: 4,
       maxBlockSeconds: 30,
       blockingCommandTimeoutBufferMs: 1_500,
+      scannerMaxN: 8,
+      scannerMinN: 3,
+      scannerSlotTtlSeconds: 20,
+      scannerSlotRenewSeconds: 15,
+      emptyRoundLimit: 9,
+      emptyRoundSleepMs: 2_500,
+      timeToForceSeconds: 45,
     })
+  })
+
+  // The pool's ceiling below its floor makes the ceiling unreachable, so no
+  // Scanner could ever start; a floor of one leaves the run segment's global
+  // backstop resting on a single process.
+  it('refuses a Scanner pool whose bracket is impossible', () => {
+    expect(() => ratchetjqConfig({ RATCHETJQ_SCANNER_MAX_N: '1' })).toThrow('RATCHETJQ_SCANNER_MAX_N')
+    expect(() => ratchetjqConfig({ RATCHETJQ_SCANNER_MIN_N: '1' })).toThrow('at least 2')
+  })
+
+  // The accept ceiling is a fan-out width, so above the claim batch it would have
+  // one accept round taking more rows than a whole claim does — and each of those
+  // rows costs an acceptor call, not part of a statement.
+  it('refuses an accept ceiling above the claim batch', () => {
+    expect(() => ratchetjqConfig({ RATCHETJQ_CLAIM_BATCH_SIZE: '8', RATCHETJQ_ACCEPT_MAX_N: '9' })).toThrow(
+      'RATCHETJQ_ACCEPT_MAX_N',
+    )
+    expect(() => ratchetjqConfig({ RATCHETJQ_CLAIM_BATCH_SIZE: '8', RATCHETJQ_ACCEPT_MAX_N: '8' })).not.toThrow()
+  })
+
+  // Renewing no sooner than the slot expires lets it lapse between renewals, so
+  // another process takes the slot while this Scanner is still scanning.
+  it('refuses a renewal period that does not beat the slot TTL', () => {
+    expect(() =>
+      ratchetjqConfig({ RATCHETJQ_SCANNER_SLOT_TTL_SECONDS: '20', RATCHETJQ_SCANNER_SLOT_RENEW_SECONDS: '20' }),
+    ).toThrow('RATCHETJQ_SCANNER_SLOT_RENEW_SECONDS')
+    expect(() =>
+      ratchetjqConfig({ RATCHETJQ_SCANNER_SLOT_TTL_SECONDS: '20', RATCHETJQ_SCANNER_SLOT_RENEW_SECONDS: '25' }),
+    ).toThrow('must be below')
   })
 
   // A malformed count must not boot. A batch size of NaN takes no rows and a
