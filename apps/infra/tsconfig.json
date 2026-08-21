@@ -20,6 +20,7 @@
     "sst.config.ts",
     "artifacts/**/*.ts",
     "bootstrap/**/*.ts",
+    "deploy-v2/**/*.ts",
     "deployment/**/*.ts",
     "policies/**/*.ts",
     "runner/**/*.ts",

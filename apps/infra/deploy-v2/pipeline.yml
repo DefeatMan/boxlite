@@ -1,0 +1,166 @@
+name: BoxLite stack
+
+# The dependency graph stack/deploy.ts holds as statement order, written down.
+#
+# Read by deploy-v2/pipeline/manifest.ts, not by GitHub — it lives outside .github/workflows/, so
+# nothing dispatches it. Workflow syntax because this is the same shape .github/workflows/
+# deploy-infra.yml already uses for the build legs, and because `needs:` is the vocabulary a
+# reviewer of this repo already reads.
+#
+#   needs:    the jobs that must run first, and the ONLY jobs whose outputs this one may read.
+#             Direct-only, as on GitHub: reaching a grandparent's value means declaring the edge.
+#   uses:     the module implementing the job.
+#   with:     its retry policy. Retry covers the module's `resolve` phase — the async work it does
+#             before it declares anything. Resource declaration is registration, so it runs once;
+#             re-running it would re-register the same URNs. Defaults, when a key is omitted:
+#             retry-attempts 3, retry-delay-seconds 2, retry-max-delay-seconds 30. Waits double
+#             per retry up to the maximum.
+#   outputs:  the context keys the module returns. Checked against what it actually returns, so an
+#             undeclared value cannot become an edge nobody wrote down.
+
+on:
+  workflow_call:
+
+jobs:
+  config:
+    name: Stage configuration and caller identity
+    uses: ./modules/config.ts
+    # The only job whose resolve phase makes a network call — sts:GetCallerIdentity — so it is the
+    # only one whose retry is about the cloud rather than about loading a builder. A cold or
+    # throttled STS is the failure this covers; five tries over a widening wait outlasts it.
+    with:
+      retry-attempts: 5
+      retry-delay-seconds: 2
+      retry-max-delay-seconds: 20
+    outputs:
+      region: AWS region every resource is created in
+      accountId: Account the deploy role resolved to
+      isProd: Whether this stage keeps durable state on teardown
+      stackDomain: Apex domain the stack's services hang off
+      proxyDomain: Domain boxes are reached through
+      proxyProtocol: Scheme the proxy domain is served over
+      proxyTemplateUrl: Per-box URL template handed to the API
+      releaseVersion: Version this deploy reports as its own
+      oidcIssuer: Issuer the API validates tokens against
+      publicOidcIssuer: Browser-facing issuer, when it differs from the internal one
+      runnerInventory: Declared runner hosts for this stage
+      defaultRunnerConfig: The inventory entry the control plane registers by default
+      cloudflareDns: DNS adapter every custom domain is created through
+      serviceDomain: Builds a per-service domain under the stack domain
+      stripTrailingSlash: Normalizes a service URL for path concatenation
+      randomKey: Creates a stage-scoped generated secret
+
+  boundary:
+    name: Pin every IAM role to the stage permissions boundary
+    # Deliberately empty. This job reads nothing — it registers a $transform over aws.iam.Role,
+    # and the edge that matters is the one `foundation` declares on it, because the transform has
+    # to exist before the first role does. An edge on `config` would be decoration.
+    needs: []
+    uses: ./modules/boundary.ts
+    with:
+      retry-attempts: 2
+
+  s3-access:
+    name: Declare the box-storage access role identity
+    # Also empty, for a different reason: the role's NAME is all this produces, and a name is
+    # derivable from $app alone. The role itself is created inside the api job, because its trust
+    # policy names the task role — declaring the name up front is what breaks that cycle.
+    # No `with:` here or on the two jobs below: retry covers a module's resolve phase, and these
+    # three have none — every line they run is a resource declaration, which the Pulumi engine
+    # owns retrying. A policy on them would advertise a guarantee this pipeline cannot make.
+    needs: []
+    uses: ./modules/s3-access.ts
+    outputs:
+      s3AccessRoleName: Deterministic name the API assumes for per-organization S3 sessions
+      s3AccessRoleArn: That role's ARN, usable before the role exists
+
+  secrets:
+    name: Generated and stored stack secrets
+    needs: [config]
+    uses: ./modules/secrets.ts
+    outputs:
+      encryptionKey: Application data encryption key
+      encryptionSalt: Application data encryption salt
+      proxyApiKey: Shared credential between the API and the proxy
+      adminApiKey: Credential for administrative and collector routes
+      defaultRunnerApiKey: Credential the default runner authenticates with
+      defaultRunnerName: Control-plane name of the default runner
+      pgAdminPassword: Login for the pgAdmin edge service
+      oidcClientId: OIDC client id, required with no deployable fallback
+      oidcMgmtClientId: OIDC management API client id
+      oidcMgmtClientSecret: OIDC management API client secret
+      posthogApiKey: Product analytics key; empty disables it
+      svixAuthToken: Webhook delivery token; empty disables it
+      usageExportToken: Credential the usage exporter presents to Commerce; empty disables it
+
+  foundation:
+    name: VPC, database, cache, object storage and cluster
+    needs: [config, boundary]
+    uses: ./modules/foundation.ts
+    with:
+      retry-attempts: 2
+    outputs:
+      foundation: The VPC, Postgres, Redis, bucket and ECS cluster every service runs on
+
+  router:
+    name: CloudFront router for the stack domain
+    needs: [config]
+    uses: ./modules/router.ts
+    outputs:
+      router: Router fronting the dashboard and the API
+
+  clickhouse:
+    name: ClickHouse storage backend
+    needs: [config, foundation]
+    uses: ./modules/clickhouse.ts
+    with:
+      retry-attempts: 3
+    outputs:
+      clickHouseResources: The disabled, managed or self-hosted backend this stage resolved to
+      collectorExporters: Exporter list for metrics and logs
+      collectorTraceExporters: Exporter list for traces, which additionally fan out to Jaeger
+
+  observability:
+    name: OpenTelemetry collector and Jaeger ingest
+    needs: [config, foundation, secrets, clickhouse]
+    uses: ./modules/observability.ts
+    with:
+      retry-attempts: 2
+    outputs:
+      otelCollector: The collector service, depended on by the ClickHouse readiness gate
+      otelCollectorOtlpHttpUrl: OTLP/HTTP endpoint the API, runners, hosts and boxes emit to
+
+  clickhouse-ready:
+    name: Gate writes on a reachable ClickHouse
+    needs: [config, clickhouse, observability]
+    uses: ./modules/clickhouse-ready.ts
+    with:
+      retry-attempts: 2
+    outputs:
+      clickHouseReadyDependency: What the API waits on before it writes; undefined when disabled
+
+  api:
+    name: NestJS control plane
+    needs: [config, foundation, secrets, s3-access, clickhouse, clickhouse-ready, observability]
+    uses: ./modules/api.ts
+    with:
+      retry-attempts: 2
+    outputs:
+      api: The API service, which the edge and runner jobs both point at
+
+  edge:
+    name: Proxy, pgAdmin and mail edge services
+    needs: [config, foundation, secrets, router, observability, api]
+    uses: ./modules/edge.ts
+    with:
+      retry-attempts: 2
+
+  runners:
+    name: EC2 runner fleet with nested KVM
+    needs: [config, foundation, secrets, observability, api]
+    uses: ./modules/runners.ts
+    # The heaviest resolve phase after config: it loads the runner artifact helpers, and its
+    # declare phase reads the deploy scope and resolves the artifact this stage installs.
+    with:
+      retry-attempts: 3
+      retry-delay-seconds: 3
