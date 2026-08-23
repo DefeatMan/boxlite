@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: AGPL-3.0
  */
 
-import { OrganizationEmail, OrganizationPlan, OrganizationWallet } from '@/billing-api'
+import { OrganizationEmail, OrganizationPlan, OrganizationWallet, UsagePrices } from '@/billing-api'
 import { Invoice, PaginatedInvoices } from '@/billing-api/types/Invoice'
 import { PaymentUrl } from '@/billing-api/types/OrganizationWallet'
 import { Plan } from '@/billing-api/types/Plan'
@@ -97,6 +97,20 @@ export const handlers = [
   }),
   http.get(`${BILLING_API_URL}/organization/:organizationId/portal-url`, async () => {
     return HttpResponse.json<string>(`${BILLING_API_URL}/portal`)
+  }),
+  http.get(`${BILLING_API_URL}/usage-prices`, async () => {
+    // The live dev response, verbatim — including the fractional cents that make
+    // disk $0.00 under whole-cent formatting.
+    return HttpResponse.json<UsagePrices>({
+      schemaVersion: 1,
+      currency: 'USD',
+      prices: [
+        { code: 'cpu', unit: 'core_hour', unitPriceCents: 5.04 },
+        { code: 'gpu', unit: 'gpu_hour', unitPriceCents: 100 },
+        { code: 'mem', unit: 'gib_hour', unitPriceCents: 1.44 },
+        { code: 'disk', unit: 'gib_hour', unitPriceCents: 0.018 },
+      ],
+    })
   }),
   http.get(`${BILLING_API_URL}/plan`, async () => {
     // Mirrors the billing service's own standard-plan catalog (Subscription.md

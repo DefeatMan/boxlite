@@ -9,10 +9,13 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Switch } from '@/components/ui/switch'
 import { RoutePath } from '@/enums/RoutePath'
 import { useCreateBoxMutation } from '@/hooks/mutations/useCreateBoxMutation'
+import { useConfig } from '@/hooks/useConfig'
 import { useSelectedOrganization } from '@/hooks/useSelectedOrganization'
 import { getBoxRouteId } from '@/lib/box-identity'
+import { boxHourlyPrice, formatPriceCents, type BoxSpec } from '@/lib/box-price'
 import { handleApiError } from '@/lib/error-handling'
 import { formatLifecycleSeconds, validateLifecyclePolicy, validateMounts, type BoxVolumeMount } from '@/lib/cloudBox'
+import { useUsagePricesQuery } from '@/hooks/queries/useUsagePricesQuery'
 import { useVolumesQuery } from '@/hooks/queries/useVolumesQuery'
 import { VolumeState } from '@boxlite-ai/api-client'
 import { cn } from '@/lib/utils'
@@ -191,6 +194,92 @@ function CappedResourcesNote({ items }: { items: { label: string; unit: string; 
       >
         {SUPPORT_EMAIL}
       </a>
+    </div>
+  )
+}
+
+// ── Price ───────────────────────────────────────────────────────────────────
+// Quoted from Commerce's published rates so the number tracks the size chosen
+// above. Three absences are kept distinct, because collapsing them is how a
+// dialog ends up claiming a box is free when it is not:
+//
+//   no billing service  — nothing is charged, and saying "free" is the truth
+//   rates still loading — we do not know the price yet
+//   rates unavailable   — we do not know the price, and usage is metered anyway
+//
+// Only the first may render as $0.00. Commerce settles the real charge, so this
+// is labelled an estimate rather than a price.
+function BoxPriceRow({ cpu, memory, disk }: BoxSpec) {
+  const config = useConfig()
+  const pricesQuery = useUsagePricesQuery()
+  const quote = boxHourlyPrice(pricesQuery.data, { cpu, memory, disk })
+  const [breakdownOpen, setBreakdownOpen] = useState(false)
+
+  const ROW = 'flex shrink-0 flex-col gap-1 border-t border-border px-4 py-4 sm:px-6'
+  const LABEL = 'font-mono text-[10px] uppercase tracking-[1.2px] text-muted-foreground'
+  const FIGURE = 'font-mono text-[20px] font-bold tracking-[-0.5px] sm:text-[24px]'
+
+  if (!config.billingApiUrl) {
+    return (
+      <div className={cn(ROW, 'sm:flex-row sm:items-baseline sm:justify-between')}>
+        <span className={LABEL}>Price per hour</span>
+        <span className={FIGURE}>
+          $0.00 <span className="text-[11px] font-normal text-muted-foreground">/ hr · free in preview</span>
+        </span>
+      </div>
+    )
+  }
+
+  if (!quote) {
+    const loading = pricesQuery.isLoading
+    return (
+      <div className={ROW}>
+        <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
+          <span className={LABEL}>Est. price per hour</span>
+          <span className={cn(FIGURE, 'text-muted-foreground')}>{loading ? '—' : 'Unavailable'}</span>
+        </div>
+        <PanelNote>
+          {loading
+            ? 'Fetching current rates.'
+            : 'Current rates could not be loaded. Usage is still metered — this box is not free.'}
+        </PanelNote>
+      </div>
+    )
+  }
+
+  // The total is the decision; how it splits across CPU/memory/disk is the
+  // audit. Collapsed by default so the row stays one line, on the same `▸`
+  // affordance the sibling Size / Lifecycle / Volumes labels already use.
+  return (
+    <div className={ROW}>
+      <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
+        <button
+          type="button"
+          aria-expanded={breakdownOpen}
+          aria-controls="box-price-breakdown"
+          onClick={() => setBreakdownOpen((wasOpen) => !wasOpen)}
+          className={cn(LABEL, 'self-start transition-colors hover:text-foreground')}
+        >
+          <span style={{ color: BRAND }}>{breakdownOpen ? '▾' : '▸'}</span> Est. price per hour
+        </button>
+        <span className={FIGURE}>
+          {formatPriceCents(quote.totalCents)}
+          <span className="text-[11px] font-normal text-muted-foreground"> / hr</span>
+        </span>
+      </div>
+      {breakdownOpen && (
+        <div id="box-price-breakdown" className="mt-1 flex flex-col gap-0.5">
+          {quote.lines.map((line) => (
+            <div key={line.code} className="flex items-baseline justify-between gap-3 font-mono text-[11px]">
+              <span className="text-muted-foreground">
+                {line.label} · {line.quantity} {line.quantityUnit} × {formatPriceCents(line.unitPriceCents, 6)}/
+                {line.quantityUnit}·hr
+              </span>
+              <span className="tabular-nums text-foreground">{formatPriceCents(line.subtotalCents, 6)}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -901,13 +990,8 @@ export const CreateBoxDialog = ({
           </div>
         </div>
 
-        {/* price — billing is not enabled yet, so everything is free ($0) */}
-        <div className="flex shrink-0 flex-col gap-1 border-t border-border px-4 py-4 sm:flex-row sm:items-baseline sm:justify-between sm:px-6">
-          <span className="font-mono text-[10px] uppercase tracking-[1.2px] text-muted-foreground">Price per hour</span>
-          <span className="font-mono text-[20px] font-bold tracking-[-0.5px] sm:text-[24px]">
-            $0.00 <span className="text-[11px] font-normal text-muted-foreground">/ hr · free in preview</span>
-          </span>
-        </div>
+        {/* price — quoted from Commerce's published rates for the size above */}
+        <BoxPriceRow cpu={cpu} memory={memory} disk={disk} />
 
         {/* footer — any blocking reason is rendered here, beside the button it
             disables, never inside a collapsible section where it can be hidden */}

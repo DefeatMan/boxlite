@@ -16,6 +16,7 @@ import {
   Plan,
   SeriesGranularity,
   UsageFundingBucket,
+  UsagePrices,
   WalletTopUpRequest,
 } from './types'
 
@@ -111,6 +112,16 @@ export class BillingApiClient {
 
   public async listPlans(): Promise<Plan[]> {
     const response = await this.axiosInstance.get('/plan')
+    return response.data
+  }
+
+  /**
+   * Commerce serves this one anonymously, but it is reached through this client
+   * anyway so the dashboard keeps a single billing base URL. The bearer token
+   * the client always sends is simply ignored.
+   */
+  public async getUsagePrices(): Promise<UsagePrices> {
+    const response = await this.axiosInstance.get('/usage-prices')
     return response.data
   }
 

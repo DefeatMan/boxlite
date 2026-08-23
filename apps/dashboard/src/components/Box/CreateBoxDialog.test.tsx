@@ -11,7 +11,22 @@ import { CreateBoxDialog, resolvePerBoxLimits } from './CreateBoxDialog'
 import { validateMountPath, validateMounts } from '@/lib/cloudBox'
 
 // Mutable org returned by the mocked hook; each test sets `state.org`.
-const state = vi.hoisted(() => ({ org: null as unknown }))
+const state = vi.hoisted(() => ({
+  org: null as unknown,
+  config: { billingApiUrl: 'http://billing.test' } as { billingApiUrl?: string },
+  pricesQuery: { data: undefined, isLoading: false } as { data: unknown; isLoading: boolean },
+}))
+
+const LIVE_PRICES = {
+  schemaVersion: 1,
+  currency: 'USD',
+  prices: [
+    { code: 'cpu', unit: 'core_hour', unitPriceCents: 5.04 },
+    { code: 'gpu', unit: 'gpu_hour', unitPriceCents: 100 },
+    { code: 'mem', unit: 'gib_hour', unitPriceCents: 1.44 },
+    { code: 'disk', unit: 'gib_hour', unitPriceCents: 0.018 },
+  ],
+}
 
 const mutationMocks = vi.hoisted(() => ({
   createBox: vi.fn(),
@@ -22,6 +37,10 @@ vi.mock('@/hooks/useSelectedOrganization', () => ({
 }))
 vi.mock('@/hooks/queries/useVolumesQuery', () => ({
   useVolumesQuery: () => ({ data: [{ id: 'vol-1', name: 'subtitle-models', state: 'ready' }] }),
+}))
+vi.mock('@/hooks/useConfig', () => ({ useConfig: () => state.config }))
+vi.mock('@/hooks/queries/useUsagePricesQuery', () => ({
+  useUsagePricesQuery: () => state.pricesQuery,
 }))
 vi.mock('@/hooks/mutations/useCreateBoxMutation', () => ({
   useCreateBoxMutation: () => ({ mutateAsync: mutationMocks.createBox }),
@@ -73,6 +92,8 @@ describe('CreateBoxDialog per-org resource cap', () => {
   beforeEach(() => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
     state.org = makeOrg({ maxCpuPerBox: 4, maxMemoryPerBox: 8, maxDiskPerBox: 10 })
+    state.config = { billingApiUrl: 'http://billing.test' }
+    state.pricesQuery = { data: LIVE_PRICES, isLoading: false }
   })
 
   afterEach(() => {
@@ -542,5 +563,117 @@ describe('CreateBoxDialog per-org resource cap', () => {
     const trigger = document.querySelector<HTMLButtonElement>('button[aria-label="Stop when idle"]')
     expect(trigger).toBeTruthy()
     expect(trigger?.textContent).toBe('45m')
+  })
+})
+
+describe('CreateBoxDialog hourly price', () => {
+  let root: Root | null = null
+
+  beforeEach(() => {
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true
+    state.org = makeOrg({ maxCpuPerBox: 4, maxMemoryPerBox: 8, maxDiskPerBox: 50 })
+    state.config = { billingApiUrl: 'http://billing.test' }
+    state.pricesQuery = { data: LIVE_PRICES, isLoading: false }
+  })
+
+  afterEach(() => {
+    act(() => root?.unmount())
+    root = null
+    document.body.innerHTML = ''
+    vi.restoreAllMocks()
+  })
+
+  async function renderOpen() {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    await act(async () => {
+      root ??= createRoot(host)
+      root.render(<CreateBoxDialog open onOpenChange={() => {}} />)
+    })
+    await flush()
+  }
+
+  async function pickSize(label: string) {
+    const sizeGroup = document.querySelector('[aria-label="Size"]')
+    const chip = sizeGroup
+      ? [...sizeGroup.querySelectorAll<HTMLButtonElement>('button')].find((b) =>
+          new RegExp(`^${label}`).test(b.textContent ?? ''),
+        )
+      : undefined
+    await act(async () => chip?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    await flush()
+  }
+
+  it('quotes the default box from the published rates instead of $0.00', async () => {
+    await renderOpen()
+
+    // Small = 1 vCPU / 1 GiB / 10 GiB → 5.04¢ + 1.44¢ + 0.18¢
+    expect(document.body.textContent).toContain('$0.0666')
+    expect(document.body.textContent).not.toContain('free in preview')
+  })
+
+  function breakdownToggle() {
+    return [...document.querySelectorAll<HTMLButtonElement>('button')].find((b) =>
+      /Est\. price per hour/.test(b.textContent ?? ''),
+    )
+  }
+
+  it('keeps the breakdown collapsed until asked for it', async () => {
+    await renderOpen()
+
+    expect(breakdownToggle()?.getAttribute('aria-expanded')).toBe('false')
+    expect(document.body.textContent).not.toContain('vCPU·hr')
+    // The total is the decision, so it stays visible while the split is folded.
+    expect(document.body.textContent).toContain('$0.0666')
+  })
+
+  it('shows what the total is made of once expanded, including the disk line whole cents would hide', async () => {
+    await renderOpen()
+
+    const toggle = breakdownToggle()
+    await act(async () => toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    await flush()
+
+    const text = document.body.textContent ?? ''
+    expect(breakdownToggle()?.getAttribute('aria-expanded')).toBe('true')
+    expect(text).toContain('CPU · 1 vCPU × $0.0504/vCPU·hr')
+    expect(text).toContain('Memory · 1 GiB × $0.0144/GiB·hr')
+    expect(text).toContain('Disk · 10 GiB × $0.00018/GiB·hr')
+  })
+
+  it('re-quotes when the size changes', async () => {
+    await renderOpen()
+    await pickSize('Large')
+
+    // Large = 4 vCPU / 8 GiB / 50 GiB → 20.16¢ + 11.52¢ + 0.9¢
+    expect(document.body.textContent).toContain('$0.3258')
+  })
+
+  it('says free only when there is no billing service to charge anything', async () => {
+    state.config = {}
+    state.pricesQuery = { data: undefined, isLoading: false }
+    await renderOpen()
+
+    expect(document.body.textContent).toContain('free in preview')
+  })
+
+  it('never reads as free when the rates fail to load', async () => {
+    state.pricesQuery = { data: undefined, isLoading: false }
+    await renderOpen()
+
+    const text = document.body.textContent ?? ''
+    expect(text).toContain('Unavailable')
+    expect(text).toContain('this box is not free')
+    expect(text).not.toContain('$0.00 ')
+  })
+
+  it('declines to quote rather than understate when a resource has no price', async () => {
+    state.pricesQuery = {
+      data: { ...LIVE_PRICES, prices: LIVE_PRICES.prices.filter((p) => p.code !== 'disk') },
+      isLoading: false,
+    }
+    await renderOpen()
+
+    expect(document.body.textContent).toContain('Unavailable')
   })
 })

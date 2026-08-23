@@ -44,6 +44,7 @@ export const queryKeys = {
   billing: {
     all: ['billing'] as const,
     plans: () => [...queryKeys.billing.all, 'plans'] as const,
+    usagePrices: () => [...queryKeys.billing.all, 'usage-prices'] as const,
     emails: (organizationId: string) => [...queryKeys.billing.all, organizationId, 'emails'] as const,
     portalUrl: (organizationId: string) => [...queryKeys.billing.all, organizationId, 'portal-url'] as const,
     checkoutUrl: (organizationId: string) => [...queryKeys.billing.all, organizationId, 'checkout-url'] as const,
