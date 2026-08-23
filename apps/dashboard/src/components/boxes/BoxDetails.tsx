@@ -29,7 +29,7 @@ import { useConfig } from '@/hooks/useConfig'
 import { useRegions } from '@/hooks/useRegions'
 import { useBoxWsSync } from '@/hooks/useBoxWsSync'
 import { useSelectedOrganization } from '@/hooks/useSelectedOrganization'
-import { getBoxPublicId, getBoxPublicIdLabel } from '@/lib/box-identity'
+import { getBoxDisplayName, getBoxPublicId, getBoxPublicIdLabel } from '@/lib/box-identity'
 import { handleApiError } from '@/lib/error-handling'
 import { setLocalStorageItem } from '@/lib/local-storage'
 import {
@@ -119,6 +119,7 @@ export default function BoxDetails() {
   const [showOnboardingDialog, setShowOnboardingDialog] = useState(false)
   const [onboardingProgress, setOnboardingProgress] = useState<OnboardingProgress>(() => readOnboardingProgress(userId))
   const [copied, setCopied] = useState(false)
+  const [copiedName, setCopiedName] = useState(false)
   const [terminalRefreshSignal, setTerminalRefreshSignal] = useState(0)
   const refreshRef = useRef<HTMLSpanElement>(null)
 
@@ -270,6 +271,17 @@ export default function BoxDetails() {
     setTimeout(() => setCopied(false), 1300)
   }
 
+  const copyName = () => {
+    if (!box) return
+    try {
+      navigator.clipboard?.writeText(getBoxDisplayName(box))
+    } catch {
+      /* clipboard may be unavailable */
+    }
+    setCopiedName(true)
+    setTimeout(() => setCopiedName(false), 1300)
+  }
+
   return (
     <div className="flex h-[calc(100svh-60px)] min-h-0 flex-col gap-[14px] px-4 pb-[22px] pt-4 font-mono text-[13px] sm:px-6 lg:px-[40px]">
       <OnboardingGuideDialog
@@ -322,8 +334,25 @@ export default function BoxDetails() {
           {/* identity strip */}
           <div className="flex flex-none flex-col gap-4 border-b border-dashed border-border pb-[14px] lg:flex-row lg:items-center lg:gap-[18px]">
             <div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row sm:items-center sm:gap-[14px]">
-              <span className="max-w-full truncate text-[20px] font-medium tracking-[-0.4px] sm:max-w-[360px] sm:text-[22px]">
-                {getBoxPublicIdLabel(box)}
+              <span className="flex min-w-0 items-center gap-[9px]">
+                <span
+                  className="max-w-full truncate text-[20px] font-medium tracking-[-0.4px] sm:max-w-[360px] sm:text-[22px]"
+                  title={getBoxDisplayName(box)}
+                >
+                  {getBoxDisplayName(box)}
+                </span>
+                <button
+                  type="button"
+                  onClick={copyName}
+                  title="copy name"
+                  className="shrink-0 text-muted-foreground hover:text-foreground"
+                >
+                  {copiedName ? (
+                    <Check className="size-[15px]" style={{ color: STATUS.running }} />
+                  ) : (
+                    <Copy className="size-[15px]" />
+                  )}
+                </button>
               </span>
               <span className="flex flex-none items-center gap-2 text-[13px]">
                 <span

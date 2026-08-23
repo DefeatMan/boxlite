@@ -190,6 +190,14 @@ describe('BoxDetails refresh', () => {
     expect(document.querySelector('[data-testid="terminal-frame"]')).toBe(frameBeforeRefresh)
   })
 
+  // The list page navigates here by id, so the name the user gave the box must
+  // survive the transition — the id alone is not how they recognize it.
+  it('shows the box name in the identity strip', async () => {
+    await renderBoxDetails()
+
+    expect(document.body.textContent).toContain('box-one')
+  })
+
   // A box stores an opaque volume handle, so the mount list is only readable
   // once it is resolved back to the volume's name. The fallback matters just as
   // much: a volume deleted out from under a running box must still render its
