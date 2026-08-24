@@ -49,7 +49,6 @@
  *                Create the Auth0 SPA app, custom API, and post-login Action
  *                (requires `npm run login` first). NOT idempotent — Auth0 has no
  *                upsert for apps or APIs, so rerunning creates duplicates.
- *
  * Sign-in: run `npm run login` first, which walks the browser sign-in for every
  * provider this needs (AWS via `aws login`, AWS CLI 2.32.0+ — no IAM user,
  * access keys, or IAM Identity Center setup required). An existing profile or
@@ -679,6 +678,14 @@ function auth0Run(args: any) {
   execFileSync('auth0', args, { stdio: ['ignore', 'ignore', 'pipe'], timeout: 60_000, killSignal: 'SIGTERM' })
 }
 
+function requireAuth0Session() {
+  try {
+    execFileSync('auth0', ['tenants', 'list'], { stdio: 'ignore', timeout: 30_000, killSignal: 'SIGTERM' })
+  } catch (cause) {
+    throw new Error('the auth0 CLI is not authenticated; run `npm run login` and complete the browser consent', { cause })
+  }
+}
+
 /*
  * Collapses the five manual Auth0 dashboard steps in README's "OIDC provider
  * setup" into API calls. The `auth0 login` device-code token already carries
@@ -689,11 +696,7 @@ function auth0Run(args: any) {
  * explicit flag for that reason.
  */
 function provisionAuth0({ stackDomain }: any) {
-  try {
-    execFileSync('auth0', ['tenants', 'list'], { stdio: 'ignore', timeout: 30_000, killSignal: 'SIGTERM' })
-  } catch (cause) {
-    throw new Error('the auth0 CLI is not authenticated; run `npm run login` and complete the browser consent', { cause })
-  }
+  requireAuth0Session()
 
   const app = auth0Json(spaApplicationArgs({ stackDomain }))
   const clientId = app.client_id ?? app.clientId
@@ -870,6 +873,7 @@ async function main() {
     }
     provisionAuth0({ stackDomain })
   }
+
   await ensureCloudflareCredentials({ awsCliPath, region, stage, repo, force })
   // Before the first timed sst call, not inside it — see ensureSstPlatform. Both steps below are
   // `sst secret` calls, so neither can run until the platform sst needs is installed.

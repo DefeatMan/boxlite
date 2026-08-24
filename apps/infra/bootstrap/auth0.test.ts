@@ -103,4 +103,3 @@ test('enableRpLogoutDiscoveryArgs flips the tenant logout-discovery setting', ()
     oidc_logout: { rp_logout_end_session_endpoint_discovery: true },
   })
 })
-

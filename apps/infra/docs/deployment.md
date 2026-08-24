@@ -97,6 +97,10 @@ npm run bootstrap -- --stage dev --provision-auth0
 
 gh workflow run deploy-infra.yml --ref main -f stage=dev -f apply=false  # preview
 gh workflow run deploy-infra.yml --ref main -f stage=dev -f apply=true   # deploy
+
+# After the dashboard deploy publishes /auth0/*, preview and apply Free-plan branding:
+npm run auth0:universal-login -- preview --stage dev
+npm run auth0:universal-login -- apply --stage dev
 ```
 
 `npm run bootstrap` is safe to re-run. It prompts once per stage for the
@@ -107,6 +111,17 @@ Cloudflare provider. On that Environment it also sets the `AWS_ACCOUNT_ID` and
 `AWS_REGION` variables, which the deploy workflow needs before it has any AWS
 credentials. `--force` re-prompts for an already-seeded Cloudflare credential. Its
 full flag list is in the script's header comment.
+
+Universal Login assets ship in the dashboard/API deployment under `/auth0/`.
+Their exact sources, content-hashed filenames, license, headers, and update
+procedure are recorded in
+[`auth0/branding/ASSETS.md`](../auth0/branding/ASSETS.md). Deploy the dashboard
+first. The dedicated command resolves URLs from its reviewed stage target and
+fails before its first Auth0 write unless the live stack identity matches and
+every asset is reachable, has the expected media type, and permits the public
+Universal Login origin.
+It applies the Auth0 theme and custom prompt text only. Widget geometry remains
+Auth0-managed because custom Universal Login page templates require a paid plan.
 
 A deploy takes 10–15 minutes and prints the service URLs. On a transient
 registry error, just rerun — SST resumes from the failed step.
