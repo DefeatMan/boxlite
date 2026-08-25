@@ -275,11 +275,10 @@ mod tests {
 
     #[test]
     fn untrusted_import_rejects_nested_virtualization() {
+        let mut advanced = crate::runtime::advanced_options::AdvancedBoxOptions::default();
+        advanced.nested_virtualization = true;
         let options = BoxOptions {
-            advanced: crate::runtime::advanced_options::AdvancedBoxOptions {
-                nested_virtualization: true,
-                ..Default::default()
-            },
+            advanced,
             ..Default::default()
         };
 
@@ -293,11 +292,10 @@ mod tests {
 
     #[test]
     fn untrusted_import_rejects_privileged() {
+        let mut advanced = crate::runtime::advanced_options::AdvancedBoxOptions::default();
+        advanced.privileged = true;
         let options = BoxOptions {
-            advanced: crate::runtime::advanced_options::AdvancedBoxOptions {
-                privileged: true,
-                ..Default::default()
-            },
+            advanced,
             ..Default::default()
         };
 
@@ -373,15 +371,14 @@ mod tests {
 
     #[test]
     fn trusted_import_preserves_archive_configuration() {
-        let mut options = BoxOptions {
-            advanced: crate::runtime::advanced_options::AdvancedBoxOptions {
-                nested_virtualization: true,
-                privileged: true,
-                ..Default::default()
-            },
+        let mut advanced = crate::runtime::advanced_options::AdvancedBoxOptions::default();
+        advanced.nested_virtualization = true;
+        advanced.privileged = true;
+        advanced.security = SecurityOptions::disabled();
+        let options = BoxOptions {
+            advanced,
             ..Default::default()
         };
-        options.advanced.security = SecurityOptions::disabled();
 
         let resolved =
             options_from_manifest(&v3_manifest(options), ArchiveImportPolicy::Trusted).unwrap();
@@ -393,18 +390,21 @@ mod tests {
 
     #[test]
     fn imported_capability_policy_is_validated_before_install() {
+        let mut advanced = crate::runtime::advanced_options::AdvancedBoxOptions::default();
+        advanced
+            .set_capabilities(Some(
+                crate::runtime::advanced_options::ContainerCapabilities {
+                    drop: vec!["NET-ADMIN".into()],
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
         let manifest = ArchiveManifest {
             version: 3,
             box_name: Some("untrusted".into()),
             image: "alpine:latest".into(),
             box_options: Some(BoxOptions {
-                advanced: crate::runtime::advanced_options::AdvancedBoxOptions {
-                    capabilities: crate::runtime::advanced_options::ContainerCapabilities {
-                        drop: vec!["NET-ADMIN".into()],
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
+                advanced,
                 ..Default::default()
             }),
             guest_disk_checksum: String::new(),

@@ -196,9 +196,13 @@ impl CreateBoxRequest {
             volumes,
             detach: Some(options.detach),
             tty: options.tty.then_some(true),
-            advanced: (!options.advanced.capabilities.is_empty()).then(|| {
+            // `Some`, not "non-empty", decides whether this reaches the wire:
+            // an explicitly empty policy is still explicit, and collapsing it
+            // into the same shape as "never touched" would leave the server
+            // unable to tell the two apart.
+            advanced: options.advanced.capabilities().map(|capabilities| {
                 CreateBoxAdvancedOptions {
-                    capabilities: options.advanced.capabilities.clone(),
+                    capabilities: capabilities.clone(),
                 }
             }),
             // The deprecated remove-on-stop flag was never applied by the cloud
@@ -729,14 +733,15 @@ mod tests {
 
     #[test]
     fn test_create_box_request_carries_container_capabilities() {
+        let mut advanced = crate::AdvancedBoxOptions::default();
+        advanced
+            .set_capabilities(Some(ContainerCapabilities {
+                add: vec!["SYS_ADMIN".into()],
+                drop: vec!["CAP_NET_RAW".into()],
+            }))
+            .unwrap();
         let opts = BoxOptions {
-            advanced: crate::AdvancedBoxOptions {
-                capabilities: ContainerCapabilities {
-                    add: vec!["SYS_ADMIN".into()],
-                    drop: vec!["CAP_NET_RAW".into()],
-                },
-                ..Default::default()
-            },
+            advanced,
             ..Default::default()
         };
 
@@ -754,6 +759,30 @@ mod tests {
         let defaults = CreateBoxRequest::from_options(&BoxOptions::default(), None);
         let defaults_json = serde_json::to_value(defaults).expect("serialize defaults");
         assert!(defaults_json.get("advanced").is_none());
+    }
+
+    /// An explicit, empty policy is still explicit — it must reach the wire,
+    /// not collapse into the same "advanced omitted" shape an untouched
+    /// field produces, or the server can no longer tell the two apart.
+    #[test]
+    fn test_create_box_request_carries_an_explicitly_empty_capability_policy() {
+        let mut advanced = crate::AdvancedBoxOptions::default();
+        advanced
+            .set_capabilities(Some(ContainerCapabilities::default()))
+            .unwrap();
+        let opts = BoxOptions {
+            advanced,
+            ..Default::default()
+        };
+
+        let req = CreateBoxRequest::from_options(&opts, None);
+        assert!(
+            req.advanced.is_some(),
+            "an explicit empty policy must still be serialized"
+        );
+
+        let json = serde_json::to_value(&req).expect("serialize create request");
+        assert!(json.get("advanced").is_some());
     }
 
     #[test]
@@ -832,12 +861,11 @@ mod tests {
         use crate::runtime::advanced_options::AdvancedBoxOptions;
         use crate::runtime::options::{BoxOptions, RootfsSpec};
 
+        let mut advanced = AdvancedBoxOptions::default();
+        advanced.security = SecurityOptions::enabled();
         let opts = BoxOptions {
             rootfs: RootfsSpec::Image("alpine:latest".into()),
-            advanced: AdvancedBoxOptions {
-                security: SecurityOptions::enabled(),
-                ..Default::default()
-            },
+            advanced,
             ..Default::default()
         };
         let req = CreateBoxRequest::from_options(&opts, None);
