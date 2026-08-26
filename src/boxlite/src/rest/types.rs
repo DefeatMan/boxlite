@@ -221,7 +221,7 @@ pub(crate) struct CreateBoxAdvancedOptions {
 }
 
 /// A mount on the wire. Only managed volumes exist here — a REST server has no
-/// host filesystem to bind from, so `validate_remote_volumes` refuses a host
+/// host filesystem to bind from, so `BoxOptions::sanitize_remote` refuses a host
 /// bind at create and this type has no field for one.
 #[derive(Debug, Serialize)]
 pub(crate) struct CreateBoxVolumeSpec {
@@ -233,7 +233,7 @@ pub(crate) struct CreateBoxVolumeSpec {
 impl From<&crate::runtime::options::VolumeSpec> for CreateBoxVolumeSpec {
     fn from(volume: &crate::runtime::options::VolumeSpec) -> Self {
         Self {
-            // `validate_remote_volumes` runs first and refuses any mount whose
+            // `BoxOptions::sanitize_remote` runs first and refuses any mount whose
             // `managed_volume` is unset, so the default is unreachable rather
             // than a fallback: an empty string would be a selector the server
             // can never resolve. `From` cannot report that, which is why the

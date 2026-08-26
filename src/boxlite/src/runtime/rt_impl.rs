@@ -1751,7 +1751,7 @@ fn reject_local_unsupported_options(options: &BoxOptions) -> BoxliteResult<()> {
 
     // `resolve_user_volumes` catches this too, but only once boot is under way
     // — after the image is pulled and the box record exists. Fail here instead,
-    // mirroring `validate_remote_volumes` on the REST side.
+    // mirroring `BoxOptions::sanitize_remote`'s mount rules on the REST side.
     if let Some(volume) = options
         .volumes
         .iter()

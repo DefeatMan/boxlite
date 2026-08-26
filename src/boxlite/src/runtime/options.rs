@@ -1643,7 +1643,7 @@ mod tests {
     /// can, so sanitize() is the create-time backstop for those paths.
     #[test]
     fn test_sanitize_rejects_ambiguous_volume_origin() {
-        let both = BoxOptions {
+        let mut both = BoxOptions {
             volumes: vec![VolumeSpec {
                 managed_volume: Some("my-data".into()),
                 host_path: "/tmp/data".into(),
@@ -1655,7 +1655,7 @@ mod tests {
         let err = both.sanitize().unwrap_err().to_string();
         assert!(err.contains("exactly one"), "{err}");
 
-        let neither = BoxOptions {
+        let mut neither = BoxOptions {
             volumes: vec![VolumeSpec {
                 guest_path: "/data".into(),
                 ..Default::default()
@@ -1665,7 +1665,7 @@ mod tests {
         let err = neither.sanitize().unwrap_err().to_string();
         assert!(err.contains("volume id or name"), "{err}");
 
-        let empty_reference = BoxOptions {
+        let mut empty_reference = BoxOptions {
             volumes: vec![VolumeSpec::managed_volume("   ", "/data")],
             ..Default::default()
         };
@@ -1677,7 +1677,7 @@ mod tests {
     /// `host_path`; it must still load, as a host bind, without a migration.
     #[test]
     fn legacy_volume_json_without_managed_volume_still_loads() {
-        let opts: BoxOptions = serde_json::from_str(
+        let mut opts: BoxOptions = serde_json::from_str(
             r#"{"volumes":[{"host_path":"/tmp/data","guest_path":"/data","read_only":true}]}"#,
         )
         .expect("pre-managed_volume box config must still deserialize");

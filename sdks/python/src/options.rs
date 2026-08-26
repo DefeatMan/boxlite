@@ -408,6 +408,13 @@ pub(crate) struct PyBoxOptions {
     #[pyo3(get, set)]
     pub(crate) user: Option<String>,
 
+    /// Run the box's main command on a terminal (docker `run -t`).
+    ///
+    /// A property of the box, not of an attach: the main command is the
+    /// container's init, so whether it gets a terminal is fixed at create time.
+    #[pyo3(get, set)]
+    pub(crate) tty: Option<bool>,
+
     /// Advanced options for expert users (capabilities, security, mount isolation, health check).
     #[pyo3(get, set)]
     pub(crate) advanced: Option<PyAdvancedBoxOptions>,
@@ -439,6 +446,7 @@ impl PyBoxOptions {
         entrypoint=None,
         cmd=None,
         user=None,
+        tty=None,
         advanced=None,
         secrets=vec![],
     ))]
@@ -462,6 +470,7 @@ impl PyBoxOptions {
         entrypoint: Option<Vec<String>>,
         cmd: Option<Vec<String>>,
         user: Option<String>,
+        tty: Option<bool>,
         advanced: Option<PyAdvancedBoxOptions>,
         secrets: Vec<PySecret>,
     ) -> Self {
@@ -484,6 +493,7 @@ impl PyBoxOptions {
             entrypoint,
             cmd,
             user,
+            tty,
             advanced,
             secrets,
         }
@@ -555,6 +565,10 @@ impl TryFrom<PyBoxOptions> for BoxOptions {
 
         if let Some(detach) = py_opts.detach {
             opts.detach = detach;
+        }
+
+        if let Some(tty) = py_opts.tty {
+            opts.tty = tty;
         }
 
         if let Some(advanced) = py_opts.advanced {
@@ -1025,7 +1039,36 @@ mod tests {
             entrypoint: None,
             cmd: None,
             user: None,
+            tty: None,
             advanced: Some(advanced),
+            secrets: vec![],
+        }
+    }
+
+    /// Same "untouched defaults" shape as above, parameterised on `tty` — the
+    /// field the reference server forwards into `boxlite.BoxOptions(**kwargs)`.
+    fn py_box_options_with_tty(tty: Option<bool>) -> PyBoxOptions {
+        PyBoxOptions {
+            image: None,
+            rootfs_path: None,
+            cpus: None,
+            memory_mib: None,
+            disk_size_gb: None,
+            working_dir: None,
+            env: vec![],
+            volumes: vec![],
+            network: None,
+            ports: vec![],
+            auto_remove: None,
+            auto_stop: None,
+            auto_delete: None,
+            auto_resume: None,
+            detach: None,
+            entrypoint: None,
+            cmd: None,
+            user: None,
+            tty,
+            advanced: None,
             secrets: vec![],
         }
     }
@@ -1167,5 +1210,32 @@ mod tests {
             assert_eq!(spec.host_path, "/tmp/data");
             assert_eq!(spec.guest_path, "/data");
         });
+    }
+
+    /// `tty` is a concrete `bool` on core `BoxOptions`, not an `Option`, so the
+    /// conversion has to distinguish "caller asked" from "caller said nothing".
+    /// Without the `if let Some(tty)` arm this silently stays false and
+    /// `boxlite run -t` against the reference server produces a box with no
+    /// terminal — the same class of silent drop this whole change closes.
+    #[test]
+    fn explicit_tty_reaches_core_box_options() {
+        let opts = BoxOptions::try_from(py_box_options_with_tty(Some(true)))
+            .expect("tty=True should convert");
+
+        assert!(opts.tty, "expected tty to reach core BoxOptions");
+    }
+
+    /// The other side: an unset `tty` must leave the core default alone rather
+    /// than writing `false` over whatever the core decides.
+    #[test]
+    fn unset_tty_preserves_the_core_default() {
+        let opts =
+            BoxOptions::try_from(py_box_options_with_tty(None)).expect("tty=None should convert");
+
+        assert_eq!(
+            opts.tty,
+            BoxOptions::default().tty,
+            "an unset tty must not overwrite the core default"
+        );
     }
 }

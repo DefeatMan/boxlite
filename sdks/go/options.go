@@ -179,6 +179,7 @@ type boxConfig struct {
 	volumes    []volumeEntry
 	ports      []PortSpec
 	workDir    string
+	user       string
 	entrypoint []string
 	cmd        []string
 	autoRemove *bool
@@ -289,6 +290,13 @@ func WithPort(spec PortSpec) BoxOption {
 // WithWorkDir sets the working directory inside the container.
 func WithWorkDir(dir string) BoxOption {
 	return func(c *boxConfig) { c.workDir = dir }
+}
+
+// WithUser sets the user the container process runs as, in Docker's
+// `<name|uid>[:<group|gid>]` form. Empty leaves the image's USER directive
+// in force.
+func WithUser(user string) BoxOption {
+	return func(c *boxConfig) { c.user = user }
 }
 
 // WithEntrypoint overrides the image's ENTRYPOINT.
@@ -428,6 +436,11 @@ func buildCOptions(image string, cfg *boxConfig) (*C.CBoxliteOptions, error) {
 		cDir := toCString(cfg.workDir)
 		C.boxlite_options_set_workdir(cOpts, cDir)
 		C.free(unsafe.Pointer(cDir))
+	}
+	if cfg.user != "" {
+		cUser := toCString(cfg.user)
+		C.boxlite_options_set_user(cOpts, cUser)
+		C.free(unsafe.Pointer(cUser))
 	}
 	for _, env := range cfg.env {
 		cKey := toCString(env[0])
