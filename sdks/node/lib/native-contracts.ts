@@ -266,6 +266,7 @@ export interface JsBoxInfo {
   state: JsBoxStateInfo;
   createdAt: string;
   startedAt?: string;
+  lastActivityAt?: string;
   image: string;
   cpus: number;
   memoryMib: number;
