@@ -176,7 +176,8 @@ const DEPLOYER_ROLES = [
   // load balancer in front of the proxy, and the runners.
   'roles/compute.admin',
   // The proxy's GKE cluster and node pool, plus Kubernetes API access as the
-  // cluster creator for the Deployment, Service and SecretProviderClass.
+  // cluster creator for the Deployment, the Service and the Secret the proxy's
+  // key arrives in.
   'roles/container.admin',
   // The api and the otel-collector.
   'roles/run.admin',
@@ -214,6 +215,21 @@ const DEPLOYER_ROLES = [
   // not reach a managed zone, and the apply dies at `ApiInternalZone` with a
   // bare `403: Forbidden` that names neither the permission nor the role.
   'roles/dns.admin',
+  /*
+   * Reading back what mbuild published, before an apply that cannot pull.
+   *
+   * The preflight gate runs `mbuild verify` as this identity rather than as
+   * the publisher (`mdeploy.yml`'s "Verify the images"), and the read under it
+   * — `gcloud artifacts docker images list` — needs
+   * `artifactregistry.repositories.get`. Nothing else in this list reaches
+   * Artifact Registry, so the gate is refused and `publish.ts`'s `unreadable`
+   * reports a question it could not answer, failing a deploy of images the
+   * repository is holding.
+   *
+   * Read and not write: the publisher pushes (`PUBLISHER_ROLES` below), and
+   * this identity only asks whether the push landed.
+   */
+  'roles/artifactregistry.reader',
   /*
    * Reaching a live runner to replace its binary in place.
    *
