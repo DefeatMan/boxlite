@@ -148,7 +148,16 @@ attribute. Auth0 requires this one-time New Attributes Configuration activation
 before the Management API can configure email verification OTP. Preview fails
 before any writes when the activation is absent.
 
-For production, use the stack's verified SES identity described in
+The policy needs mail to leave the tenant, not a particular vendor: any enabled
+provider that is not Auth0's own built-in sender satisfies it. SES is the one
+backend this repo provisions itself, so it is the one `auth0:configure-email`
+can create; a tenant already sending through Resend, Mailgun or an SMTP relay
+keeps that provider and reconciles only the templates with `--templates-only`
+(below). A GCP-homed stage has no SES identity at all — it sends through the
+relay named by `MAIL_RELAY_HOST` and verifies nothing
+(`mdeploy/stack/providers/gcp/mail.ts`).
+
+On the AWS path, use the stack's verified SES identity described in
 [Outbound mail](#outbound-mail). The Api's stored `SMTP_PASSWORD` is
 SigV4-derived and cannot be used as the raw AWS secret required by Auth0's SES
 provider. Create a separate send-only IAM access key for Auth0, scoped to that
@@ -195,12 +204,37 @@ sender but never the access key. Rollback disables templates created by the run
 and deletes the provider only when the run created it and its non-secret
 fingerprint is unchanged.
 
+For a tenant whose provider is already configured and is not SES, reconcile the
+templates alone. `--templates-only` takes no `--region`, writes nothing to
+`emails/provider`, and never asks for a credential; it refuses unless the
+tenant already has the same enabled non-Auth0 provider the login policy
+requires, and unless `--from` is that provider's own sender — a template's
+`from` overrides the provider default, so a mismatch would send the codes as an
+address the provider cannot:
+
+```bash
+# The sender to pass is the provider's own; read it back first.
+auth0 api get 'emails/provider?fields=name,enabled,default_from_address&include_fields=true' \
+  --tenant <tenant.auth0.com>
+
+npm run auth0:configure-email -- \
+  --tenant <tenant.auth0.com> \
+  --from <provider-default-from-address> \
+  --templates-only \
+  --apply
+```
+
 For a non-production canary tenant only, skip `auth0:configure-email` and add
 `--allow-test-email-provider` to both `auth0:configure-login` commands. This
 uses Auth0's built-in sender and default templates; they do not appear as
 Management API provider/template resources. The built-in service sends from
 `no-reply@auth0user.net`, is limited to 10 messages per minute, and is not for
 production.
+
+Login-policy apply refuses before its first write when the Auth0 CLI's session
+for the tenant lacks a scope it writes with, naming the missing ones: apply
+spans the connection, prompts, a Form, two Flows and an Action, and a session
+short one scope stops partway with resources already created.
 
 Login-policy apply writes a mode-`0600` rollback journal under
 `.sst/auth0-backups/` without client secrets. If apply stops partway, use the
@@ -289,7 +323,7 @@ Both modes hand SST an image reference, so no deploy compiles the API. The one
 exception is a build with no API ref — set neither `BOXLITE_ARTIFACT_REF` nor
 `API_ARTIFACT_REF` and nothing was published for that checkout, so SST builds
 `apps/api/Dockerfile` as before. That is a plain local `npm run deploy`, and also
-`npm run runner:build-artifact`, which stages a Runner and sets only the Runner's
+`npm run runner:build-artifact:legacy`, which stages a Runner and sets only the Runner's
 ref. Whatever refs *are* set must equal the checkout: the Proxy and the
 OtelCollector are built from it on every path, so a ref naming another commit
 would deploy two.
@@ -383,19 +417,19 @@ access keys are stored in GitHub, and no stage configuration either — a job re
 that from the stage's SST secret store using the credentials it just assumed, so
 nothing is written to disk and there is no `.env` for a failed job to leave behind.
 
-`bootstrap/aws/github-deploy-role.yaml` bootstraps three things that must exist **before** an
-SST deploy: the OIDC role, the immutable Api ECR repository, and the private
-Runner artifact bucket. That bucket expires only superseded object versions —
+`npm run bootstrap` (`bootstrap/aws.ts`, from the documents in `bootstrap/aws/`) reconciles three
+things that must exist **before** an SST deploy: the OIDC role, the immutable Api ECR repository,
+and the private Runner artifact bucket. That bucket expires only superseded object versions —
 first boot re-fetches the commit-keyed tarball at every instance launch, so
 expiring the current object would make a later replacement fail to boot. The role
 grants only the AWS control-plane actions
 used by this SST stack. IAM mutation is limited to `boxlite-<stage>-*` roles, policies, and
 instance profiles, so one stage cannot rewrite another's. Every role created by SST must carry the stage's runtime
 permissions boundary, which excludes IAM mutation and limits workloads to the
-data-plane APIs they need. Redeploy that CloudFormation stack whenever its policy
-or resources change. `IAM_PERMISSIONS_BOUNDARY_STAGE` must match both the SST stage
-and the template's `GitHubEnvironment`; deployment fails before creating roles if
-they differ. Keep required reviewers enabled on each Environment.
+data-plane APIs they need. Re-run bootstrap whenever its policy documents change — it reconciles
+rather than recreates, so a re-run is how an edit reaches AWS. `IAM_PERMISSIONS_BOUNDARY_STAGE`
+must match the `--stage` bootstrap was run with; deployment fails before creating roles if they
+differ. Keep required reviewers enabled on each Environment.
 
 ## Secrets & credentials
 
@@ -491,20 +525,27 @@ gh workflow run deploy-infra.yml --ref main -f stage=dev -f apply=false -f ref=<
 gh workflow run build-apps-api-image.yml --ref main -f operation=build -f version=0.9.8
 gh workflow run build-apps-api-image.yml --ref main -f operation=promote -f stage=prod -f version=0.9.8 -f source_region=ap-southeast-1
 gh workflow run deploy-release.yml --ref main -f stage=prod -f version=0.9.8
-npm run runner:build-artifact -- --stage dev # local linux/amd64 build + private S3 stage
+npm run runner:build-artifact:legacy -- --stage dev # local linux/amd64 build + private S3 stage
 
 npm run sst -- diff --stage dev      # preview changes
 npm run sst -- unlock --stage dev    # recover from "concurrent update detected"
 npm run sst -- shell --stage dev     # shell with SST-linked env vars
-npm run runner:update -- --stage dev # roll the Runner binary, one host at a time
+npm run runner:update:legacy -- --stage dev # roll the Runner binary, one host at a time
 ```
 
 Every deploy and removal requires an explicit `--stage` so the deployer, the
 verifier, and destructive operations cannot target different stages.
 
 `deploy`, `remove`, `sst`, and `secrets` all pass through the guarded deployment
-facade — do not call the SST binary directly. `runner:update` rolls one host at a
-time and stops on the first failure.
+facade — do not call the SST binary directly. `runner:update:legacy` rolls one
+host at a time and stops on the first failure.
+
+Both runner commands carry `:legacy` because the unsuffixed names now belong to
+mdeploy — `npm run runner:update` and `npm run runner:build` act on the stages
+that path deploys, and reach a host over SSM or an IAP tunnel depending on the
+cloud. See `DEPLOY.md`. The two pairs exist only while both deploy paths do:
+each path's launcher is recorded in its own state, so neither can be repointed
+at the other's.
 
 ## Operating rules
 
