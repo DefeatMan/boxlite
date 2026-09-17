@@ -147,6 +147,14 @@ without something failing.
 }
 ```
 
+A stage that has decided it ships whatever the scan finds writes `"blockOn":
+"DISABLED"` — the whole value, not an entry in the list. Any `timeoutSeconds`
+left beside it is ignored, so this stays a one-field edit. It is spelled as a
+state rather than a severity so that it cannot be confused with the `None`
+bucket Artifact Analysis reports, and it is a word rather than an empty list so
+that turning the gate off is always something a reviewer can see someone
+decide.
+
 ### A stage decides
 
 Everything a stage needs is in its own block, and nothing is inherited from

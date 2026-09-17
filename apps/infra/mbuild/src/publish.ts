@@ -477,6 +477,15 @@ const assertNoBlockingFindings = async ({
   clock: Clock
   log: (line: string) => void
 }): Promise<void> => {
+  /*
+   * The stage has declared it blocks on nothing, so there is nothing to read
+   * and nothing to wait for. Said once per image rather than passed over in
+   * silence: a publish that was never gated should not look like one that was.
+   */
+  if (scan.blockOn === 'DISABLED') {
+    for (const { address } of outcomes) log(`Scan of ${address}: not consulted, this stage blocks on nothing`)
+    return
+  }
   for (const { artifact, address } of outcomes) {
     const counts = await awaitScanCounts({
       registrar,
