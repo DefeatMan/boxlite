@@ -134,10 +134,6 @@ export const gcpClusterProvider =
         masterIpv4CidrBlock: MASTER_CIDR,
       },
       workloadIdentityConfig: { workloadPool: `${project}.svc.id.goog` },
-      // The managed add-on installs both the CSI driver and its GCP provider.
-      // Rotation is intentionally off: the proxy reads once at startup, so a
-      // version change must alter the Pod template and produce a visible roll.
-      secretManagerConfig: { enabled: true },
       loggingConfig: { enableComponents: ['SYSTEM_COMPONENTS', 'WORKLOADS'] },
       monitoringConfig: { enableComponents: ['SYSTEM_COMPONENTS'] },
     })
