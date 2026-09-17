@@ -105,8 +105,9 @@ jobs:
   preflight:
     name: preflight
     # The job that reaches a protected Environment reaches the cloud role behind
-    # it, so it runs from main and nowhere else.
-    if: github.ref == 'refs/heads/main'
+    # it, so every stage but dev runs from main and nowhere else. dev is shaken
+    # out from the branch that is changing it.
+    if: ${{ (github.ref == 'refs/heads/main' || inputs.stage == 'dev') }}
     environment: ${{ inputs.stage }}
     runs-on: ubuntu-latest
     outputs:
@@ -136,6 +137,7 @@ jobs:
         with:
           ref: ${{ inputs.image_tag }}
           fallback: ${{ github.sha }}
+          branch: ${{ github.ref_name }}
 
       # No fallback: an empty input is a release-mode deploy, which addresses a
       # version rather than a commit and needs no ref at all.
@@ -144,6 +146,7 @@ jobs:
         uses: ./.github/actions/resolve-ref
         with:
           ref: ${{ inputs.runner_ref }}
+          branch: ${{ github.ref_name }}
 
       - name: Address the commit the image ref names
         shell: bash
@@ -245,7 +248,7 @@ jobs:
   deploy:
     name: ${{ inputs.apply && 'deploy' || 'preview' }} ${{ inputs.stage }}
     needs: preflight
-    if: github.ref == 'refs/heads/main'
+    if: ${{ (github.ref == 'refs/heads/main' || inputs.stage == 'dev') }}
     environment: ${{ inputs.stage }}
     runs-on: ubuntu-latest
     # What this job deploys, as commits rather than as the names it was given.
