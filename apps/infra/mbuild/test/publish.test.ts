@@ -850,6 +850,29 @@ test('a clean image passes the same gate', async () => {
   )
 })
 
+test('a stage that blocks on nothing publishes what would be refused elsewhere', async () => {
+  /*
+   * The same image and the same findings that `blockOn: ['CRITICAL']` refuses
+   * two tests above. What changes is only the declaration, and the line it logs
+   * is what keeps an ungated publish from looking like a gated one that passed.
+   */
+  lines.length = 0
+  const open = declare({
+    artifacts: { api: ARTIFACTS.api },
+    stages: { dev: { ...garStage(), scan: { blockOn: 'DISABLED' } } },
+  })
+  const probe = googleDouble({ published: new Set([GAR_IMAGE]), vulnerabilities: { CRITICAL: [{}, {}] } })
+  await assert.doesNotReject(() =>
+    publish({ config: open, stage: 'dev', registry: gar, tag: SHA, run: probe.run, log }),
+  )
+  assert.deepEqual(
+    lines.filter((line) => line.startsWith('Scan of')),
+    [`Scan of ${GAR_IMAGE}: not consulted, this stage blocks on nothing`],
+  )
+  // Nothing was asked of Container Analysis either; there was nothing to ask for.
+  assert.equal(probe.ran((call) => call.includes('--show-package-vulnerability')).length, 0)
+})
+
 test('what the gate read is reported, so an answer of nothing is not silence', async () => {
   /*
    * The case that is invisible otherwise. Artifact Analysis is a project-wide
