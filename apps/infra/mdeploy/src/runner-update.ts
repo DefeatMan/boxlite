@@ -74,7 +74,9 @@ const USAGE = [
   'usage: npm run runner:update -- --stage <stage> [--version <X.Y.Z>] [--ref <commit>]',
   '                                [--host <name>[,<name>…]] [--allow-downgrade] [--confirm]',
   '',
-  '  --version          a published release. Defaults to the checkout’s own version.',
+  '  --version          the release line to install. Defaults to the checkout’s own',
+  '                     version; name one with --ref when that commit was built from',
+  '                     a different line.',
   '  --ref              install the build `runner:build` staged for this commit instead',
   '                     of a release. One full 40-character sha.',
   '  --host             only these hosts, by the name the console shows. Default: every one.',
@@ -211,8 +213,8 @@ const stagingFor = ({
 }
 
 /**
- * That the object this is about to install actually exists, asked before a
- * single host is stopped.
+ * That both objects this is about to install exist, asked before a single host
+ * is stopped.
  *
  * `runner:build` checks its destination before spending minutes compiling, for
  * the same reason in the other direction. Here the cost of finding out late is

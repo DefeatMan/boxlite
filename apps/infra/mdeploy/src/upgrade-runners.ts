@@ -341,36 +341,41 @@ export const upgradeFleetOverPolicy = ({
   /*
    * Compliance per host, polled to a deadline.
    *
-   * `UNKNOWN` is the normal first answer — the agent has not evaluated the new
-   * revision yet — so only `NON_COMPLIANT` after the deadline is a failure, and
-   * the deadline is generous because a swap includes a restart and a health
-   * probe.
+   * Only `COMPLIANT` clears a host. Everything else — no report yet, an
+   * unevaluated revision, `NON_COMPLIANT`, a describe that failed — leaves it
+   * outstanding for the next pass, because none of them distinguishes "this
+   * host will not converge" from "it has not converged yet", and the deadline
+   * is what draws that line. The deadline is generous because a swap includes
+   * a restart and a health probe.
    */
   const remaining = new Set(targets)
   for (let waited = 0; waited < deadlineSeconds; waited += 30) {
-    const reported = run('gcloud', [
-      'compute',
-      'os-config',
-      'os-policy-assignment-reports',
-      'list',
-      `--project=${project}`,
-      `--location=${zone}`,
-      `--assignment=${assignment}`,
-      '--format=value(instance,osPolicyCompliances[0].complianceState)',
-    ])
-    if (reported.ok) {
-      for (const line of reported.stdout.split('\n').filter(Boolean)) {
-        const [instance, state] = line.trim().split(/\s+/)
-        // The report names the instance by resource path, and which segment
-        // holds the name differs by surface — `…/instances/<name>` and
-        // `…/instances/<name>/report` are both seen. Matching a whole segment
-        // is what keeps `runner` from also matching `runner-2`.
-        const segments = instance?.split('/') ?? []
-        const host = [...remaining].find((name) => segments.includes(name))
-        if (host && state === 'COMPLIANT') {
-          log(`    ${host}: compliant`)
-          remaining.delete(host)
-        }
+    // One host at a time, because `list` cannot answer this question: its rows
+    // carry `summary_str` — the rendered "1/1 policies compliant" — and no
+    // compliance state, so a format asking for one reads back empty for every
+    // host and no roll ever sees a host converge. `describe` is the surface
+    // that returns `osPolicyCompliances[].complianceState`, and it is per
+    // instance. The cost is one call per host still outstanding, which falls to
+    // zero as they converge.
+    for (const host of [...remaining]) {
+      const reported = run('gcloud', [
+        'compute',
+        'os-config',
+        'os-policy-assignment-reports',
+        'describe',
+        assignment,
+        `--project=${project}`,
+        `--location=${zone}`,
+        `--instance=${host}`,
+        '--format=value(osPolicyCompliances[0].complianceState)',
+      ])
+      // A describe that failed leaves no stdout, so it reads as "not compliant
+      // yet" through the same check rather than needing a branch of its own —
+      // which is the right reading: no report written yet is the normal first
+      // answer while the agent has not evaluated this revision.
+      if (reported.stdout.trim() === 'COMPLIANT') {
+        log(`    ${host}: compliant`)
+        remaining.delete(host)
       }
     }
     if (remaining.size === 0) {
@@ -381,7 +386,8 @@ export const upgradeFleetOverPolicy = ({
   }
   throw new Error(
     `${[...remaining].join(', ')} did not report compliant with ${assignment} within ${deadlineSeconds}s; ` +
-      'the agents may still be converging — `gcloud compute os-config os-policy-assignment-reports list` says where they are',
+      'the agents may still be converging — `gcloud compute os-config os-policy-assignment-reports describe ' +
+      `${assignment} --project=${project} --location=${zone} --instance=<host>\` says where they are`,
   )
 }
 

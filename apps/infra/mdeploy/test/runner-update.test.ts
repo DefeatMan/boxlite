@@ -53,17 +53,27 @@ const awsFleet = (
   }
 }
 
-const gcpFleet = (calls: string[][] = []): RunCommand => {
+/**
+ * A fleet of two on GCP.
+ *
+ * `reports` scripts what each host's `describe` answers, one entry per pass, so
+ * a test can put a host through the states a real agent goes through before it
+ * converges. The default is COMPLIANT on the first pass, which is what lets
+ * every other test finish without spending the roll's deadline.
+ */
+const gcpFleet = (
+  calls: string[][] = [],
+  reports: Record<string, CommandResult[]> = {},
+): RunCommand => {
   return (file, args) => {
     calls.push([file, ...args])
     if (args[1] === 'instances') return ok('boxlite-app-dev2-runner\nboxlite-app-dev2-runner-2')
-    // Both hosts report compliant on the first poll, which is what lets the
-    // roll finish without the test spending its deadline.
-    if (args[2] === 'os-policy-assignment-reports') {
-      return ok(
-        'projects/p/locations/z/instances/boxlite-app-dev2-runner/report\tCOMPLIANT\n' +
-          'projects/p/locations/z/instances/boxlite-app-dev2-runner-2/report\tCOMPLIANT',
-      )
+    // `describe` answers for the one instance it was asked about, so the
+    // fixture answers the way gcloud does rather than handing back a fleet-wide
+    // table no surface emits.
+    if (args[3] === 'describe') {
+      const host = args.find((argument) => argument.startsWith('--instance='))?.slice('--instance='.length) ?? ''
+      return reports[host]?.shift() ?? ok('COMPLIANT')
     }
     return ok('new identity: 0.10.0')
   }
@@ -213,9 +223,23 @@ test('on GCP the roll rewrites the fleet’s policy and waits for the agents', a
   assert.ok(written?.includes('boxlite-app-dev2-runner-binary'), 'it rewrote some other assignment')
   assert.ok(written?.some((argument) => argument.startsWith('--file=')), 'the policy has to arrive as a file')
 
-  assert.ok(
-    calls.some((call) => call[3] === 'os-policy-assignment-reports'),
-    'the roll never waited for the agents to converge',
+  // Pinned to the surface that can actually answer. `list` carries a rendered
+  // "1/1 policies compliant" and no compliance state, so a roll polling it reads
+  // empty for every host and waits out its whole deadline on a fleet that
+  // converged minutes ago.
+  const polled = calls.filter((call) => call[3] === 'os-policy-assignment-reports')
+  assert.ok(polled.length > 0, 'the roll never waited for the agents to converge')
+  for (const call of polled) {
+    assert.equal(call[4], 'describe', 'only describe returns a compliance state')
+    assert.ok(
+      call.some((argument) => argument.includes('osPolicyCompliances[0].complianceState')),
+      'the state is the field the roll keys on',
+    )
+  }
+  assert.deepEqual(
+    polled.map((call) => call.find((argument) => argument.startsWith('--instance='))),
+    ['--instance=boxlite-app-dev2-runner', '--instance=boxlite-app-dev2-runner-2'],
+    'describe answers per instance, so every host is asked about by name',
   )
   assert.equal(calls.filter((call) => call[2] === 'ssh').length, 0, 'the tunnel is gone from this path')
 })
@@ -332,4 +356,33 @@ test('an address nothing published is refused before the first host is stopped',
     (error: Error) => error instanceof RunnerUpdateError && /nothing is staged at s3:\/\//.test(error.message),
   )
   assert.equal(calls.filter((call) => call[2] === 'send-command').length, 0, 'no host was rolled')
+})
+
+test('a host that has not converged yet is carried to the next pass, not failed', async () => {
+  // Every answer other than COMPLIANT means "not yet", and none of them tells
+  // "will not converge" apart from "has not converged": a report the agent has
+  // not written, a describe that failed, and NON_COMPLIANT all have to wait for
+  // the deadline to draw that line rather than end the roll on the spot.
+  const calls: string[][] = []
+  const slow = {
+    'boxlite-app-dev2-runner': [failed('NOT_FOUND: no report yet'), ok(''), ok('NON_COMPLIANT'), ok('COMPLIANT')],
+  }
+  assert.equal(await drive(['--stage', 'dev2'], gcpFleet(calls, slow), 'gcp'), 0)
+
+  const asked = calls
+    .filter((call) => call[4] === 'describe')
+    .map((call) => call.find((argument) => argument.startsWith('--instance=')))
+  assert.deepEqual(
+    asked,
+    [
+      // Pass 1: both asked, one converges and drops out.
+      '--instance=boxlite-app-dev2-runner',
+      '--instance=boxlite-app-dev2-runner-2',
+      // Passes 2-4: only the host still outstanding is asked again.
+      '--instance=boxlite-app-dev2-runner',
+      '--instance=boxlite-app-dev2-runner',
+      '--instance=boxlite-app-dev2-runner',
+    ],
+    'the poll narrows to the hosts still outstanding and keeps asking until one converges',
+  )
 })
