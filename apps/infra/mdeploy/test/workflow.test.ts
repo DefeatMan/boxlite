@@ -307,3 +307,28 @@ test('the only stage a deploy workflow runs for off main is dev', () => {
     }
   }
 })
+
+test('the checks that decide an apply run in the job that applies, not beside it', () => {
+  /*
+   * One job, because a second one costs a second approval. The reads — which
+   * commit the refs name, whether the stage holds those images, whether its
+   * configuration still matches its own fingerprint, whether a protected stage
+   * was confirmed — used to be a `preflight` job binding the same Environment,
+   * so a dispatch waited on this stage's reviewers twice to perform checks that
+   * change nothing.
+   *
+   * Asserted as a count rather than by name: splitting them out again under any
+   * name brings the second wait back.
+   */
+  const jobs = [...workflow.matchAll(/^ {2}([a-z][a-z-]*):$/gm)].map((match) => match[1])
+  assert.deepEqual(jobs, ['deploy'], 'a second job binding this Environment is a second approval')
+
+  // And the order that makes one job equivalent to the two: every check still
+  // runs before the apply it guards.
+  const apply = workflow.indexOf('- name: Apply')
+  for (const check of ['Verify the stage configuration', 'Verify the images', 'Confirm a protected stage']) {
+    const at = workflow.indexOf(check)
+    assert.notEqual(at, -1, `${check} is gone rather than moved`)
+    assert.ok(at < apply, `${check} runs after the apply it guards`)
+  }
+})
