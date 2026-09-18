@@ -4,6 +4,10 @@
 
 - [AutoStop、AutoResume 与 AutoDelete](./auto-stop-resume.md)
 
+## Guest SSH
+
+See [Guest SSH control](ssh.md) for in-memory configuration through `box.sock`.
+
 ## Building from Source
 
 ### Prerequisites
