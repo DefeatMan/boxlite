@@ -24,9 +24,16 @@
  * stops on the first failure. This file only answers the two questions a deploy
  * answers structurally — which hosts, and in what order.
  *
- * Release targets only. A build-mode binary is addressed by a commit and staged
- * per stage; installing one is what a deploy of that commit does. A rollback
- * names a published version.
+ * A published release by default, and `--ref <commit>` for a binary `runner:
+ * build` staged in this stage's artifacts bucket. Both reach the same resolver
+ * the deploy uses, so the address, the tarball name and the identity a host
+ * reports are composed once: a build identity is `X.Y.Z+<commit>`, which is
+ * what lets the converge guard tell two builds of one checkout apart.
+ *
+ * `--ref` exists because a deploy is the wrong instrument for installing one:
+ * `mdeploy` applies the whole stack, so a fleet-only change would also roll
+ * every other resource the checkout has moved past the stage — and on a stage
+ * behind the checkout that is a far larger action than the one being asked for.
  */
 
 import { mkdtempSync, writeFileSync } from 'node:fs'
@@ -48,7 +55,12 @@ import {
 } from './upgrade-runners.ts'
 import { encodeUpgradePayload, renderPolicyScripts } from '../stack/runner-upgrade.ts'
 import { RUNNER_PORT, runnerNamePrefix, runnerPolicyName } from '../stack/runners.ts'
-import { resolveRunnerBinary } from '../stack/runner-binary.ts'
+import {
+  gcpRunnerArtifactsBucket,
+  resolveRunnerBinary,
+  runnerArtifactsBucket,
+  type ArtifactStaging,
+} from '../stack/runner-binary.ts'
 import { zoneIn } from '../stack/providers/gcp/index.ts'
 
 export class RunnerUpdateError extends Error {
@@ -59,10 +71,12 @@ export class RunnerUpdateError extends Error {
 }
 
 const USAGE = [
-  'usage: npm run runner:update -- --stage <stage> [--version <X.Y.Z>] [--host <name>[,<name>…]]',
-  '                                [--allow-downgrade] [--confirm]',
+  'usage: npm run runner:update -- --stage <stage> [--version <X.Y.Z>] [--ref <commit>]',
+  '                                [--host <name>[,<name>…]] [--allow-downgrade] [--confirm]',
   '',
   '  --version          a published release. Defaults to the checkout’s own version.',
+  '  --ref              install the build `runner:build` staged for this commit instead',
+  '                     of a release. One full 40-character sha.',
   '  --host             only these hosts, by the name the console shows. Default: every one.',
   '  --allow-downgrade  replace a host serving something NEWER. This is the rollback.',
   '  --confirm          required for a stage mstage.config.json marks protected.',
@@ -75,7 +89,7 @@ const USAGE = [
  * which is worth having rather than shadowing: its own guard catches the
  * `npm run … --version 0.9.5` that npm swallows before this ever runs.
  */
-const OWN_OPTIONS = { flags: ['allow-downgrade'], values: ['host'] }
+const OWN_OPTIONS = { flags: ['allow-downgrade'], values: ['host', 'ref'] }
 
 /**
  * How each cloud names a runner, which is also how each is found.
@@ -146,6 +160,108 @@ const awsHosts = (region: string, run: RunCommand, prefix: string): Host[] => {
     .filter(([id]) => id && id !== 'None')
     .map(([target, label]) => ({ target: target as string, label: label ?? (target as string) }))
     .sort(compareHostsIn(prefix))
+}
+
+/**
+ * Which bucket this stage stages a build in, asked of the cloud rather than the
+ * caller.
+ *
+ * `runner:build` composes the same two names from the same rule, so the object
+ * this resolves is the object that command uploaded — the reason the name is
+ * composed in `stack/runner-binary.ts` and never recorded anywhere.
+ *
+ * AWS needs the account id and reads it from the session actually doing the
+ * roll, so a bucket qualified for one account is never addressed with another's
+ * credentials. GCP needs only the project, which the stage already names.
+ */
+const stagingFor = ({
+  cloud,
+  app,
+  scope,
+  run,
+}: {
+  cloud: 'aws' | 'gcp'
+  app: string
+  scope: { stage?: unknown; project?: unknown; region?: unknown }
+  run: RunCommand
+}): ArtifactStaging => {
+  const stage = scope.stage as string
+  if (cloud === 'gcp') {
+    const project = (scope.project as string | undefined)?.trim()
+    if (!project) throw new RunnerUpdateError(`stage ${stage} names no GCP project, so its artifacts bucket has no name`)
+    return { cloud, bucket: gcpRunnerArtifactsBucket({ app, stage, project }) }
+  }
+  const read = run('aws', [
+    'sts',
+    'get-caller-identity',
+    '--query',
+    'Account',
+    '--output',
+    'text',
+    '--region',
+    scope.region as string,
+  ])
+  const accountId = read.ok ? read.stdout.trim() : ''
+  if (!/^[0-9]{12}$/.test(accountId)) {
+    throw new RunnerUpdateError(
+      `could not read the AWS account id (got ${JSON.stringify(accountId)}): ${read.stderr || '(no stderr)'}`,
+    )
+  }
+  return { cloud, bucket: runnerArtifactsBucket({ app, stage, accountId }) }
+}
+
+/**
+ * That the object this is about to install actually exists, asked before a
+ * single host is stopped.
+ *
+ * `runner:build` checks its destination before spending minutes compiling, for
+ * the same reason in the other direction. Here the cost of finding out late is
+ * worse than wasted time: the roll stops hosts one at a time, so an address
+ * nothing published fails on the first host with the rest of the fleet still to
+ * go and one machine already down.
+ *
+ * Two ways to arrive at such an address, and this catches both: a commit whose
+ * build was never staged for this stage, and a `--version` that names a release
+ * line the build under that commit was not stamped with — the tarball carries
+ * both, so either one alone composes a name nobody uploaded.
+ */
+const assertStaged = ({
+  cloud,
+  binary,
+  scope,
+  run,
+}: {
+  cloud: 'aws' | 'gcp'
+  binary: { tarballUrl: string; checksumUrl: string }
+  scope: { region?: unknown }
+  run: RunCommand
+}): void => {
+  // Both objects, because a host fetches both and verifies one against the
+  // other. `runner:build` treats a prefix holding only some of what it uploads
+  // as a reachable state it reports rather than repairs, so the half-published
+  // case is real — and checking only the tarball would hand it to the first
+  // host to stop, which is the failure this whole check exists to move earlier.
+  for (const url of [binary.tarballUrl, binary.checksumUrl]) {
+    const found =
+      cloud === 'gcp'
+        ? run('gcloud', ['storage', 'objects', 'describe', url, '--format=value(name)'])
+        : run('aws', [
+            's3api',
+            'head-object',
+            '--region',
+            scope.region as string,
+            '--bucket',
+            url.replace(/^s3:\/\//, '').split('/')[0] as string,
+            '--key',
+            url.replace(/^s3:\/\/[^/]+\//, ''),
+          ])
+    if (!found.ok) {
+      throw new RunnerUpdateError(
+        `nothing is staged at ${url}. Run \`npm run runner:build -- --stage <stage>\` from that ` +
+          `commit's checkout, or drop --ref to install a release: ${found.stderr || '(no stderr)'}`,
+      )
+    }
+  }
 }
 
 const gcpHosts = ({
@@ -253,34 +369,47 @@ export const updateRunners = async ({
   if (signedIn !== 0) throw new RunnerUpdateError('Required sign-ins are missing; run `npm run mstage login -- -f` first')
 
   const version = (options.version as string | undefined)?.trim()
+  // Checked here rather than left to the resolver: a typo'd sha would otherwise
+  // surface as a missing object after the fleet has already been discovered.
+  const ref = (options.ref as string | undefined)?.trim().toLowerCase()
+  if (ref !== undefined && !/^[0-9a-f]{40}$/.test(ref)) {
+    throw new RunnerUpdateError(`--ref takes one full 40-character commit sha; got ${JSON.stringify(options.ref)}`)
+  }
   const allowDowngrade = options['allow-downgrade'] === true
   const named = (options.host as string | undefined)
     ?.split(',')
     .map((name) => name.trim())
     .filter(Boolean) ?? []
 
+  const home = await resolveHomeWith({ scope })
+  const { env: credentials } = await home.identity.childEnvironment()
+  const run = injectedRun ?? spawnWith({ ...environment, ...credentials })
+
   /*
-   * The same resolution the stack does, forced to release.
+   * The same resolution the stack does, told which of the two kinds to compose.
    *
-   * `VERSION` is the selector `stack/runner-binary.ts` already honours, so a
-   * named version reaches it the way a deploy's would — one resolver, one set of
-   * asset names. The artifact source is pinned to `release` rather than
-   * inherited: a build is addressed by a commit and staged per stage, and
-   * installing one is what deploying that commit does.
+   * `VERSION` and the artifact-source pair are the selectors
+   * `stack/runner-binary.ts` already honours, so both kinds reach it the way a
+   * deploy's would — one resolver, one set of asset names, one identity rule.
+   * The source is stated rather than inherited so an exported
+   * `RUNNER_ARTIFACT_SOURCE` from some earlier command cannot silently decide
+   * which binary a hand-rolled fleet gets.
+   *
+   * Resolved after the cloud is known because a build's address is a bucket in
+   * this stage, and which bucket is a question only the home can answer.
    */
   const binary = resolveRunnerBinary({
     environment: {
       ...environment,
       ...(version ? { VERSION: version } : {}),
-      RUNNER_ARTIFACT_SOURCE: 'release',
-      BOXLITE_ARTIFACT_SOURCE: 'release',
+      RUNNER_ARTIFACT_SOURCE: ref ? 'build' : 'release',
+      BOXLITE_ARTIFACT_SOURCE: ref ? 'build' : 'release',
+      ...(ref ? { RUNNER_ARTIFACT_REF: ref, BOXLITE_ARTIFACT_REF: ref } : {}),
     },
     configRoot: deployRoot({ cwd, environment }),
+    staging: ref ? stagingFor({ cloud: home.identity.home, app: config.app, scope, run }) : null,
   })
-
-  const home = await resolveHomeWith({ scope })
-  const { env: credentials } = await home.identity.childEnvironment()
-  const run = injectedRun ?? spawnWith({ ...environment, ...credentials })
+  if (ref) assertStaged({ cloud: home.identity.home, binary, scope, run })
 
   const prefix = runnerNamePrefix({ app: config.app, stage: scope.stage as string })
   const hosts = selected(

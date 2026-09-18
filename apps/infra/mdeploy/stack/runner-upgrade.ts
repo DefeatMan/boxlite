@@ -129,7 +129,7 @@ export type UpgradeTarget = {
    *
    * Absent for two kinds of caller, and for different reasons. The OS-policy
    * renderers describe the binary alone, because GCP converges the environment
-   * through a resource of its own. `runner:update` rolls a release by hand and
+   * through a resource of its own. `runner:update` rolls the fleet by hand and
    * never reads the stage's environment, so it has no address to enforce —
    * inventing one there would rewrite a host from a value nobody supplied.
    */

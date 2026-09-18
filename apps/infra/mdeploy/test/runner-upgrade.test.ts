@@ -588,7 +588,7 @@ test('a host already serving the target still has its environment converged', ()
 })
 
 test('a caller with no control-plane address converges only the binary', () => {
-  // `runner:update` rolls a release by hand and never reads the stage's
+  // `runner:update` rolls the fleet by hand and never reads the stage's
   // environment, so it has no address to enforce — and inventing one would
   // rewrite a host from a value nobody supplied.
   const payload = renderHostConvergence(target())

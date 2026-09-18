@@ -142,19 +142,29 @@ order. It discovers the fleet from the cloud (`Name=boxlite-runner-*` / the
 instance name) rather than from the engine's state, because it has to work on a
 fleet whose last deploy failed halfway, and it walks the fleet's own order —
 `default`, then `2`, `3`, … — so "which hosts are still serving" means the same
-thing after a failure as it did before. Release targets only: a build is
-addressed by a commit, and installing one is what deploying that commit does.
+thing after a failure as it did before. A published release by default, and
+`--ref <commit>` for a build staged under that commit — see below.
 
 ## Iterating on the runner itself
 
 An unreleased runner change reaches a stage as a per-commit build rather than a
 release. `npm run runner:build -- --stage dev` builds a Linux AMD64 runner from
 this checkout, stamps the commit into the health route's version, and stages it
-under the commit — then prints the deploy that installs it:
+under the commit — then prints the two ways to install it:
 
 ```
+npm run runner:update -- --stage dev --ref <commit>                          # the fleet alone
 RUNNER_ARTIFACT_SOURCE=build RUNNER_ARTIFACT_REF=<ref> npm run mdeploy -- --stage dev
 ```
+
+Reach for the deploy when the stage should also receive everything else this
+checkout changed; reach for `runner:update` when it should not. `mdeploy`
+applies the whole stack, so on a stage behind the checkout it rolls every other
+resource forward too — which is the right thing when that is what you meant and
+a far larger action when it is not. Both resolve the same address, install the
+same tarball and leave a host reporting the same `X.Y.Z+<commit>` identity, so
+a later deploy of that commit sees the fleet already converged and leaves it
+alone.
 
 The checkout must be clean, submodules included: a commit-keyed object holding
 uncommitted work would claim bytes that commit does not produce, and nothing

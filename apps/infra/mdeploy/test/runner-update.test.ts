@@ -9,6 +9,7 @@
  */
 
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { RunnerUpdateError, compareHostsIn, updateRunners, type Host } from '../src/runner-update.ts'
@@ -26,13 +27,26 @@ const ok = (stdout = ''): CommandResult => ({ ok: true, status: 0, stdout, stder
  */
 const EXAMPLE = fileURLToPath(new URL('../../.mstage.config.example.json', import.meta.url))
 
-/** A fleet of two on AWS, and an SSM command that succeeds. */
-const awsFleet = (calls: string[][] = []): RunCommand => {
+const failed = (stderr: string): CommandResult => ({ ok: false, status: 1, stdout: '', stderr })
+
+/**
+ * A fleet of two on AWS, and an SSM command that succeeds.
+ *
+ * `account` and `staged` are what the `--ref` path adds: the session's own
+ * account id qualifies the bucket, and the object has to be found before any
+ * host is stopped. Both default to the answers a healthy stage gives.
+ */
+const awsFleet = (
+  calls: string[][] = [],
+  { account = '123456789012', staged = true }: { account?: string; staged?: boolean } = {},
+): RunCommand => {
   return (file, args) => {
     calls.push([file, ...args])
     if (args[1] === 'describe-instances') {
       return ok('i-0002\tboxlite-app-dev-runner-2\ni-0001\tboxlite-app-dev-runner')
     }
+    if (args[1] === 'get-caller-identity') return account ? ok(account) : failed('ExpiredToken')
+    if (args[1] === 'head-object') return staged ? ok('') : failed('Not Found')
     if (args[1] === 'send-command') return ok('cmd-1')
     if (args.includes('Status')) return ok('Success')
     return ok('')
@@ -109,9 +123,9 @@ test('the fleet’s order is its own, not the string order of its names', () => 
   )
 })
 
-test('the version is the checkout’s unless one is named, and it is always a release', async () => {
-  // A build is addressed by a commit and staged per stage; installing one is
-  // what deploying that commit does. A rollback names a published version.
+test('the version is the checkout’s unless one is named, and a release unless --ref', async () => {
+  // Without --ref this installs a published release: a bare roll must never
+  // reach for a commit-keyed object that only some stages have staged.
   const calls: string[][] = []
   await drive(['--stage', 'dev', '--version', '0.9.5'], awsFleet(calls))
   const comment = calls.find((call) => call[2] === 'send-command')?.join(' ')
@@ -219,4 +233,103 @@ test('a stage is required, and mstage says which ones there are', async () => {
   // Refused by `resolveScope` rather than by a check here: it already names the
   // stages the config declares, which is what someone who mistyped one needs.
   await assert.rejects(() => drive([], awsFleet()), /--stage is required\..*declares: dev, prod, dev2/s)
+})
+
+test('--ref installs the build staged for that commit, addressed in this stage’s bucket', async () => {
+  // The whole point of the switch: `mdeploy` applies the entire stack, so a
+  // fleet-only change to a stage behind the checkout would drag every other
+  // resource forward with it. The address has to be the one `runner:build`
+  // uploaded to, and the identity the one a converged host reports.
+  const REF = 'b8ae3f9cc5062570c0722302dafbbeb10d4f3d00'
+  const calls: string[][] = []
+  const fleet = gcpFleet(calls)
+  // On GCP the payload travels in the policy document, not on the command line,
+  // so the file has to be read while the command that names it is in flight.
+  let policy = ''
+  const capturing: RunCommand = (file, args) => {
+    const named = args.find((argument) => argument.startsWith('--file='))
+    if (named) policy = readFileSync(named.slice('--file='.length), 'utf8')
+    return fleet(file, args)
+  }
+  assert.equal(await drive(['--stage', 'dev2', '--ref', REF], capturing, 'gcp'), 0)
+
+  assert.match(policy, new RegExp(`gs://[a-z0-9-]+-artifacts-[a-z0-9-]+/runner/${REF}/`), 'the staged address')
+  assert.match(policy, new RegExp(`boxlite-runner-v\\d+\\.\\d+\\.\\d+-${REF}-linux-amd64\\.tar\\.gz`))
+  assert.match(policy, new RegExp(`\\d+\\.\\d+\\.\\d+\\+${REF}`), 'the build identity a host reports')
+
+  // Asserted, not merely executed: gcpFleet answers every unrecognised command
+  // with ok(), so a misspelled probe would pass here and only fail closed on a
+  // real stage — against an object that is in fact staged.
+  const probed = calls
+    .filter((call) => call[1] === 'storage' && call[2] === 'objects' && call[3] === 'describe')
+    .map((call) => call[4] as string)
+  assert.equal(probed.length, 2, 'both objects a host fetches are checked, before any host is stopped')
+  // The version is left open: it comes from the workspace, so pinning it here
+  // would break this test on the next release bump for no reason of its own.
+  assert.match(
+    probed[0] as string,
+    new RegExp(
+      `^gs://boxlite-app-dev2-artifacts-your-gcp-project-id/runner/${REF}/` +
+        `boxlite-runner-v\\d+\\.\\d+\\.\\d+-${REF}-linux-amd64\\.tar\\.gz$`,
+    ),
+  )
+  assert.equal(probed[1], `${probed[0]}.sha256`, 'the checksum is the tarball’s own, not a second address')
+})
+
+test('--ref takes one full commit sha, and says so before the fleet is touched', async () => {
+  // A short sha resolves to no object at all, and finding that out after the
+  // roll has begun is finding it out on a host that is already stopped.
+  const calls: string[][] = []
+  await assert.rejects(
+    () => drive(['--stage', 'dev', '--ref', 'b8ae3f9c'], awsFleet(calls)),
+    (error: Error) => error instanceof RunnerUpdateError && /full 40-character commit sha/.test(error.message),
+  )
+  assert.equal(
+    calls.filter((call) => call[2] === 'send-command').length,
+    0,
+    'no host was rolled',
+  )
+})
+
+test('on AWS the bucket is qualified by the session\u2019s own account, read at roll time', async () => {
+  // S3\u2019s namespace is global, so the name carries an account qualifier. Reading
+  // it from the session actually doing the roll is what keeps a bucket qualified
+  // for one account from being addressed with another\u2019s credentials.
+  const REF = 'b8ae3f9cc5062570c0722302dafbbeb10d4f3d00'
+  const calls: string[][] = []
+  assert.equal(await drive(['--stage', 'dev', '--ref', REF], awsFleet(calls)), 0)
+
+  const heads = calls.filter((call) => call[2] === 'head-object')
+  assert.equal(heads.length, 2, 'the tarball and its checksum, both before any host was stopped')
+  for (const head of heads) {
+    assert.equal(head[head.indexOf('--bucket') + 1], 'boxlite-app-dev-artifacts-123456789012')
+  }
+  const keys = heads.map((head) => head[head.indexOf('--key') + 1] as string)
+  assert.match(
+    keys[0] as string,
+    new RegExp(`^runner/${REF}/boxlite-runner-v\\d+\\.\\d+\\.\\d+-${REF}-linux-amd64\\.tar\\.gz$`),
+  )
+  assert.equal(keys[1], `${keys[0]}.sha256`, 'the checksum is the tarball’s own, not a second address')
+})
+
+test('an unreadable AWS account id stops the roll rather than composing a bucket from it', async () => {
+  // An expired session would otherwise compose `\u2026-artifacts-` and fail against
+  // a bucket name that never existed, which reads as a missing artifact.
+  const calls: string[][] = []
+  await assert.rejects(
+    () => drive(['--stage', 'dev', '--ref', 'b8ae3f9cc5062570c0722302dafbbeb10d4f3d00'], awsFleet(calls, { account: '' })),
+    (error: Error) => error instanceof RunnerUpdateError && /could not read the AWS account id/.test(error.message),
+  )
+  assert.equal(calls.filter((call) => call[2] === 'send-command').length, 0, 'no host was rolled')
+})
+
+test('an address nothing published is refused before the first host is stopped', async () => {
+  // The roll stops hosts one at a time, so discovering this on the first host
+  // leaves the fleet half-served and one machine down for nothing.
+  const calls: string[][] = []
+  await assert.rejects(
+    () => drive(['--stage', 'dev', '--ref', 'b8ae3f9cc5062570c0722302dafbbeb10d4f3d00'], awsFleet(calls, { staged: false })),
+    (error: Error) => error instanceof RunnerUpdateError && /nothing is staged at s3:\/\//.test(error.message),
+  )
+  assert.equal(calls.filter((call) => call[2] === 'send-command').length, 0, 'no host was rolled')
 })
