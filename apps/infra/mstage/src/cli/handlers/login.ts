@@ -4,8 +4,9 @@
  *
  * It signs nobody in and translates nobody's failure. Sign in however this
  * machine does — `aws login`, `gcloud auth login` and `gcloud auth
- * application-default login`, `gh auth login` — and mstage picks up the
- * result. The check below is AWS's; the others live in `auth/sessions.ts`.
+ * application-default login`, `gh auth login`, `auth0 login` — and mstage
+ * picks up the result. The check below is AWS's; the others live in
+ * `auth/sessions.ts`.
  */
 
 import type { AwsIdentity } from '../../aws/identity.ts'

@@ -664,7 +664,7 @@ region` calls nothing at all, resolving the region locally from the table below.
 
 `mstage login` applies the same rule to GitHub and Auth0 — it reads the session
 `gh auth login` and `auth0 login` left behind, and repeats those CLIs' own
-message when there isn't one. All three providers are documented in `--help`
+message when there isn't one. All four providers are documented in `--help`
 whether or not this repository declares them, because mstage is shared and does
 not define the set; naming one no stage declares is refused,
 and a missing session for a declared, required provider is what fails the
