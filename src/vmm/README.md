@@ -1,7 +1,9 @@
 # boxlite-vmm
 
-Workspace skeleton for BoxLite's native VMM. The modules declare ownership
-boundaries only; this crate cannot create or boot a VM yet.
+Workspace skeleton for BoxLite's native VMM. The crate-visible VM and vCPU `run`
+entry points sketch event dispatch, guest exits, and worker cleanup with inline
+`todo!()` operations that panic if called. Provisional event and exit labels stay
+local to each method; this crate cannot create or boot a VM yet.
 
 ```text
 boxlite-vmm
