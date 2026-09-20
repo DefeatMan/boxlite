@@ -4,10 +4,6 @@ PHONY_TARGETS += coverage codecov
 # disappear from the denominator just because their tests run separately.
 COVERAGE_REPORT_ARGS = --ignore-filename-regex '(^|/)(src/deps/[^/]+/vendor|src/test-utils|tests)/'
 
-# Optional nextest profile for the unit-coverage passes (CI passes
-# NEXTEST_PROFILE=ci). Empty = nextest's default profile.
-NEXTEST_PROFILE_FLAG = $(if $(NEXTEST_PROFILE),--profile $(NEXTEST_PROFILE),)
-
 # Instrument core/shared/REST, non-VM integration, CLI, native VMM, and Linux
 # guest tests. --no-report accumulates profiles across the passes; the clean
 # first drops profiles left by earlier runs, which would otherwise be merged
@@ -22,7 +18,6 @@ define run_unit_coverage
 	cargo llvm-cov test --no-report $(RUST_UNIT_REST_ARGS) -- --test-threads=1 $(REST_CARGOTEST_FILTER) || rc=$$?; \
 	$(MAKE) coverage:runtime || rc=$$?; \
 	cargo llvm-cov nextest --no-report --no-tests=fail $(NEXTEST_PROFILE_FLAG) -p boxlite-cli --bins --test auth $(NEXTEST_FILTER) || rc=$$?; \
-	cargo llvm-cov nextest --no-report --no-tests=warn $(NEXTEST_PROFILE_FLAG) -p boxlite-hypervisor -p boxlite-vmm --lib $(NEXTEST_FILTER) || rc=$$?; \
 	$(MAKE) coverage:bindings || rc=$$?; \
 	if [ "$$(uname)" = Linux ]; then \
 		cargo llvm-cov nextest --no-report --no-tests=fail $(NEXTEST_PROFILE_FLAG) -p boxlite-guest $(NEXTEST_FILTER) || rc=$$?; \

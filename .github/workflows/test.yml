@@ -12,6 +12,9 @@ name: Test
 
 on:
   merge_group:
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
@@ -49,6 +52,7 @@ on:
       - '.github/workflows/test.yml'
       - '.github/workflows/config.yml'
       - '.github/actions/**'
+      - '.github/ci-config.json'
       - 'openapi/**'
       - 'codecov.yml'
   # No path filter on pull_request: the `Test (conclusion)` job is a required
@@ -59,15 +63,15 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: test-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: '0'
 
 jobs:
-  # Load shared configuration
-  config:
-    uses: ./.github/workflows/config.yml
-
   # Detect which files changed to conditionally run tests
   changes:
     runs-on: ubuntu-latest
@@ -75,17 +79,26 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      rust: ${{ steps.filter.outputs.rust }}
-      python: ${{ steps.filter.outputs.python }}
-      node: ${{ steps.filter.outputs.node }}
-      go: ${{ steps.filter.outputs.go }}
-      api: ${{ steps.filter.outputs.api }}
-      guest_artifacts: ${{ steps.filter.outputs.guest_artifacts }}
-      setup: ${{ steps.filter.outputs.setup }}
+      platforms: ${{ steps.config.outputs.platforms }}
+      rust-toolchain: ${{ steps.config.outputs.rust-toolchain }}
+      python-test-matrix: ${{ steps.config.outputs.python-test-matrix }}
+      node-test-matrix: ${{ steps.config.outputs.node-test-matrix }}
+      rust: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || steps.filter.outputs.rust == 'true' }}
+      python: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || steps.filter.outputs.python == 'true' }}
+      node: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || steps.filter.outputs.node == 'true' }}
+      go: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || steps.filter.outputs.go == 'true' }}
+      api: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || steps.filter.outputs.api == 'true' }}
+      guest_artifacts: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || steps.filter.outputs.guest_artifacts == 'true' }}
+      setup: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || steps.filter.outputs.setup == 'true' }}
     steps:
       - uses: actions/checkout@v5
-      - uses: dorny/paths-filter@v4
+      - uses: ./.github/actions/ci-config
+        id: config
+        with:
+          full-matrix: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
         id: filter
+        if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         with:
           # In a merge queue, diff against the merge-group base/head (no PR base
           # exists). Empty on pull_request/push, where paths-filter ignores them.
@@ -128,7 +141,8 @@ jobs:
               - 'codecov.yml'
               - '.github/actions/setup-rust/**'
               - '.github/actions/setup-python/**'
-              - '.github/workflows/config.yml'
+              - '.github/ci-config.json'
+              - '.github/actions/ci-config/**'
               - '.github/workflows/test.yml'
             python:
               - 'sdks/python/**'
@@ -136,14 +150,16 @@ jobs:
               - 'make/**'
               - 'codecov.yml'
               - '.github/actions/setup-python/**'
-              - '.github/workflows/config.yml'
+              - '.github/ci-config.json'
+              - '.github/actions/ci-config/**'
               - '.github/workflows/test.yml'
             node:
               - 'sdks/node/**'
               - 'Makefile'
               - 'make/**'
               - 'codecov.yml'
-              - '.github/workflows/config.yml'
+              - '.github/ci-config.json'
+              - '.github/actions/ci-config/**'
               - '.github/workflows/test.yml'
             go:
               - 'sdks/go/**'
@@ -154,7 +170,8 @@ jobs:
               - '.github/actions/setup-go/**'
               - '.github/actions/setup-rust/**'
               - '.github/actions/sccache/**'
-              - '.github/workflows/config.yml'
+              - '.github/ci-config.json'
+              - '.github/actions/ci-config/**'
               - '.github/workflows/test.yml'
             api:
               - 'apps/api/**'
@@ -179,11 +196,15 @@ jobs:
               - 'scripts/test/test-guest-artifacts.sh'
               - 'scripts/test/test-guest-build-contracts.sh'
               - 'Makefile'
-              - 'make/**'
+              - 'make/vars.mk'
+              - 'make/setup.mk'
+              - 'make/build.mk'
+              - 'make/test.mk'
               - 'rust-toolchain.toml'
               - '**/Cargo.toml'
               - 'Cargo.lock'
-              - '.github/workflows/config.yml'
+              - '.github/ci-config.json'
+              - '.github/actions/ci-config/**'
               - '.github/workflows/test.yml'
             setup:
               - '.gitmodules'
@@ -197,13 +218,13 @@ jobs:
   # Codecov gates changed lines at 90% and reports total coverage separately.
   rust:
     name: Rust Tests (${{ matrix.platform.target }})
-    needs: [config, changes]
+    needs: changes
     if: ${{ needs.changes.outputs.rust == 'true' }}
     runs-on: ${{ matrix.platform.os }}
     strategy:
       fail-fast: false
       matrix:
-        platform: ${{ fromJson(needs.config.outputs.platforms) }}
+        platform: ${{ fromJson(needs.changes.outputs.platforms) }}
 
     permissions:
       contents: read
@@ -214,7 +235,7 @@ jobs:
 
       - uses: ./.github/actions/setup-rust
         with:
-          toolchain: ${{ needs.config.outputs.rust-toolchain }}
+          toolchain: ${{ needs.changes.outputs.rust-toolchain }}
 
       - uses: ./.github/actions/setup-python
         # PyO3 unit tests embed an interpreter instead of building a wheel.
@@ -268,14 +289,13 @@ jobs:
   # Python SDK unit tests
   python:
     name: Python Tests (${{ matrix.platform.target }} / Python ${{ matrix.python-version }})
-    needs: [config, changes]
+    needs: changes
     if: ${{ needs.changes.outputs.python == 'true' }}
     runs-on: ${{ matrix.platform.os }}
     strategy:
       fail-fast: false
       matrix:
-        platform: ${{ fromJson(needs.config.outputs.platforms) }}
-        python-version: ${{ fromJson(needs.config.outputs.python-versions) }}
+        include: ${{ fromJson(needs.changes.outputs.python-test-matrix) }}
 
     permissions:
       contents: read
@@ -303,14 +323,13 @@ jobs:
   # Node.js SDK unit tests
   node:
     name: Node.js Tests (${{ matrix.platform.target }} / Node ${{ matrix.node-version }})
-    needs: [config, changes]
+    needs: changes
     if: ${{ needs.changes.outputs.node == 'true' }}
     runs-on: ${{ matrix.platform.os }}
     strategy:
       fail-fast: false
       matrix:
-        platform: ${{ fromJson(needs.config.outputs.platforms) }}
-        node-version: ${{ fromJson(needs.config.outputs.node-versions) }}
+        include: ${{ fromJson(needs.changes.outputs.node-test-matrix) }}
 
     permissions:
       contents: read
@@ -362,13 +381,13 @@ jobs:
   # Go SDK unit tests
   go:
     name: Go Tests (${{ matrix.platform.target }})
-    needs: [config, changes]
+    needs: changes
     if: ${{ needs.changes.outputs.go == 'true' }}
     runs-on: ${{ matrix.platform.os }}
     strategy:
       fail-fast: false
       matrix:
-        platform: ${{ fromJson(needs.config.outputs.platforms) }}
+        platform: ${{ fromJson(needs.changes.outputs.platforms) }}
 
     permissions:
       contents: read
@@ -381,7 +400,7 @@ jobs:
 
       - uses: ./.github/actions/setup-rust
         with:
-          toolchain: ${{ needs.config.outputs.rust-toolchain }}
+          toolchain: ${{ needs.changes.outputs.rust-toolchain }}
 
       - name: Install build dependencies
         run: make setup:build
@@ -402,7 +421,7 @@ jobs:
 
   guest_artifacts:
     name: Guest Artifacts (${{ matrix.os }} / ${{ matrix.target }} / ${{ matrix.profile }})
-    needs: [config, changes]
+    needs: changes
     if: ${{ needs.changes.outputs.guest_artifacts == 'true' }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -435,7 +454,7 @@ jobs:
 
       - uses: ./.github/actions/setup-rust
         with:
-          toolchain: ${{ needs.config.outputs.rust-toolchain }}
+          toolchain: ${{ needs.changes.outputs.rust-toolchain }}
 
       - name: Set up build dependencies
         run: make setup:build
@@ -462,7 +481,7 @@ jobs:
   # API tests need real Redis and Postgres services for integration coverage.
   api:
     name: API Tests
-    needs: ["config", "changes"]
+    needs: changes
     if: ${{ needs.changes.outputs.api == 'true' }}
     runs-on: "ubuntu-latest"
     permissions: # Read source; OIDC authenticates the coverage upload.
@@ -535,7 +554,7 @@ jobs:
   # NOTE: keep `needs` in sync with the jobs above when adding/removing jobs.
   test-conclusion:
     name: Test (conclusion)
-    needs: [config, changes, rust, python, node, go, setup, api, guest_artifacts]
+    needs: [changes, rust, python, node, go, setup, api, guest_artifacts]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions: {}
