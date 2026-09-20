@@ -81,12 +81,14 @@ export type Placement =
        *
        * What that costs, and it applies to every rule keyed this way rather
        * than to any one of them: an ingress rule with a source tag is not
-       * applied the moment it is written. It propagates. Measured on the dev
-       * stage on 2026-09-20, a change to the runner's rule was still not
-       * serving ten minutes later — so an edit here shows the old answer for a
-       * while, and rolling one back is not instant either. That is the runner's
-       * rule measured; ClickHouse's is keyed the same way and nothing here
-       * claims anything about the rules that are not.
+       * applied the moment it is written. Measured on the dev stage on
+       * 2026-09-20 — a deny on the same tag was added and removed, and the
+       * runner's rule then admitted nothing for forty minutes. Waiting did not
+       * end it; rewriting the rule did, and it served four minutes later. So a
+       * rule here that reads correctly and is not serving is repaired by
+       * writing it again, and a rollback is not an instant operation. That is
+       * the runner's rule measured; ClickHouse's is keyed the same way and
+       * nothing here claims anything about the rules that are not.
        */
       networkTag: string
     }
