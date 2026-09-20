@@ -232,6 +232,7 @@ export const gcpClickHouseProvider =
     zone,
     appShort,
     callers,
+    callerTags,
     clickStackConsumerProject,
     clickStackConsumerAccount,
     managed,
@@ -258,6 +259,14 @@ export const gcpClickHouseProvider =
      * the account created below and never handed in.
      */
     callers: $util.Output<string>[]
+    /**
+     * The same callers as the firewall sees them: by network tag.
+     *
+     * Both of them are Cloud Run services, and Google attributes a direct-egress
+     * packet to no service account — so `callers` above grants them the
+     * password and admits them to nothing. See `Placement.networkTag`.
+     */
+    callerTags: string[]
     /**
      * The project whose endpoints may reach this ClickHouse over Private
      * Service Connect. See `publishClickStack`, which owns the publication.
@@ -373,10 +382,18 @@ export const gcpClickHouseProvider =
         }),
     )
 
+    /*
+     * What this host is called, which is also the tag the rule below admits its
+     * callers to. One string for both, for the same reason `networkTagFor`
+     * spells a tag with `instanceFor` in `network.ts`: a rule and the thing it
+     * names cannot drift apart when one function writes both.
+     */
+    const hostName = instanceFor({ app: $app.name, stage: $app.stage, artifact: 'clickhouse' })
+
     const instance = new gcp.compute.Instance(
       'ClickHouse',
       {
-        name: instanceFor({ app: $app.name, stage: $app.stage, artifact: 'clickhouse' }),
+        name: hostName,
         project,
         zone,
         machineType: MACHINE[request.instanceSize],
@@ -390,6 +407,9 @@ export const gcpClickHouseProvider =
           },
         ],
         serviceAccount: { email: host.email, scopes: ['cloud-platform'] },
+        // What the rule below admits its callers *to*. A target service account
+        // cannot be paired with the tag sources that rule needs.
+        tags: [hostName],
         metadataStartupScript: startupScript,
         // Telemetry storage is not a machine to be replaced casually, and a
         // newer image on an unrelated deploy would take the history with it.
@@ -399,17 +419,25 @@ export const gcpClickHouseProvider =
     )
 
     const firewall = new gcp.compute.Firewall('ClickHouseFirewall', {
-      name: instanceFor({ app: $app.name, stage: $app.stage, artifact: 'clickhouse' }),
+      name: hostName,
       project,
       network: network.network,
       direction: 'INGRESS',
       allows: [{ protocol: 'tcp', ports: [String(HTTP_PORT)] }],
-      // Whoever the caller is, by identity — the collector writes and the API
-      // reads, and nothing else in the network has a reason to reach this. Both
-      // of them, from one list: see `CLICKHOUSE_CALLERS` for what naming only
-      // the writer here costs.
-      sourceServiceAccounts: callers,
-      targetServiceAccounts: [host.email],
+      /*
+       * Whoever the caller is, by tag — the collector writes and the API reads,
+       * and nothing else in the network has a reason to reach this. Both of
+       * them, from one list: see `CLICKHOUSE_CALLERS` for what naming only the
+       * writer here costs.
+       *
+       * By tag rather than by account because both callers are Cloud Run
+       * services, whose direct-egress packets arrive attributed to no identity:
+       * a rule keyed on `sourceServiceAccounts` admits neither of them, and the
+       * symptom is the connect timeout described in `Placement.networkTag`
+       * rather than a refusal anyone can see.
+       */
+      sourceTags: callerTags,
+      targetTags: [hostName],
     })
 
     /*

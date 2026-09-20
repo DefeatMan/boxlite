@@ -388,6 +388,17 @@ udevadm trigger --name-match=kvm || true`,
           ],
           serviceAccount: { email: placement.serviceAccount, scopes: ['cloud-platform'] },
           /*
+           * The name the control plane's rule admits this host by.
+           *
+           * A target service account would say the same thing and read better,
+           * but the source on that rule has to be a tag — Cloud Run's
+           * direct-egress packets carry no identity — and Google refuses a rule
+           * that mixes the two. So the host is named the way its caller has to
+           * be. Tags are an in-place update, which matters for a machine that
+           * is never replaced.
+           */
+          tags: [placement.networkTag],
+          /*
            * OS Login, explicitly, because the in-place binary upgrade signs in.
            *
            * Without it gcloud falls back to writing an SSH key into project-wide

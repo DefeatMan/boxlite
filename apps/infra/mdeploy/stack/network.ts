@@ -64,8 +64,22 @@ export type Placement =
       exposure: Exposure
       /** The subnetwork a Cloud Run service egresses through, or a VM sits in. */
       subnetwork: $util.Output<string>
-      /** The identity firewall rules name, and that IAM grants attach to. */
+      /** The identity IAM grants attach to, and that Cloud Run admits invokers by. */
       serviceAccount: $util.Output<string>
+      /**
+       * The name a firewall rule matches this workload's packets by.
+       *
+       * Not the service account, and the difference is the whole reason this
+       * field exists. A Cloud Run service reaches the network through direct
+       * VPC egress, and Google does not attribute those packets to the
+       * service's identity: `sourceServiceAccounts` never matches one, so a
+       * rule keyed that way admits nothing and the deny at 65534 takes the
+       * packet instead — a connect timeout against a host that is plainly
+       * running. A network tag is the one label that does reach serverless
+       * traffic, so every rule between a Cloud Run workload and a VM is keyed
+       * on this and every such workload carries it.
+       */
+      networkTag: string
     }
 
 /**

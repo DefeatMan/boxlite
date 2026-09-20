@@ -22,8 +22,15 @@
  * `egress-only-public`, and that is an organization policy rather than a
  * preference: `constraints/compute.vmExternalIpAccess` refuses an instance that
  * asks for an external address, so every workload's outbound goes through Cloud
- * NAT. The only ingress rule that names the runner's service account still
- * admits the API and the proxy and nothing else.
+ * NAT. The only ingress rule that names the runner still admits the API and the
+ * proxy and nothing else.
+ *
+ * Identity has one hole, and it is the reason `Placement` carries a network tag
+ * beside the account: a Cloud Run service's direct-egress packets arrive
+ * attributed to no service account, so a rule that admits one *by identity*
+ * admits nothing. Every rule from a Cloud Run workload to a VM is keyed on that
+ * tag instead — here for the runner, and in `clickhouse.ts` for the telemetry
+ * host.
  */
 
 import { API_PORT } from '../../api.ts'
@@ -35,6 +42,18 @@ import { identityFor, instanceFor } from 'naming'
 
 /** Every port one workload in this network opens to another. */
 const INTERNAL_PORTS = [API_PORT, PROXY_PORT, RUNNER_PORT, OTLP_HTTP_PORT].map(String)
+
+/**
+ * The tag a role's packets are admitted by, where its identity cannot be.
+ *
+ * Google attributes a Cloud Run service's direct-egress packets to no service
+ * account, so `sourceServiceAccounts` cannot name the control plane or the
+ * collector — see `Placement.networkTag`. It is the same `<app>-<stage>-<role>`
+ * every resource of that role is named by, so a rule and the workload it admits
+ * cannot drift: one function spells both.
+ */
+export const networkTagFor = ({ app, stage, role }: { app: string; stage: string; role: WorkloadRole }): string =>
+  instanceFor({ app, stage, artifact: role })
 
 /** The subnet workloads sit in. Private Service Access gets its own below. */
 export const SUBNET_CIDR = '10.20.0.0/20'
@@ -209,6 +228,8 @@ export const gcpNetworkProvider =
       ]),
     ) as Record<WorkloadRole, CloudResource>
 
+    const tagFor = (role: WorkloadRole): string => networkTagFor({ app: $app.name, stage: $app.stage, role })
+
     /*
      * Service to service, keyed on identity rather than on a range.
      *
@@ -229,8 +250,18 @@ export const gcpNetworkProvider =
       targetServiceAccounts: serviceIdentities,
     })
 
-    // The runner answers the API here. GKE Pod addresses are admitted by the
-    // proxy edge beside the cluster that owns their secondary range.
+    /*
+     * The runner answers the API here. GKE Pod addresses are admitted by the
+     * proxy edge beside the cluster that owns their secondary range.
+     *
+     * Tags on both sides, and this is the one rule in the file that cannot be
+     * keyed on identity. The API is a Cloud Run service reaching a VM, and
+     * `sourceServiceAccounts` does not match direct-egress traffic at all — the
+     * rule above it admits nothing and the deny at 65534 swallows the SYN, so
+     * `/v1/boxes/*` returns 504 after a full connect timeout while the runner
+     * sits healthy and logs nothing. A source tag cannot be paired with a
+     * target service account either, so the runner is named by tag as well.
+     */
     const runnerIngress = new gcp.compute.Firewall('RunnerFirewall', {
       name: instanceFor({ app: $app.name, stage: $app.stage, artifact: 'runner' }),
       project,
@@ -238,8 +269,8 @@ export const gcpNetworkProvider =
       direction: 'INGRESS',
       priority: 1000,
       allows: [{ protocol: 'tcp', ports: [String(RUNNER_PORT)] }],
-      sourceServiceAccounts: [accounts.api.email],
-      targetServiceAccounts: [accounts.runner.email],
+      sourceTags: [tagFor('api')],
+      targetTags: [tagFor('runner')],
     })
 
     /*
@@ -313,6 +344,7 @@ export const gcpNetworkProvider =
       exposure: 'private',
       subnetwork: subnetwork.id,
       serviceAccount: accounts[role].email,
+      networkTag: tagFor(role),
     })
 
     return {

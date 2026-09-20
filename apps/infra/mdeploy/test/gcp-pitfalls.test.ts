@@ -587,32 +587,80 @@ test('the collector is invocable from the network, and the ingress is the whole 
   assert.equal(/GOOGLE_ID_TOKEN/.test(sourceOf('runners') + sourceOf('edge')), false)
 })
 
-test('the telemetry database admits every identity that speaks to it, not just the writer', () => {
+test('the telemetry database admits every caller that speaks to it, not just the writer', () => {
   /*
-   * The collector writes and the API reads, and the rule is keyed on service
-   * accounts — so an identity left out of it is *dropped* rather than refused:
-   * the reader gets a connect timeout against a database that is plainly
-   * running, ClickHouse logs nothing because nothing arrived, and the explicit
-   * deny at 65534 is the only trace. The composition root used to hand over the
-   * collector's account alone while the comment beside it said both, and no
-   * stage caught it because the one GCP stage keeps `CLICKHOUSE_MODE=disabled`.
+   * The collector writes and the API reads, and a caller left out of the rule is
+   * *dropped* rather than refused: the reader gets a connect timeout against a
+   * database that is plainly running, ClickHouse logs nothing because nothing
+   * arrived, and the explicit deny at 65534 is the only trace. The composition
+   * root used to hand over the collector alone while the comment beside it said
+   * both, and no stage caught it because the one GCP stage keeps
+   * `CLICKHOUSE_MODE=disabled`.
+   *
+   * Both callers are read twice, and that is the point: an account for the
+   * secret grant, a network tag for the rule. Neither substitutes for the other
+   * — see the test below for why the rule cannot use the account.
    *
    * The roles are recorded as the bundle asks the network for them, so this
    * fails when the wiring stops asking rather than when a string moves.
    */
-  const asked: string[] = []
+  const granted: string[] = []
+  const admitted: string[] = []
   const network = {
     binding: { cloud: 'gcp', network: 'net', subnetwork: 'subnet' },
-    placementFor: (role: string) => {
-      asked.push(role)
-      return { cloud: 'gcp', serviceAccount: `${role}@example.iam.gserviceaccount.com` }
-    },
+    placementFor: (role: string) => ({
+      cloud: 'gcp',
+      get serviceAccount() {
+        granted.push(role)
+        return `${role}@example.iam.gserviceaccount.com`
+      },
+      get networkTag() {
+        admitted.push(role)
+        return `boxlite-app-dev2-${role}`
+      },
+    }),
     ready: [],
   } as any
   gcpBundle().clickhouse({ network })
-  assert.deepEqual([...asked].sort(), ['api', 'otel-collector'])
+  assert.deepEqual([...granted].sort(), ['api', 'otel-collector'])
+  assert.deepEqual([...admitted].sort(), ['api', 'otel-collector'])
   // And the rule is keyed on the whole list it was handed rather than one of it.
-  assert.match(sourceOf('clickhouse'), /sourceServiceAccounts: callers/)
+  assert.match(sourceOf('clickhouse'), /sourceTags: callerTags/)
+})
+
+test('a Cloud Run service reaches a VM by tag, because its packets arrive with no identity', () => {
+  /*
+   * The 504 this pins. `sourceServiceAccounts` matches traffic from VM
+   * instances; a Cloud Run service reaching the network through direct VPC
+   * egress is attributed to no account at all, so a rule keyed that way admits
+   * nothing and the deny at 65534 takes the SYN. The control plane's
+   * `/v1/boxes/*` routes — exec, files, metrics — then time out after a full
+   * TCP connect against a runner that is healthy, answering the GKE proxy on
+   * the same port, and logging nothing because nothing reached it.
+   *
+   * Google's own constraint is what makes this four lines in three files rather
+   * than one: a source tag cannot be paired with a target service account, so
+   * naming the caller by tag forces naming the host by tag too. Read as source
+   * because both ends are Pulumi resources — what has to hold is that the two
+   * carry the same name, and one function spells it.
+   */
+  const network = sourceOf('network')
+  assert.match(network, /sourceTags: \[tagFor\('api'\)\]/)
+  assert.match(network, /targetTags: \[tagFor\('runner'\)\]/)
+  assert.match(network, /networkTag: tagFor\(role\)/)
+  // The caller carries it out, on the interface the packets leave through.
+  assert.match(sourceOf('api'), /networkInterfaces: \[\{ subnetwork: placement\.subnetwork, tags: \[placement\.networkTag\] \}\]/)
+  assert.match(
+    sourceOf('collector'),
+    /networkInterfaces: \[\{ subnetwork: placement\.subnetwork, tags: \[placement\.networkTag\] \}\]/,
+  )
+  // And each host answers to it.
+  assert.match(sourceOf('runners'), /tags: \[placement\.networkTag\]/)
+  assert.match(sourceOf('clickhouse'), /tags: \[hostName\]/)
+  // Nothing admits a serverless caller by an identity that never arrives. Keyed
+  // on the property rather than the word, which both files still say in prose.
+  assert.equal(/sourceServiceAccounts: \[accounts\.api\.email\]/.test(network), false)
+  assert.equal(/sourceServiceAccounts:/.test(sourceOf('clickhouse')), false)
 })
 
 /** The script as a host gets it, with three secret versions already resolved. */

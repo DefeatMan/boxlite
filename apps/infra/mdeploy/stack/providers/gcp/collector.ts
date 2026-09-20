@@ -78,9 +78,12 @@ export const gcpCollectorProvider =
         ingress: 'INGRESS_TRAFFIC_INTERNAL_ONLY',
         template: {
           serviceAccount: placement.serviceAccount,
+          // The tag is what gets this service to the ClickHouse host: its
+          // packets carry no service account, so the rule that admits it is
+          // keyed on this name. See `Placement.networkTag`.
           vpcAccess: {
             egress: 'PRIVATE_RANGES_ONLY',
-            networkInterfaces: [{ subnetwork: placement.subnetwork }],
+            networkInterfaces: [{ subnetwork: placement.subnetwork, tags: [placement.networkTag] }],
           },
           containers: [
             {

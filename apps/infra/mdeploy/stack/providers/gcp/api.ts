@@ -338,7 +338,16 @@ export const gcpApiProvider =
            * one — and the default is five minutes.
            */
           timeout: '3600s',
-          vpcAccess: { egress: 'PRIVATE_RANGES_ONLY', networkInterfaces: [{ subnetwork: placement.subnetwork }] },
+          /*
+           * The tag is what gets this service to a runner. Its packets leave
+           * with no service account attached, so the rule that admits it is
+           * keyed on this name — see `Placement.networkTag`. Drop it and every
+           * `/v1/boxes/*` route times out against a healthy host.
+           */
+          vpcAccess: {
+            egress: 'PRIVATE_RANGES_ONLY',
+            networkInterfaces: [{ subnetwork: placement.subnetwork, tags: [placement.networkTag] }],
+          },
           containers: [
             {
               image: request.image,
