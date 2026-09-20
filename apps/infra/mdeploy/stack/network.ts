@@ -78,6 +78,15 @@ export type Placement =
        * running. A network tag is the one label that does reach serverless
        * traffic, so every rule between a Cloud Run workload and a VM is keyed
        * on this and every such workload carries it.
+       *
+       * What that costs, and it applies to every rule keyed this way rather
+       * than to any one of them: an ingress rule with a source tag is not
+       * applied the moment it is written. It propagates. Measured on the dev
+       * stage on 2026-09-20, a change to the runner's rule was still not
+       * serving ten minutes later — so an edit here shows the old answer for a
+       * while, and rolling one back is not instant either. That is the runner's
+       * rule measured; ClickHouse's is keyed the same way and nothing here
+       * claims anything about the rules that are not.
        */
       networkTag: string
     }

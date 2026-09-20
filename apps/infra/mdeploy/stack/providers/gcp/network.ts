@@ -261,6 +261,8 @@ export const gcpNetworkProvider =
      * `/v1/boxes/*` returns 504 after a full connect timeout while the runner
      * sits healthy and logs nothing. A source tag cannot be paired with a
      * target service account either, so the runner is named by tag as well.
+     * Editing this rule is not an instant operation — `Placement.networkTag`
+     * says what a source tag costs, for this rule and for ClickHouse's alike.
      */
     const runnerIngress = new gcp.compute.Firewall('RunnerFirewall', {
       name: instanceFor({ app: $app.name, stage: $app.stage, artifact: 'runner' }),
