@@ -320,21 +320,43 @@ request's own base plus the request, which is the tree that would land; a head
 is the same work missing whatever its base gained since it was branched, so
 shaking one out answers about a tree nobody will merge. It buys no ordering
 against the ref this workflow's definition came from — on the dev path that ref
-need not be the request's base, and the merge can sit behind it. The request
-has to be open and free of
-conflicts; GitHub computes that lazily, so `resolve` polls rather than failing a
-dispatch on a cold cache. A fork's request is accepted and logged as one:
-dispatching this workflow already needs write access, and `build-runner` and
-mbuild's publish compile that tree behind the stage's own Environment, which is
-where a fork's build code gets looked at.
+need not be the request's base, and the merge can sit behind it. The request has
+to be open and free of conflicts; GitHub computes that lazily, so `resolve`
+polls rather than failing a dispatch on a cold cache.
+
+A fork's request is accepted and logged as one. Two things stand behind that.
+Dispatching at all needs write access on this repository. And `build-runner`
+and mbuild's publish, which are the jobs that compile the request's tree, bind
+the stage's Environment, where `bootstrap` asks for at least one required
+reviewer on every stage it creates (`bootstrap.ts:1237`, and `:1084` on GCP) —
+so a fork's tree waits on a human pressing approve.
+
+What that approval is worth is narrower than it looks, in three ways worth
+knowing before leaning on it. It is a person unblocking a run, not a reading
+of the diff. The reviewer `bootstrap` requests defaults to whoever ran it, so
+on a stage nobody has since edited, the dispatcher may be the approver.
+And `ensureGithubEnvironment` falls back to an Environment with no reviewers
+at all when GitHub refuses protection rules outright (`bootstrap.ts:595`),
+which needs a private repository without Pro/Team/Enterprise — not this one,
+but a fork of this setup into one loses the gate on every stage except prod,
+which fails closed instead.
+
+`dev` here currently also carries `prevent_self_review`, alongside
+`can_admins_bypass: true` — so it excludes a dispatcher who is not an admin.
+Nothing in this repository sets either: `githubEnvironmentPayload`
+(`bootstrap/github.ts:31`) sends `reviewers` and `deployment_branch_policy`
+and no more. Both were applied by hand, and since the environment call is a
+`PUT`, a `bootstrap` rerun is the thing most likely to lose them — worth
+re-checking after one rather than assuming. Read them as the state of this
+repository today, not as part of the shape bootstrap reproduces.
 
 **prod takes a release tag and nothing else.** A commit or a pull request aimed
 at it is refused in `resolve`, before any Environment is bound. Promotion is
 preferred over a build for a reason that is not speed: it moves the bytes dev
-already serves, and a
-rebuild of one commit is not byte-identical, while everything downstream treats
-version+commit as an identity and never looks inside. Two stages that each built
-the same commit hold two sets of bytes under one reported version.
+already serves, and a rebuild of one commit is not byte-identical, while
+everything downstream treats version+commit as an identity and never looks
+inside. Two stages that each built the same commit hold two sets of bytes under
+one reported version.
 
 **A release installs the runner it was cut from, not a rebuild of it.**
 `mdeploy/stack/runner-binary.ts` addresses the tarball on the GitHub Release
@@ -404,6 +426,19 @@ answered, and prompts where one can.
 which has to know whose project holds the bucket and repository it is granting
 on; a rollout no longer chooses a source at all, because a promotion's source is
 dev.
+
+### Known loose ends
+
+Two, both noticed while the pull-request shape landed and both deliberately
+left for their own change rather than folded into it:
+
+- `.github/actions/resolve-ref` still declares a `fallback` input and a
+  `resolved-from` output that nothing reads. `mbuild.yml` was the last consumer
+  of either; the two remaining call sites pass and read neither. Removing them
+  edits an action two workflows call, so it wants its own verification.
+- `mdeploy-all`'s `line` label and the two step summaries built from it have no
+  test. `mbuild-release-workflow.test.ts` pins a `run-name` and is the pattern
+  to follow.
 
 ## Commands
 

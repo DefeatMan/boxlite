@@ -24,7 +24,7 @@ DEPLOY (manual dispatch)                deploy-infra ─┬─▶ build-apps-api
                                                       ├─▶ build-c ──▶ build-runner-binary
                                                       └─▶ e2e-cloud
                                         deploy-release   (no builds; consumes published artifacts)
-                                        mdeploy-all ─┬─▶ mbuild         (a commit ──▶ <sha> images, dev)
+                                        mdeploy-all ─┬─▶ mbuild         (a commit or #<n> ──▶ <sha> images, dev)
                                                      └─▶ mbuild-release (v<X.Y.Z> ──▶ v<X.Y.Z>-<sha>, dev then prod)
 
 CONFIG                                  ci-config action ◀── lint, test, config workflow
@@ -54,7 +54,7 @@ is *exclusively* callable; workflows with `workflow_dispatch` can also run on th
 | `deploy-infra.yml` | dispatch | — | Builds and deploys one commit to a stage. The normal deploy path |
 | `deploy-release.yml` | dispatch | — | Deploys already-published artifacts for one `X.Y.Z`. Compiles nothing |
 | `e2e-cloud.yml` | dispatch, `workflow_call` | yes | End-to-end against a deployed stage. Run by `deploy-infra` after it applies |
-| `mdeploy-all.yml` | dispatch | — | The only rollout path. A commit SHA builds for dev; a release tag publishes into dev or promotes to prod, and is all prod accepts. Applies the stack itself |
+| `mdeploy-all.yml` | dispatch | — | The only rollout path. A commit SHA builds for dev, and so does `#<number>` — a pull request, by the commit it would merge to; a release tag publishes into dev or promotes to prod, and is all prod accepts. Applies the stack itself |
 | `mbuild.yml` | `workflow_call` | call-only | The commit line's images, for a dev rollout. Callee only: nobody publishes a commit by hand |
 | `mbuild-release.yml` | dispatch, `workflow_call` | yes | The release line's images, tagged `v<X.Y.Z>-<sha>`: publish a version into dev, or promote it to prod. One job per artifact, and a version the target already holds is refused rather than skipped |
 | `e2e-local.yml` | push, `pull_request_target`, dispatch | — | VM-based tests on a self-hosted EC2 runner. Needs `/dev/kvm`; PRs need the `e2e-local` label |

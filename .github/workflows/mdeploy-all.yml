@@ -268,9 +268,12 @@ jobs:
           # Logged, never gated on. Dispatching this workflow already needs
           # write access, and every job that reaches a cloud role sits behind
           # its stage's Environment — a fork's merge reaches those no more
-          # easily than a same-repo one. What a reviewer should know is that
+          # easily than a same-repo one. What an approver should know is that
           # `build-runner` and mbuild's publish compile this tree, so the
-          # approval on dev is where a fork's build code gets looked at.
+          # approval that releases them is what stands between a fork's build
+          # code and this stage's credentials. It is a person unblocking a
+          # run, not a reading of the diff; `apps/infra/DEPLOY.md` says what
+          # that is and is not worth.
           fork="$(jq -r '.isCrossRepository' <<<"$pr_json")"
           head="$(jq -r '.headRefOid' <<<"$pr_json")"
           echo "#$PR ($([ "$fork" = 'true' ] && echo fork || echo same-repo)) head is $head; deploying merge $sha"
