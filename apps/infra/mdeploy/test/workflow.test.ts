@@ -8,9 +8,13 @@
  */
 
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { load } from 'js-yaml'
 import { parseBase } from 'mstage/config'
 import { variableNameFor } from 'mstage/config-variable'
 
@@ -381,5 +385,42 @@ test('the checks that decide an apply run in the job that applies, not beside it
     const at = workflow.indexOf(check)
     assert.notEqual(at, -1, `${check} is gone rather than moved`)
     assert.ok(at < apply, `${check} runs after the apply it guards`)
+  }
+})
+
+test('the failure summary renders for a run that failed before it addressed anything', () => {
+  /*
+   * `Report` is `if: always()` and `set -Eeuo pipefail`, and the values it
+   * prints are written to `GITHUB_ENV` by "Address what this deploy installs".
+   * A checkout, a setup or the addressing step itself failing leaves them
+   * unwritten, and under `set -u` a bare expansion aborts the step — the
+   * summary goes missing in exactly the runs it exists for.
+   *
+   * Run rather than read: the abort is the shell's, so only a shell can say
+   * whether it still happens. GitHub substitutes every `${{ }}` before bash
+   * sees the script, and the `env:` block is applied whether or not earlier
+   * steps ran, so both are stood in for here; what is deliberately absent is
+   * everything the unreached step would have exported.
+   */
+  const jobs = (load(workflow) as { jobs: Record<string, { steps: { name?: string; run?: string }[] }> }).jobs
+  const report = jobs.deploy?.steps.find((step) => step.name === 'Report')?.run
+  assert.ok(report, 'the deploy job no longer reports')
+
+  const directory = mkdtempSync(join(tmpdir(), 'mdeploy-report-'))
+  try {
+    const summary = join(directory, 'summary.md')
+    const ran = spawnSync('bash', ['-c', report.replace(/\$\{\{[^}]*\}\}/g, 'x')], {
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH ?? '', GITHUB_STEP_SUMMARY: summary, LINE: 'commit', SHA: 'a'.repeat(40) },
+    })
+    assert.equal(ran.status, 0, `the report aborted rather than reporting: ${ran.stderr}`)
+
+    const rendered = readFileSync(summary, 'utf8')
+    for (const row of ['| commit |', '| images |', '| runner |', '| result |']) {
+      assert.ok(rendered.includes(row), `the summary dropped ${row}:\n${rendered}`)
+    }
+    assert.ok(rendered.includes('a'.repeat(40)), 'the rows it did know are missing from the summary')
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
   }
 })

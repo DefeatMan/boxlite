@@ -797,10 +797,19 @@ jobs:
           SHA: ${{ needs.resolve.outputs.sha }}
         run: |
           set -Eeuo pipefail
+          # `if: always()`, so this also renders after a checkout or a setup
+          # that failed before "Address what this deploy installs" wrote its
+          # variables. Under `set -u` a bare expansion would abort the summary
+          # in exactly the runs it was added for, so an unwritten value is
+          # named as one and the rows around it still render.
+          unchosen='(never addressed)'
           # Which of the two artifacts the fleet installs, and the selector it
           # was addressed by — the pair is what an operator checks when a host
           # comes up on the wrong binary.
-          runner="$RUNNER_ARTIFACT_SOURCE at ${VERSION:-${RUNNER_ARTIFACT_REF:-the workspace version}}"
+          runner="$unchosen"
+          if [ -n "${RUNNER_ARTIFACT_SOURCE:-}" ]; then
+            runner="$RUNNER_ARTIFACT_SOURCE at ${VERSION:-${RUNNER_ARTIFACT_REF:-the workspace version}}"
+          fi
           {
             echo "### ${{ inputs.apply && 'deploy' || 'preview' }} ${{ inputs.stage }} · $LINE"
             echo
@@ -810,7 +819,7 @@ jobs:
             echo "| resolved | \`$LINE\` |"
             echo "| commit | \`$SHA\` |"
             echo "| components | \`${{ inputs.components }}\` |"
-            echo "| images | \`$BOXLITE_IMAGE_TAG\` |"
+            echo "| images | \`${BOXLITE_IMAGE_TAG:-$unchosen}\` |"
             echo "| runner | \`$runner\` |"
             echo "| cloud | \`${{ steps.config.outputs.kind == 'ecr' && 'aws' || 'gcp' }}\` in \`${{ steps.config.outputs.region }}\` |"
             echo "| intent | \`${{ inputs.apply && 'apply' || 'preview' }}\` |"
