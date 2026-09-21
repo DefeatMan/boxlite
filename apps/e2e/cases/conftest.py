@@ -29,6 +29,62 @@ from path_verification import runner_journal_seek, runner_hits_for_box
 
 DEFAULT_IMAGE = default_image()
 
+# Every box this suite creates gets a lifetime a dead run cannot outlive.
+#
+# `auto_remove=True` is a no-op over REST and the API defaults auto_delete to
+# disabled, so a box whose teardown never ran used to stay in the org for
+# good. That is what killed the last cloud run against dev (30787280531,
+# 2026-08-03): 53 failures and 12 errors, every single one of them
+# "Organization quota exceeded: disk limit exceeded (max 512GB)" — the org's
+# disk was full of boxes earlier runs had stranded.
+#
+# auto_stop stops an idle box and auto_delete then removes the stopped one;
+# both checks run on a 10-second cron against lastActivityAt
+# (apps/api/src/box/managers/box.manager.ts:69,154). E2B bounds its own cloud
+# test sandboxes the same way — `kwargs.setdefault("timeout", 300)` in
+# packages/python-sdk/tests/conftest.py:75, inside the factory every case
+# builds its sandbox through (conftest.py:71-88).
+#
+# The windows must outlast a single test, not shorten it: CI bounds each test
+# at 180s, and a box stopped from under a running test would fail it. A test
+# that needs a different policy sets it on BoxOptions and keeps it.
+#
+# Two doors lead to a box and both are bounded: `bound_box_lifetime` for the
+# SDK's BoxOptions, `with_bounded_lifetime` for a case that hand-builds the
+# REST body instead.
+E2E_AUTO_STOP_SECONDS = 300
+E2E_AUTO_DELETE_SECONDS = 600
+
+
+def bound_box_lifetime(options) -> None:
+    """Fill in this suite's auto_stop/auto_delete on BoxOptions, in place.
+
+    Applied to every `rt.create` by the tracking runtime below. A case that
+    builds its own REST body instead — to inspect response headers, or to send
+    a shape the SDK would refuse — must go through `with_bounded_lifetime`,
+    which is the same policy for the same reason.
+
+    Boxes created by the polyglot drivers (`apps/e2e/sdks/`) and the CLI pass
+    through neither; `apps/e2e/sweep.py` is what reclaims those.
+    """
+    if getattr(options, "auto_stop", None) is None:
+        options.auto_stop = E2E_AUTO_STOP_SECONDS
+    if getattr(options, "auto_delete", None) is None:
+        options.auto_delete = E2E_AUTO_DELETE_SECONDS
+
+
+def with_bounded_lifetime(body: dict) -> dict:
+    """Return a hand-built create body carrying this suite's lifetime.
+
+    Anything the caller set explicitly wins — a case testing a rejected
+    auto_stop keeps the value under test.
+    """
+    return {
+        "auto_stop": E2E_AUTO_STOP_SECONDS,
+        "auto_delete": E2E_AUTO_DELETE_SECONDS,
+        **body,
+    }
+
 
 class _TrackingRuntime:
     """Wraps a REST Boxlite runtime so we can intercept .create() and
@@ -43,6 +99,17 @@ class _TrackingRuntime:
         object.__setattr__(self, "_created", [])
 
     async def create(self, *args, **kwargs):
+        # Loud rather than tolerant: a create this wrapper cannot find the
+        # options of is a create whose box would have no bounded lifetime,
+        # and that failure has to surface here instead of as an exhausted
+        # org quota three runs later.
+        options = kwargs["options"] if "options" in kwargs else (args[0] if args else None)
+        if options is None:
+            raise TypeError(
+                "rt.create() was called with no BoxOptions; the e2e suite's "
+                "lifetime bound has nothing to apply (see bound_box_lifetime)"
+            )
+        bound_box_lifetime(options)
         box = await self._inner.create(*args, **kwargs)
         try:
             self._created.append((box.id, time.monotonic()))
