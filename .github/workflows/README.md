@@ -24,6 +24,8 @@ DEPLOY (manual dispatch)                deploy-infra ─┬─▶ build-apps-api
                                                       ├─▶ build-c ──▶ build-runner-binary
                                                       └─▶ e2e-cloud
                                         deploy-release   (no builds; consumes published artifacts)
+                                        mdeploy-all ─┬─▶ mbuild         (a commit ──▶ <sha> images, dev)
+                                                     └─▶ mbuild-release (v<X.Y.Z> ──▶ v<X.Y.Z>-<sha>, dev then prod)
 
 CONFIG                                  ci-config action ◀── lint, test, config workflow
                                         config workflow ◀── build workflows
@@ -52,10 +54,9 @@ is *exclusively* callable; workflows with `workflow_dispatch` can also run on th
 | `deploy-infra.yml` | dispatch | — | Builds and deploys one commit to a stage. The normal deploy path |
 | `deploy-release.yml` | dispatch | — | Deploys already-published artifacts for one `X.Y.Z`. Compiles nothing |
 | `e2e-cloud.yml` | dispatch, `workflow_call` | yes | End-to-end against a deployed stage. Run by `deploy-infra` after it applies |
-| `mdeploy-all.yml` | dispatch | yes | One dispatch: have the artifacts this commit needs, then deploy it. Calls the three below |
-| `mbuild.yml` | dispatch, `workflow_call` | yes | Every container image a commit produces: publish them, or promote them between stages |
-| `mrunner.yml` | dispatch, `workflow_call` | yes | The runner binary for a commit: build it for a stage, or promote the one another stage serves |
-| `mdeploy.yml` | dispatch, `workflow_call` | yes | Applies the stack for a commit whose artifacts are already in place |
+| `mdeploy-all.yml` | dispatch | — | The only rollout path. A commit SHA builds for dev; a release tag publishes into dev or promotes to prod, and is all prod accepts. Applies the stack itself |
+| `mbuild.yml` | `workflow_call` | call-only | The commit line's images, for a dev rollout. Callee only: nobody publishes a commit by hand |
+| `mbuild-release.yml` | dispatch, `workflow_call` | yes | The release line's images, tagged `v<X.Y.Z>-<sha>`: publish a version into dev, or promote it to prod. One job per artifact, and a version the target already holds is refused rather than skipped |
 | `e2e-local.yml` | push, `pull_request_target`, dispatch | — | VM-based tests on a self-hosted EC2 runner. Needs `/dev/kvm`; PRs need the `e2e-local` label |
 | `build-box-images.yml` | PR, push, dispatch | — | Builds changed flavors for both arches; shared inputs and manual runs build every flavor |
 | `release-box-images.yml` | `apps/box-images/v*` tag, dispatch | — | The only workflow that writes to GHCR |
@@ -265,8 +266,8 @@ to their lists is the whole change on this side — but the declaration has to b
 read it. `npm run mstage config put -- --stage <stage>` puts it in that stage's Environment, and
 `.github/actions/setup-infra` restores it on the runner. A promotion reads two stages and a job
 binds to one Environment, so the source's block is read by a job bound to the source's Environment
-and carried to the other as an output — which is why `mbuild.yml`, `mrunner.yml` and
-`mdeploy-all.yml` each have a small `declaration` job.
+and carried to the other as an output — which is why `mbuild.yml` and `mbuild-release.yml`
+each have a small job that only reads the source stage.
 
 Each stage also needs its GitHub Environment to exist under exactly the stage name — the deploy
 role's trust policy pins `repo:<owner>/<repo>:environment:<stage>` — and that is where required

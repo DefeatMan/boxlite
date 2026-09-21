@@ -17,8 +17,8 @@
  */
 
 import { loadConfig as loadStageConfig, type StageConfig } from 'mstage/config'
-import { loadBuildConfig, registryFor, type BuildConfig } from '../src/config.ts'
-import { resolveRegistry } from '../src/address.ts'
+import { loadBuildConfig, onlyArtifact, registryFor, type BuildConfig } from '../src/config.ts'
+import { assertTag, releaseTagFor, resolveRegistry } from '../src/address.ts'
 import { assertPromotable, coordinatesOf, type Coordinates } from '../src/coordinates.ts'
 import { promote, publish, ScanRefusedError, verifyPublished } from '../src/publish.ts'
 import { run } from '../src/run.ts'
@@ -39,10 +39,18 @@ import { run } from '../src/run.ts'
 const SCAN_REFUSED_EXIT = 78
 
 const USAGE = [
-  'usage: npm run mbuild publish -- --tag <commit-sha> --stage <stage>',
-  '       npm run mbuild promote -- --tag <commit-sha> --from <stage> --to <stage>',
-  '       npm run mbuild verify -- --tag <commit-sha> --stage <stage>',
+  'usage: npm run mbuild publish -- --tag <commit-sha> --stage <stage> [--artifact <name>] [--version v<X.Y.Z>]',
+  '       npm run mbuild promote -- --tag <commit-sha> --from <stage> --to <stage> [--artifact <name>] [--version v<X.Y.Z>]',
+  '       npm run mbuild verify -- --tag <commit-sha> --stage <stage> [--artifact <name>] [--version v<X.Y.Z>]',
   '       npm run mbuild inspect -- --stage <stage>',
+  '',
+  '--artifact narrows the command to one declared artifact. Absent means every',
+  'one, which is what a deploy asks about.',
+  '',
+  '--version addresses the release build cut from that commit — tagged',
+  '`v<X.Y.Z>-<commit-sha>` — rather than the commit build tagged `<commit-sha>`.',
+  'They are different bytes at different addresses, and a stage that admits only',
+  'released images reads the difference off the tag.',
 ].join('\n')
 
 const option = (argv: string[], name: string): string | undefined => {
@@ -56,6 +64,33 @@ const required = (argv: string[], name: string): string => {
   const value = option(argv, name)
   if (!value) throw new Error(`--${name} is required.\n${USAGE}`)
   return value
+}
+
+/**
+ * What `--artifact` selects: one declared artifact, or every one.
+ *
+ * Absent leaves the whole set, which is what a deploy asks about — "does this
+ * stage hold this commit" is a question about all of them. Named, it narrows
+ * to that one, which is what lets a workflow give each artifact its own job.
+ */
+const narrowed = (config: BuildConfig, argv: string[]): BuildConfig => {
+  const artifact = option(argv, 'artifact')
+  return artifact === undefined ? config : onlyArtifact(config, artifact)
+}
+
+/**
+ * The tag a command addresses: the commit build, or the release build cut from
+ * that commit at a version.
+ *
+ * `--version` rather than letting a caller pass `v1.2.3-<sha>` itself, for the
+ * reason every other part of an address is composed in `mbuild/address`: a
+ * caller that concatenates its own is a second place the convention lives, and
+ * the first typo in it publishes bytes nothing will look for.
+ */
+const tagOf = (argv: string[]): string => {
+  const sha = required(argv, 'tag')
+  const version = option(argv, 'version')
+  return version === undefined ? assertTag(sha) : releaseTagFor({ version, sha })
 }
 
 const accountId = async (): Promise<string> => {
@@ -126,7 +161,7 @@ const main = async (): Promise<number> => {
   }
 
   if (command === 'publish') {
-    const tag = required(argv, 'tag')
+    const tag = tagOf(argv)
     const stage = required(argv, 'stage')
     const registry = resolveRegistry({
       config,
@@ -134,7 +169,9 @@ const main = async (): Promise<number> => {
       region: regionOf(stage),
       ...(await coordinates(config, stage)),
     })
-    for (const outcome of await publish({ config, stage, registry, tag, run, log })) {
+    // The registry is a property of the stage, so it is resolved from the whole
+    // config; only what gets built is narrowed.
+    for (const outcome of await publish({ config: narrowed(config, argv), stage, registry, tag, run, log })) {
       console.log(`${outcome.artifact}=${outcome.address}`)
     }
     return 0
@@ -147,7 +184,7 @@ const main = async (): Promise<number> => {
    * depending on whether this run put them there.
    */
   if (command === 'verify') {
-    const tag = required(argv, 'tag')
+    const tag = tagOf(argv)
     const stage = required(argv, 'stage')
     const registry = resolveRegistry({
       config,
@@ -155,14 +192,14 @@ const main = async (): Promise<number> => {
       region: regionOf(stage),
       ...(await coordinates(config, stage)),
     })
-    for (const { artifact, address } of await verifyPublished({ config, stage, registry, tag, run })) {
+    for (const { artifact, address } of await verifyPublished({ config: narrowed(config, argv), stage, registry, tag, run })) {
       console.log(`${artifact}=${address}`)
     }
     return 0
   }
 
   if (command === 'promote') {
-    const tag = required(argv, 'tag')
+    const tag = tagOf(argv)
     const fromStage = required(argv, 'from')
     const toStage = required(argv, 'to')
     assertPromotable({
@@ -174,7 +211,7 @@ const main = async (): Promise<number> => {
     // reusing the source's would push the promoted image at the wrong one while
     // reporting the right name.
     const outcomes = await promote({
-      config,
+      config: narrowed(config, argv),
       tag,
       from: {
         stage: fromStage,

@@ -478,3 +478,24 @@ export const stageIn = (config: BuildConfig, stage: string): StageConfig => {
 
 /** One stage's registry. */
 export const registryFor = (config: BuildConfig, stage: string): RegistryConfig => stageIn(config, stage).registry
+
+/**
+ * The same config with one declared artifact left in it.
+ *
+ * Every operation in `publish.ts` iterates `config.artifacts`, so narrowing the
+ * config is all it takes to publish, verify or promote one image rather than
+ * the set — which is what lets a workflow give each artifact its own job
+ * instead of building three in sequence inside one.
+ *
+ * Refuses a name the file does not declare rather than returning an empty set:
+ * an empty one publishes nothing and reports success, and the typo would only
+ * surface as a stage missing an image nobody noticed was never built.
+ */
+export const onlyArtifact = (config: BuildConfig, artifact: string): BuildConfig => {
+  const declared = config.artifacts[artifact]
+  if (!declared) {
+    const known = Object.keys(config.artifacts).join(', ')
+    throw new BuildConfigError(`${config.path} declares no artifact "${artifact}". Declared: ${known}`)
+  }
+  return { ...config, artifacts: { [artifact]: declared } }
+}

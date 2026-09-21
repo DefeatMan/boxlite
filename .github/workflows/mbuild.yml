@@ -21,51 +21,21 @@
 # half-finished run instead of failing on an immutable tag it wrote itself.
 name: mbuild
 
+# Callee only.
+#
+# Nobody publishes a commit by hand any more: `mdeploy-all.yml` is the one
+# rollout path, and this is its development leg — the images a dev deploy needs
+# for a commit that no release names. A release goes through
+# `mbuild-release.yml` instead, which refuses a version already in the
+# registry rather than skipping it.
+#
+# That removes the reason the inputs below were an allowlist. The rule they
+# enforced — a free-text stage is a dispatcher reaching an Environment nobody
+# granted them — has no dispatcher left to guard against; the only caller is a
+# workflow in this repository whose own `stage` is a choice.
+# `apps/infra/deployment/release-safety.test.ts` checks that a workflow with no
+# dispatch is reachable only this way.
 on:
-  workflow_dispatch:
-    inputs:
-      command:
-        description: Build and push a commit, or move one between stages
-        required: true
-        type: choice
-        options: [publish, promote]
-        default: publish
-      tag:
-        description: Commit SHA, or a git tag naming one (defaults to this ref)
-        required: false
-      # A choice rather than free text, and not for convenience: this value
-      # selects the job's deployment Environment, and an Environment carries the
-      # secrets and the reviewers of the stage it names. A typo in a free-text
-      # field is a dispatcher reaching an Environment nobody granted them.
-      # Enforced across every workflow by
-      # apps/infra/deployment/release-safety.test.ts.
-      stage:
-        description: Stage to publish to; ignored by promote
-        required: true
-        default: dev
-        type: choice
-        options:
-          - dev
-          - prod
-      from:
-        description: Stage to promote from; ignored by publish
-        required: false
-        type: choice
-        options:
-          - dev
-          - prod
-      to:
-        description: Stage to promote to; ignored by publish
-        required: false
-        type: choice
-        options:
-          - dev
-          - prod
-
-  # Called by an orchestrating workflow, which dispatches the same three
-  # commands in order. The allowlist above is what a person types; a caller
-  # passes a string because `workflow_call` has no choice type — and the caller
-  # is a workflow in this repository whose own input is an allowlist.
   workflow_call:
     inputs:
       command:

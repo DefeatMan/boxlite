@@ -80,9 +80,9 @@ export type StageConfig = {
    * Declared because the reads a promotion makes are granted on the *source*
    * and held by *this* stage's accounts, so `bootstrap` cannot make them
    * without being told which stage the source is — and on GCP that is another
-   * project, which nothing else in this block names. `mdeploy-all` picks a
-   * source per dispatch in `auto_promote_from` and defaults to the same answer;
-   * this is the standing one, and the only one a bootstrap can act on.
+   * project, which nothing else in this block names. A rollout makes no such
+   * choice: `mdeploy-all` promotes from dev. This is the declaration a
+   * bootstrap acts on, and the only place the source is named.
    */
   promoteFrom: string | null
   roleArn: string | null

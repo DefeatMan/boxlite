@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { parseBase } from 'mstage/config'
 import { variableNameFor } from 'mstage/config-variable'
 
-const workflow = readFileSync(fileURLToPath(new URL('../../../../.github/workflows/mdeploy.yml', import.meta.url)), 'utf8')
+const workflow = readFileSync(fileURLToPath(new URL('../../../../.github/workflows/mdeploy-all.yml', import.meta.url)), 'utf8')
 const ENV_CONFIG = fileURLToPath(new URL('../../mstage.env.json', import.meta.url))
 
 /** What the workflow runs, with the commentary that discusses it removed. */
@@ -71,7 +71,7 @@ test('both clouds can be federated, and each only when it is the one', () => {
  * with a message about a stale local session on a machine nobody signed in on
  * — far enough from the cause to be worth naming here.
  */
-const GCP_FEDERATING_WORKFLOWS = ['mdeploy.yml', 'mbuild.yml']
+const GCP_FEDERATING_WORKFLOWS = ['mdeploy-all.yml', 'mbuild.yml', 'mbuild-release.yml']
 
 test('a GCP identity is federated by the action that also gives gcloud its own credential', () => {
   for (const name of GCP_FEDERATING_WORKFLOWS) {
@@ -115,14 +115,19 @@ test('a GCP identity is federated by the action that also gives gcloud its own c
  * Both new workflows are checked here so the two cannot drift apart.
  */
 test('the AWS role is composed from the account id, as every other workflow does', () => {
-  const mbuild = readFileSync(fileURLToPath(new URL('../../../../.github/workflows/mbuild.yml', import.meta.url)), 'utf8')
+  const read = (name: string) => readFileSync(fileURLToPath(new URL(`../../../../.github/workflows/${name}`, import.meta.url)), 'utf8')
   for (const [name, source] of [
-    ['mdeploy.yml', workflow],
-    ['mbuild.yml', mbuild],
+    ['mdeploy-all.yml', workflow],
+    ['mbuild.yml', read('mbuild.yml')],
+    ['mbuild-release.yml', read('mbuild-release.yml')],
   ] as const) {
+    // The stage half may be an expression or a literal — mbuild-release's two
+    // jobs each serve one fixed stage, and naming it is clearer there than
+    // threading an input through. What must not vary is the rest: the account
+    // from `vars.AWS_ACCOUNT_ID`, and the role name bootstrap actually creates.
     assert.match(
       source,
-      /role-to-assume: arn:aws:iam::\$\{\{ vars\.AWS_ACCOUNT_ID \}\}:role\/boxlite-\$\{\{ [^}]+ \}\}-github-deploy/,
+      /role-to-assume: arn:aws:iam::\$\{\{ vars\.AWS_ACCOUNT_ID \}\}:role\/boxlite-(?:\$\{\{ [^}]+ \}\}|[a-z0-9-]+)-github-deploy/,
       `${name} does not compose the role ARN`,
     )
     assert.doesNotMatch(source, /vars\.AWS_DEPLOY_ROLE_ARN|vars\.AWS_ECR_PUSH_ROLE_ARN/, `${name} reads an undefined variable`)
@@ -182,13 +187,12 @@ test('a protected stage is confirmed, and the confirmation reaches mdeploy', () 
 })
 
 test('every job that reads a declaration is given one first', () => {
-  const mbuild = readFileSync(fileURLToPath(new URL('../../../../.github/workflows/mbuild.yml', import.meta.url)), 'utf8')
+  const read = (file: string) => readFileSync(fileURLToPath(new URL(`../../../../.github/workflows/${file}`, import.meta.url)), 'utf8')
   const name = variableNameFor(parseBase('mstage.env.json', readFileSync(ENV_CONFIG, 'utf8')).app)
-  const mrunner = readFileSync(fileURLToPath(new URL('../../../../.github/workflows/mrunner.yml', import.meta.url)), 'utf8')
   for (const [file, source] of [
-    ['mdeploy.yml', workflow],
-    ['mbuild.yml', mbuild],
-    ['mrunner.yml', mrunner],
+    ['mdeploy-all.yml', workflow],
+    ['mbuild.yml', read('mbuild.yml')],
+    ['mbuild-release.yml', read('mbuild-release.yml')],
   ] as const) {
     /*
      * Every tool below reads `.mstage.config.json`, and on a runner the only
@@ -217,10 +221,11 @@ test('every job that reads a declaration is given one first', () => {
   }
 })
 
-test('both mdeploy dispatches share one concurrency group, which the state requires', () => {
+test('one rollout per stage at a time, which the state requires', () => {
   // An app and stage keep one checkpoint. Two applies against one stage read
-  // and write the same file, and the second to finish erases the first.
-  assert.match(workflow, /group: mdeploy-\$\{\{ inputs\.stage \}\}/)
+  // and write the same file, and the second to finish erases the first. There
+  // is one dispatch left to serialise, so the group is this workflow's own.
+  assert.match(workflow, /group: mdeploy-all-\$\{\{ inputs\.stage \}\}/)
   assert.match(workflow, /cancel-in-progress: false/)
 })
 
@@ -248,11 +253,10 @@ test('every staged-runner question names the commit, the way the image question 
    * across every call rather than at the two sites, because the next one added
    * would otherwise inherit the same default.
    */
-  const source = readFileSync(fileURLToPath(new URL('../../../../.github/workflows/mdeploy-all.yml', import.meta.url)), 'utf8')
-  const checks = [...source.matchAll(/runner:build -- [^\n|]*--check[^\n|]*/g)].map((match) => match[0])
-  assert.ok(checks.length >= 2, `expected both staged-runner questions, found ${checks.length}`)
+  const checks = [...workflow.matchAll(/runner:build -- [^\n|]*--check[^\n|]*/g)].map((match) => match[0])
+  assert.ok(checks.length >= 1, `expected the staged-runner question, found ${checks.length}`)
   for (const call of checks) {
-    assert.match(call, /--tag "\$\{\{ needs\.ref\.outputs\.sha \}\}"|--tag "\$SHA"/, `asks about the checkout: ${call}`)
+    assert.match(call, /--tag "\$SHA"/, `asks about the checkout: ${call}`)
   }
 })
 
@@ -269,7 +273,7 @@ test('every deploy-path ref is pinned to the branch it was dispatched from', () 
    * across every call in the deploy workflows, because the guard is only worth
    * as much as the call site that forgets it.
    */
-  const workflows = ['mdeploy-all.yml', 'mdeploy.yml', 'mbuild.yml', 'mrunner.yml']
+  const workflows = ['mdeploy-all.yml', 'mbuild.yml', 'mbuild-release.yml']
   for (const name of workflows) {
     const text = readFileSync(fileURLToPath(new URL(`../../../../.github/workflows/${name}`, import.meta.url)), 'utf8')
     const uses = [...text.matchAll(/uses: \.\/\.github\/actions\/resolve-ref\n\s*with:\n((?:\s{10}\S[^\n]*\n)+)/g)]
@@ -290,7 +294,10 @@ test('the only stage a deploy workflow runs for off main is dev', () => {
    * stage added to the choice list later is main-only until an edit here says
    * otherwise, where `!= 'prod'` would have admitted it silently.
    */
-  const workflows = ['mdeploy-all.yml', 'mdeploy.yml', 'mbuild.yml', 'mrunner.yml']
+  // mbuild-release.yml is deliberately absent: a release is what prod promotes
+  // from, so it has no dev escape at all and the assertion below would refuse
+  // exactly the workflow that is strictest.
+  const workflows = ['mdeploy-all.yml', 'mbuild.yml']
   for (const name of workflows) {
     const text = readFileSync(fileURLToPath(new URL(`../../../../.github/workflows/${name}`, import.meta.url)), 'utf8')
     const guards = [...text.matchAll(/^\s*if: [^\n]*(?:\n\s{6}[^\n]*)*/gm)]
@@ -317,11 +324,25 @@ test('the checks that decide an apply run in the job that applies, not beside it
    * so a dispatch waited on this stage's reviewers twice to perform checks that
    * change nothing.
    *
-   * Asserted as a count rather than by name: splitting them out again under any
-   * name brings the second wait back.
+   * Asserted as a count of the jobs that bind the target stage and act on it,
+   * rather than by name: splitting the checks out again under any name brings
+   * the second wait back. `plan` and `build-runner` bind it too and are counted
+   * — each buys something an apply cannot do for itself, and `build-runner` is
+   * skipped outright on the release line — but nothing may join the apply.
    */
-  const jobs = [...workflow.matchAll(/^ {2}([a-z][a-z-]*):$/gm)].map((match) => match[1])
-  assert.deepEqual(jobs, ['deploy'], 'a second job binding this Environment is a second approval')
+  const applying = [...workflow.matchAll(/\n {2}([a-z][a-z-]*):\n([\s\S]*?)(?=\n {2}[a-z][a-z-]*:\n|$)/g)]
+    .filter(([, , body]) => /npm run mdeploy -- --stage/.test(body!))
+    .map(([, name]) => name)
+  assert.deepEqual(applying, ['deploy'], 'a second job runs the apply, so a refusal in one cannot guard the other')
+
+  const binding = [...workflow.matchAll(/\n {2}([a-z][a-z-]*):\n([\s\S]*?)(?=\n {2}[a-z][a-z-]*:\n|$)/g)]
+    .filter(([, , body]) => /^ {4}environment: \$\{\{ inputs\.stage \}\}$/m.test(body!))
+    .map(([, name]) => name)
+  assert.deepEqual(
+    binding.sort(),
+    ['build-runner', 'deploy', 'plan'],
+    'a job binding this Environment is a wait on its reviewers; this set is the reviewed one',
+  )
 
   // And the order that makes one job equivalent to the two: every check still
   // runs before the apply it guards.

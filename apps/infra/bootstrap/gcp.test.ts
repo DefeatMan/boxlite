@@ -551,7 +551,7 @@ test('a stage promoted into lets both of its accounts read the source', async ()
 
   /*
    * Two accounts, not one, and that asymmetry is the bug this was written for:
-   * `mbuild.yml` federates `GCP_IMAGE_PUBLISHER` while `mrunner.yml` federates
+   * `mbuild.yml` federates `GCP_IMAGE_PUBLISHER` while `mdeploy-all.yml` federates
    * `GCP_DEPLOYER`, so granting the deployer both would leave the image leg
    * failing on `artifactregistry.repositories.get` while the runner leg passed.
    */
@@ -568,7 +568,7 @@ test('a stage promoted into lets both of its accounts read the source', async ()
   assert.ok(bucket[0]!.includes(`gs://${SOURCE.bucket}`), 'the grant reaches a bucket that is not the source')
   assert.ok(
     bucket[0]!.includes('--member=serviceAccount:bl-app-gcp-dev-deploy@boxlite-gcp-dev.iam.gserviceaccount.com'),
-    'the account mrunner.yml federates cannot read the staged binary',
+    'the account mdeploy-all.yml federates cannot read the staged binary',
   )
   /*
    * Object reads, and the bucket rather than the project. `runner:promote`

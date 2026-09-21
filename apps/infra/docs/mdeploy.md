@@ -295,34 +295,48 @@ derived-only zone makes that a deploy nothing can fix without editing code.
 
 ## One dispatch
 
-`mdeploy-all.yml` is the whole of it from a browser: pick a stage, pick what the
-commit needs — `api+runner`, `api` or `runner` — name a commit or a tag, and say
-whether to apply or only preview. What it does first is read: does this stage
-already hold the images for that commit, and a runner binary staged under it?
-Each answer decides one leg.
+`mdeploy-all.yml` is the whole of it from a browser, and the only way a stage is
+rolled out: pick a stage, pick what the ref needs — `api+runner`, `api` or
+`runner` — name a commit or a release tag, and say whether to apply or only
+preview. What the ref is decides the rest.
 
 ```
-ref ──▸ source? ──▸ plan ──┬─▸ promote-api / build-api ───┐
-                           └─▸ promote-runner / build-runner ─┴─▸ deploy
+a commit SHA (dev only)
+  resolve ─▸ plan ─┬▸ mbuild        publish <sha> images
+                   ├▸ build-runner  compile, stage in this stage's bucket
+                   └▸ deploy        RUNNER_ARTIFACT_SOURCE=build
+
+a release tag v<X.Y.Z>
+  resolve ─▸ plan ─┬▸ mbuild-release  publish (dev) / promote (prod)
+     │             └▸ deploy          RUNNER_ARTIFACT_SOURCE=release
+     └▸ the GitHub Release must exist and already carry
+        boxlite-runner-v<X.Y.Z>-linux-amd64.tar.gz + .sha256
 ```
 
-`auto_promote_from` is where it looks when the stage holds neither — `dev` by
-default, `none` to switch it off. A promotion is preferred over a build for a
-reason that is not speed: it moves the bytes that stage already serves, and a
+**prod takes a release tag and nothing else.** A commit aimed at it is refused in
+`resolve`, before any Environment is bound. Promotion is preferred over a build
+for a reason that is not speed: it moves the bytes dev already serves, and a
 rebuild of one commit is not byte-identical, while everything downstream treats
 version+commit as an identity and never looks inside. Two stages that each built
 the same commit hold two sets of bytes under one reported version.
 
-Each leg is also dispatchable on its own — `mbuild.yml` for the images,
-`mrunner.yml` for the runner binary, `mdeploy.yml` for the apply — and the
-orchestrator calls exactly those.
+**A release installs the runner it was cut from, not a rebuild of it.**
+`mdeploy/stack/runner-binary.ts` addresses the tarball on the GitHub Release
+directly, so the release path compiles no runner at all — and `resolve` refuses a
+tag whose Release is missing, still a draft, or carrying no runner asset yet,
+because that download otherwise 404s on the host at boot, long after the apply
+reported success.
+
+The images half is also dispatchable on its own: `mbuild-release.yml` publishes
+or promotes a version. `mbuild.yml` is callee-only — nobody publishes a bare
+commit by hand.
 
 **A promotion crosses two stages, and on GCP that means two projects.** One
 identity does each move — the destination's, because that is the one that has to
-write — but the two legs do not run as the same account: `mbuild.yml`
-authenticates as the destination's `GCP_IMAGE_PUBLISHER`, `mrunner.yml` as its
-`GCP_DEPLOYER`. Each of those two needs read on the source, in a policy the
-source's project owns.
+write — but the two legs do not run as the same account: `mbuild.yml` and
+`mbuild-release.yml` authenticate as the destination's `GCP_IMAGE_PUBLISHER`,
+and `mdeploy-all`'s own jobs as its `GCP_DEPLOYER`. Each of those two needs read
+on the source, in a policy the source's project owns.
 
 The destination declares where it is promoted from, and `bootstrap` makes both
 grants:
@@ -358,10 +372,10 @@ which is why `runner:promote` reads the source by listing it and never asks that
 bucket for its metadata. Without the grants a promotion fails at the read with a
 permissions error and nothing is written.
 
-`promoteFrom` is read by nothing at deploy time, and `mdeploy-all`'s
-`auto_promote_from` still chooses the source for a given dispatch. The two
-answer different questions: one is a standing declaration a workstation can act
-on, the other is what this run was asked to do.
+`promoteFrom` is read by nothing at deploy time. It exists for `bootstrap`,
+which has to know whose project holds the bucket and repository it is granting
+on; a rollout no longer chooses a source at all, because a promotion's source is
+dev.
 
 ## Commands
 

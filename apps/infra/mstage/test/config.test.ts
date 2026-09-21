@@ -56,9 +56,9 @@ test('a stage may pin the zone its machines are created in', () => {
  * `promoteFrom`: the standing answer to a question only a whole file can hold.
  *
  * The reads a promotion makes are granted on the *source* and held by the
- * destination's accounts, so `bootstrap` has to be told which stage that is —
- * `mdeploy-all`'s `auto_promote_from` is a dispatch input and reaches nothing
- * that runs on a workstation.
+ * destination's accounts, so `bootstrap` has to be told which stage that is.
+ * A rollout cannot answer it: `mdeploy-all` promotes from dev and reaches
+ * nothing that runs on a workstation.
  */
 test('a stage names the stage it is promoted from', () => {
   const config = parse({

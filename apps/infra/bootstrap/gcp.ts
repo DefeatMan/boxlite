@@ -219,7 +219,7 @@ const DEPLOYER_ROLES = [
    * Reading back what mbuild published, before an apply that cannot pull.
    *
    * The preflight gate runs `mbuild verify` as this identity rather than as
-   * the publisher (`mdeploy.yml`'s "Verify the images"), and the read under it
+   * the publisher (`mdeploy-all.yml`'s "Verify the images"), and the read under it
    * — `gcloud artifacts docker images list` — needs
    * `artifactregistry.repositories.get`. Nothing else in this list reaches
    * Artifact Registry, so the gate is refused and `publish.ts`'s `unreadable`
@@ -587,7 +587,7 @@ const ensurePool = async ({
      * No `--allowed-audiences`. An explicit list replaces GCP's default rather
      * than adding to it, and the default is the provider's own resource URL —
      * exactly what `google-github-actions/auth` requests when no `audience:`
-     * input is given, as none is in `.github/workflows/mdeploy.yml` or
+     * input is given, as none is in `.github/workflows/mdeploy-all.yml` or
      * `mbuild.yml`. Pinning the `projects/-` spelling instead would reject
      * every token the action actually mints.
      */
@@ -918,7 +918,7 @@ export const promotionSourceFor = ({
  * account names, because it just created them.
  *
  * Two accounts, not one. The legs authenticate differently — `mbuild.yml`
- * federates `GCP_IMAGE_PUBLISHER` and `mrunner.yml` `GCP_DEPLOYER` — so a grant
+ * federates `GCP_IMAGE_PUBLISHER` and `mdeploy-all.yml` `GCP_DEPLOYER` — so a grant
  * to one of them leaves the other half of a promotion failing, which is the
  * shape this was written for.
  *

@@ -1596,7 +1596,11 @@ test('a job calling a reusable workflow grants at least what that workflow asks 
       checked += 1
     }
   }
-  assert.ok(checked >= 11, `expected every local reusable call to be swept, saw ${checked}`)
+  // The same thirteen the input sweep below counts: six `config.yml` loads,
+  // deploy-infra's four, and mdeploy-all's three. The exact count, not a
+  // floor, so a call that stops being swept fails here rather than being
+  // absorbed — and adding one means changing this number in the same commit.
+  assert.equal(checked, 13, `expected every local reusable call to be swept, saw ${checked}`)
 })
 
 test('every reusable workflow is called with the inputs it declares', () => {
@@ -1636,21 +1640,26 @@ test('every reusable workflow is called with the inputs it declares', () => {
       checked += 1
     }
   }
-  // The four calls mdeploy-all.yml makes. A drop means a leg went inline, which
-  // is worth noticing rather than tolerating; raise it when one is added.
-  assert.ok(checked >= 4, `expected every reusable-workflow call swept, saw ${checked}`)
+  // Every local `uses:` in the directory, not just the deploy path's: six
+  // build workflows load `config.yml`, `deploy-infra.yml` calls four, and
+  // mdeploy-all makes three — one commit-line publish and the release line's
+  // two, where it made four until the apply and the runner build went inline.
+  // The exact count, not a floor: a call that stops being swept is the drop
+  // this exists to catch, and one that appears is a caller nobody reviewed.
+  // Adding a legitimate one means changing this number in the same commit.
+  assert.equal(checked, 13, `expected every reusable-workflow call swept, saw ${checked}`)
 })
 
 /**
- * The deployment Environments a dispatch may bind to, plus the sentinel.
+ * The deployment Environments a dispatch may bind to.
  *
- * Environments, not stage names: `none` is `mdeploy-all.yml`'s "build it here
- * instead", which binds the source job to nothing, and each of the others is an
- * Environment a bootstrap created. The distinction matters because a stage's
+ * Each is an Environment a bootstrap created. It matters because a stage's
  * declaration lives in its Environment — an allowlist offering a name with no
- * Environment behind it reaches a job with no declaration to read.
+ * Environment behind it reaches a job with no declaration to read. The `none`
+ * sentinel went with `mdeploy-all.yml`'s `auto_promote_from`: a promotion's
+ * source is dev, and there is no longer a choice that binds a job to nothing.
  */
-const ENVIRONMENTS = ['dev', 'prod', 'none']
+const ENVIRONMENTS = ['dev', 'prod']
 
 test('every workflow that selects a deployment Environment does so from an allowlist', () => {
   // The rule is stated once in .github/workflows/README.md and enforced here across every
@@ -1681,7 +1690,21 @@ test('every workflow that selects a deployment Environment does so from an allow
         selected || !environment.includes('${{'),
         `${where} selects an Environment through an expression this guard cannot follow: ${environment}`,
       )
-      if (selected) {
+      // A workflow with no dispatch has no dispatcher, and the allowlist exists
+      // to stop one reaching an Environment through a typo. It could not pass
+      // the check either way: `workflow_call` inputs take only boolean, number
+      // and string, so `choice` is a shape a callee cannot declare. What covers
+      // it instead is this same sweep reaching its caller — mdeploy-all binds
+      // the stage from its own allowlisted input. So the rule here is that the
+      // workflow really is unreachable by hand.
+      const byHand = workflow.on?.workflow_dispatch !== undefined
+      if (!byHand) {
+        assert.ok(
+          workflow.on?.workflow_call !== undefined,
+          `${where} is reachable by neither dispatch nor call, so nothing can run it`,
+        )
+      }
+      if (selected && byHand) {
         const declared = inputs[selected[1]]
         assert.ok(declared, `${where} selects an Environment from an undeclared input '${selected[1]}'`)
         assert.equal(declared.type, 'choice', `${where} input '${selected[1]}' must be an allowlist`)
@@ -1709,20 +1732,14 @@ test('every workflow that selects a deployment Environment does so from an allow
 
   assert.deepEqual(
     [...swept].sort(),
-    // mbuild.yml, mrunner.yml and mdeploy.yml are the mstage/mbuild/mdeploy
-    // replacements — the images, the runner binary and the stack — and
-    // mdeploy-all.yml is the one dispatch that orders the three. Listed here
-    // deliberately: the point of pinning the set is that a seventh deploy
-    // workflow is a reviewed addition rather than one that appeared.
-    [
-      'build-apps-api-image.yml',
-      'deploy-infra.yml',
-      'deploy-release.yml',
-      'mbuild.yml',
-      'mdeploy-all.yml',
-      'mdeploy.yml',
-      'mrunner.yml',
-    ],
+    // mdeploy-all.yml is the one rollout path: it applies the stack and stages
+    // a runner itself, because a second job on one Environment is a second
+    // wait on its reviewers — which is why mdeploy.yml and mrunner.yml are
+    // gone. mbuild.yml is its commit line and mbuild-release.yml its release
+    // line. Listed here deliberately: the point of pinning the set is that a
+    // seventh deploy workflow is a reviewed addition rather than one that
+    // appeared.
+    ['build-apps-api-image.yml', 'deploy-infra.yml', 'deploy-release.yml', 'mbuild-release.yml', 'mbuild.yml', 'mdeploy-all.yml'],
     'the swept set no longer matches the deployment workflows',
   )
 })
@@ -1776,10 +1793,14 @@ test('every step that asks mstage for a session is given a token to answer with'
     }
   }
 
-  // The session check in mbuild, mdeploy and mrunner; mdeploy's apply; mrunner's
-  // two commands; and mdeploy-all's two runner reads. A drop means a tool call
-  // went somewhere this sweep cannot see.
-  assert.ok(checked >= 8, `expected every session-checking step swept, saw ${checked}`)
+  // Eight: mbuild's session check and mbuild-release's two; then the five in
+  // mdeploy-all's three tool-reaching jobs — `plan`'s `--check` read,
+  // `build-runner`'s session check and its build, `deploy`'s session check and
+  // its apply.
+  // The exact count, not a floor: a step that stops being swept is exactly the
+  // drop this exists to catch, and one that appears is a tool call nobody
+  // reviewed. Adding a legitimate one means changing this number with it.
+  assert.equal(checked, 8, `expected every session-checking step swept, saw ${checked}`)
 })
 
 test('API publishing builds once and promotes that exact image without rebuilding', () => {
