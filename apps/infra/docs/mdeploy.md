@@ -433,9 +433,11 @@ Two, both noticed while the pull-request shape landed and both deliberately
 left for their own change rather than folded into it:
 
 - `.github/actions/resolve-ref` still declares a `fallback` input and a
-  `resolved-from` output that nothing reads. `mbuild.yml` was the last consumer
-  of either; the two remaining call sites pass and read neither. Removing them
-  edits an action two workflows call, so it wants its own verification.
+  `resolved-from` output that no caller uses. The action does read its own
+  `fallback` (`action.yml:53`); what is gone is anyone passing one.
+  `mbuild.yml` was the last consumer of either, and the two remaining call
+  sites pass and read neither. Removing them edits an action two workflows
+  call, so it wants its own verification.
 - `mdeploy-all`'s `line` label and the two step summaries built from it have no
   test. `mbuild-release-workflow.test.ts` pins a `run-name` and is the pattern
   to follow.
