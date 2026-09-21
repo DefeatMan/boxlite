@@ -140,6 +140,7 @@ async def _wait_for_http(box: boxlite.Box, port: int, marker: bytes) -> bytes:
     )
 
 
+@pytest.mark.smoke
 @pytest.mark.asyncio
 async def test_python_sdk_tunnel_proxies_http_from_rest_box(rt, image):
     """Cloud tunnels isolate ports, serve concurrent clients, and die with the box."""

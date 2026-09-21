@@ -23,7 +23,7 @@ import urllib.request
 
 import pytest
 
-from conftest import drain
+from conftest import drain, with_bounded_lifetime
 
 
 @pytest.mark.asyncio
@@ -43,6 +43,7 @@ async def test_sdk_runtime_is_rest_against_local_api(rt):
     )
 
 
+@pytest.mark.smoke
 @pytest.mark.asyncio
 async def test_exec_roundtrip_proves_api_to_runner_chain(rt, image):
     """Create a box, exec a command, and verify:
@@ -58,9 +59,9 @@ async def test_exec_roundtrip_proves_api_to_runner_chain(rt, image):
     req = urllib.request.Request(
         ctx.url_for(ctx.v1("boxes")),
         method="POST",
-        data=json.dumps({
+        data=json.dumps(with_bounded_lifetime({
             "image": image, "cpus": 1, "memory_mib": 256, "disk_size_gb": 4,
-        }).encode(),
+        })).encode(),
         headers=ctx.auth_headers(content_type=True),
     )
     with urllib.request.urlopen(req, timeout=30) as resp:

@@ -132,6 +132,54 @@ For CI, store `BOXLITE_E2E_API_KEY` as a repository secret and pass it
 as an environment variable. No local bootstrap, Postgres, or runner
 services are needed — the remote stack provides everything.
 
+## The cloud legs (CI)
+
+`.github/workflows/e2e-cloud.yml` runs this suite against a deployed
+stage. It is dispatch-only, plus one call from `deploy-infra.yml`:
+
+| Stage | Target | Selection | Sweep |
+| --- | --- | --- | --- |
+| `dev` | `api.dev.boxlite.ai/api` | everything | yes |
+| `prod` | `api.boxlite.ai/api` | `-m smoke` | no |
+
+Each stage authenticates with its own repo secret — `BOXLITE_DEV_API_KEY` and
+`BOXLITE_PROD_API_KEY` — so a run only ever holds the key for the stage it
+targets.
+
+`smoke` marks the cases that are safe against a paying stage — one box at a
+time, no quota probing, no deliberate error storms. Mark a new case
+`@pytest.mark.smoke` only if it stays inside that budget.
+
+### Boxes must not outlive their run
+
+`auto_remove=True` is a no-op over REST and the API defaults `auto_delete` to
+disabled, so a box whose teardown never ran stays in the org for good. That is
+what killed the last dev run before this was fixed — run 30787280531: 53
+failures, every one `Organization quota exceeded: disk limit exceeded (max
+512GB)`.
+
+Two things keep that from recurring:
+
+- `conftest.bound_box_lifetime` fills in `auto_stop` / `auto_delete` on every
+  box created through the SDK, and `conftest.with_bounded_lifetime` does the
+  same for the cases that hand-build a REST body, so the stage reclaims a
+  stranded box within minutes. A case that needs a different policy sets it
+  and keeps it.
+- `apps/e2e/sweep.py` clears what earlier runs left behind — including boxes
+  created by the polyglot drivers and the CLI, which never pass through that
+  fixture:
+
+  ```bash
+  python3 apps/e2e/sweep.py                     # report only
+  python3 apps/e2e/sweep.py --apply             # delete what it reports
+  python3 apps/e2e/sweep.py --idle-minutes 120  # narrower window
+  ```
+
+  It only sees the organization its credential belongs to, and only considers
+  boxes idle for a day by default — nothing records which run made a box, so a
+  maintainer's own long-stopped box is a candidate too. That is why the window
+  is a day, why `--apply` is opt-in, and why only the dev leg runs it.
+
 ## Running against local stack
 
 ```bash
@@ -173,6 +221,7 @@ apps/e2e/
 ├── bootstrap.sh             # Install services (local stack only)
 ├── fixture_setup.py         # Register snapshots / quota / profile (local stack only)
 ├── run.sh                   # bootstrap + fixture_setup + pytest
+├── sweep.py                 # Reclaim boxes earlier runs stranded (cloud)
 ├── two_sided.sh             # Validates that test catches bug + PR fixes it
 ├── pytest.ini
 ├── lib/
@@ -186,7 +235,12 @@ apps/e2e/
 └── cases/
     ├── conftest.py                  # rt / image / box fixtures (REST-only)
     ├── test_path_verification.py    # Meta-test: prove SDK→API→Runner path
+    ├── test_cloud_smoke.py          # /v1/me + /v1/config: the smoke core
     ├── test_lifecycle.py            # Box create / get_info / remove
+    ├── test_box_lifecycle_policy.py # auto_stop / auto_delete reaping
+    ├── test_box_metrics.py          # Per-box metrics through the runner
+    ├── test_volumes.py              # Managed volumes: CRUD + data reuse
+    ├── test_network_egress.py       # Outbound policy: block-all, allow_net
     ├── test_exec_*.py               # Exec stdout, attach, timeout
     ├── test_copy_roundtrip.py       # Copy in/out
     ├── test_cli_entry.py            # CLI smoke (run, exec, whoami)
