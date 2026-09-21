@@ -425,8 +425,20 @@ jobs:
 
           case "$COMPONENTS" in
             *api*)
-              if npm run --silent mbuild verify -- --tag "$IMAGE_TAG" --stage "$STAGE"; then
+              # 66 is the registry answering that it is missing at least
+              # one of them, which is what makes this a build. Any other
+              # failure is a read
+              # that never landed, and deciding on one spends a job and its
+              # stage's approval on a question nobody answered: mbuild asks
+              # again downstream and either skips what it finds or fails on the
+              # same unreadable registry, an hour later and one approval in.
+              held=0
+              npm run --silent mbuild verify -- --tag "$IMAGE_TAG" --stage "$STAGE" || held=$?
+              if [ "$held" -eq 0 ]; then
                 echo "$STAGE already holds the images for $IMAGE_TAG"
+              elif [ "$held" -ne 66 ]; then
+                echo "::error title=registry::could not tell whether $STAGE holds the images for $IMAGE_TAG; mbuild verify exited $held"
+                exit 1
               elif [ -n "$VERSION" ]; then
                 # The release line. dev cuts it; every other stage receives the
                 # bytes dev already serves.

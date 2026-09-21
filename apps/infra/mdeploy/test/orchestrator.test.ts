@@ -92,6 +92,29 @@ test('the release line goes through the workflow that refuses a version twice', 
   }
 })
 
+test('a registry that could not be read is not a stage holding nothing', () => {
+  /*
+   * `plan` decides between skipping and building on one question: does this
+   * stage already hold these images. `mbuild verify` fails both for "it does
+   * not" and for a read that never landed — a deploy identity missing a
+   * registry grant is the one this repository has actually hit — and the two
+   * answers decide opposite things. Taken alike, a denied read spends a build
+   * job and its stage's approval on a question nobody answered: `mbuild.yml`'s
+   * publish asks again and either skips what it finds or throws naming the
+   * same unreadable registry, an hour later and one approval in.
+   *
+   * The code comes from the CLI that exits with it, not from a literal here.
+   */
+  const cli = readFileSync(fileURLToPath(new URL('../../mbuild/bin/mbuild.ts', import.meta.url)), 'utf8')
+  const absent = cli.match(/^const NOT_PUBLISHED_EXIT = (\d+)$/m)?.[1]
+  assert.ok(absent, 'the CLI declares no exit code of its own for absence')
+
+  const plan = jobAt('plan')
+  assert.match(plan, /mbuild verify -- --tag "\$IMAGE_TAG" --stage "\$STAGE" \|\| held=\$\?/, 'the status is thrown away')
+  assert.match(plan, new RegExp(`elif \\[ "\\$held" -ne ${absent} \\]; then`), 'absence is not told apart')
+  assert.match(plan, /::error title=registry::/, 'a read that never landed decides the plan silently')
+})
+
 test('a pull request is a third ref shape, told apart in the one place that classifies', () => {
   /*
    * `classify` is where a run learns what it is about; every job below reads a

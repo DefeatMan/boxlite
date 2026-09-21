@@ -266,12 +266,14 @@ test('a version already in the registry is refused rather than skipped', () => {
    * Per artifact, not per stage, so a half-published release names the half
    * that landed instead of resolving to one answer about the set.
    */
-  const gates = [...commands.matchAll(/if npm run --silent mbuild verify -- ([^\n;]+); then\n([^\n]*\n)/g)]
+  const gates = [
+    ...commands.matchAll(/mbuild verify -- ([^\n]+) \|\| held=\$\?\n\s*if \[ "\$held" -eq 0 \]; then\n(\s*echo[^\n]+)/g),
+  ]
   assert.equal(gates.length, 2, 'one refusal per command, before it acts')
-  for (const [, invocation, next] of gates) {
+  for (const [, invocation, refusal] of gates) {
     assert.match(invocation!, /--artifact "\$ARTIFACT"/, `the gate asks about the set, not the artifact: ${invocation}`)
     assert.match(invocation!, /--version "\$TAG"/, `the gate asks about the commit build: ${invocation}`)
-    assert.match(next!, /::error title=already (published|promoted)::/, 'a hit does not report an error')
+    assert.match(refusal!, /::error title=already (published|promoted)::/, 'a hit does not report an error')
   }
   // And the refusals actually stop the job rather than warn.
   assert.equal((commands.match(/::error title=already (published|promoted)::/g) ?? []).length, 2)
@@ -281,11 +283,49 @@ test('a version already in the registry is refused rather than skipped', () => {
 test('a promotion also proves the source holds what it is about to move', () => {
   // mbuild refuses this itself, but only after logging into both registries;
   // asking here names the version rather than the address.
-  assert.match(
-    commands,
-    /if ! npm run --silent mbuild verify -- --tag "\$SHA" --stage dev --artifact "\$ARTIFACT" --version "\$TAG"; then/,
+  const source = commands.match(
+    /mbuild verify -- ([^\n]+) \|\| held=\$\?\n\s*if \[ "\$held" -eq 66 \]; then\n\s*echo "::error title=not published::/,
   )
-  assert.match(commands, /::error title=not published::/)
+  assert.ok(source, 'nothing proves dev holds the artifact the promotion is about to move')
+  assert.match(source[1]!, /--tag "\$SHA" --stage dev --artifact "\$ARTIFACT" --version "\$TAG"/)
+})
+
+test('a registry that could not be read is not a registry that is empty', () => {
+  /*
+   * `mbuild verify` fails for two reasons a shell has to tell apart: the
+   * registry answered and the artifact is not there, or the read itself never
+   * landed — a denied token, an expired federation, an unreachable endpoint.
+   * `publish.ts` keeps them apart and `bin/mbuild.ts` carries the difference
+   * out as an exit code; a gate that only asks "did it fail" throws that away
+   * and takes an unreadable registry for a free slot, which is the refusal
+   * gone: `publish` skips what it finds and the run reports it as done.
+   *
+   * The code is read from the CLI rather than written here, because a literal
+   * in a test only ever agrees with itself.
+   */
+  const cli = readFileSync(fileURLToPath(new URL('../bin/mbuild.ts', import.meta.url)), 'utf8')
+  const absent = cli.match(/^const NOT_PUBLISHED_EXIT = (\d+)$/m)?.[1]
+  assert.ok(absent, 'the CLI declares no exit code of its own for absence')
+
+  const kept = commands.match(/mbuild verify -- [^\n]*\|\| held=\$\?/g) ?? []
+  assert.equal(kept.length, 3, `every verify gate has to keep the status, not a true/false: saw ${kept.length}`)
+  assert.equal(
+    (commands.match(/if npm run --silent mbuild verify/g) ?? []).length,
+    0,
+    'a gate that branches on success alone cannot tell absence from a denied read',
+  )
+
+  const asked = commands.match(/\[ "\$held" -(?:eq|ne) \d+ \]/g) ?? []
+  assert.equal(asked.length, 6, `three gates, each telling apart three answers: saw ${asked.join(', ')}`)
+  for (const question of asked) {
+    const known = new RegExp(`-(?:eq|ne) (?:0|${absent}) `)
+    assert.match(question, known, `${question} branches on a status nothing exits with`)
+  }
+  assert.equal(
+    (commands.match(/::error title=registry::/g) ?? []).length,
+    3,
+    'a gate that cannot read the registry has to say so and stop',
+  )
 })
 
 test('every registry command addresses the release line', () => {

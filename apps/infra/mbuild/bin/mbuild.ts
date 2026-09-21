@@ -20,11 +20,11 @@ import { loadConfig as loadStageConfig, type StageConfig } from 'mstage/config'
 import { loadBuildConfig, onlyArtifact, registryFor, type BuildConfig } from '../src/config.ts'
 import { assertTag, releaseTagFor, resolveRegistry } from '../src/address.ts'
 import { assertPromotable, coordinatesOf, type Coordinates } from '../src/coordinates.ts'
-import { promote, publish, ScanRefusedError, verifyPublished } from '../src/publish.ts'
+import { NotPublishedError, promote, publish, ScanRefusedError, verifyPublished } from '../src/publish.ts'
 import { run } from '../src/run.ts'
 
 /**
- * The exit code a scan refusal reports, and the only one that is not 1.
+ * The exit code a scan refusal reports.
  *
  * A caller retries a publish because a push and a token endpoint fail
  * transiently. The scan gate does not: its answer is about the image's own
@@ -37,6 +37,21 @@ import { run } from '../src/run.ts'
  * one from a standard beats a number chosen here.
  */
 const SCAN_REFUSED_EXIT = 78
+
+/**
+ * The exit code "this stage does not hold it" reports.
+ *
+ * `verify` fails for two reasons a shell has to tell apart: the registry
+ * answered and the artifact is not there, or the registry could not be read at
+ * all. A gate that reads both as absence — mbuild-release asks one before it
+ * publishes a version — takes a denied read for a free slot and loses the
+ * refusal it exists for: `publish` asks again, skips every artifact it finds,
+ * and the run reports a publish of bytes it never wrote.
+ *
+ * 66 is `EX_NOINPUT` from `sysexits.h`, "an input did not exist", which is the
+ * question `verify` answers.
+ */
+const NOT_PUBLISHED_EXIT = 66
 
 const USAGE = [
   'usage: npm run mbuild publish -- --tag <commit-sha> --stage <stage> [--artifact <name>] [--version v<X.Y.Z>]',
@@ -242,9 +257,16 @@ const main = async (): Promise<number> => {
   return 1
 }
 
+/** Everything a caller branches on. Every other failure is a plain 1. */
+const exitCodeFor = (error: unknown): number => {
+  if (error instanceof ScanRefusedError) return SCAN_REFUSED_EXIT
+  if (error instanceof NotPublishedError) return NOT_PUBLISHED_EXIT
+  return 1
+}
+
 try {
   process.exitCode = await main()
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error))
-  process.exitCode = error instanceof ScanRefusedError ? SCAN_REFUSED_EXIT : 1
+  process.exitCode = exitCodeFor(error)
 }

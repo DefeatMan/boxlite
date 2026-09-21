@@ -341,8 +341,20 @@ jobs:
           ARTIFACT: ${{ matrix.artifact }}
         run: |
           set -Eeuo pipefail
-          if npm run --silent mbuild verify -- --tag "$SHA" --stage dev --artifact "$ARTIFACT" --version "$TAG"; then
+          # 66 is the one failure this gate may continue past: the registry
+          # answered, and the artifact is not there. Every other status is a
+          # read that never landed — a denied token, an expired federation —
+          # and continuing past one throws the refusal away: `publish` re-asks,
+          # skips the artifact it finds (`publish.ts:634`), and the run reports
+          # a publish it never did, which is the answer this gate exists for.
+          held=0
+          npm run --silent mbuild verify -- --tag "$SHA" --stage dev --artifact "$ARTIFACT" --version "$TAG" || held=$?
+          if [ "$held" -eq 0 ]; then
             echo "::error title=already published::dev already holds $ARTIFACT for $TAG ($SHA). Publishing again would overwrite nothing and report success; nothing was done."
+            exit 1
+          fi
+          if [ "$held" -ne 66 ]; then
+            echo "::error title=registry::could not tell whether dev holds $ARTIFACT for $TAG ($SHA); mbuild verify exited $held. Nothing was published."
             exit 1
           fi
           echo "dev does not hold $ARTIFACT at $TAG yet; publishing."
@@ -507,8 +519,15 @@ jobs:
           ARTIFACT: ${{ matrix.artifact }}
         run: |
           set -Eeuo pipefail
-          if npm run --silent mbuild verify -- --tag "$SHA" --stage prod --artifact "$ARTIFACT" --version "$TAG"; then
+          # 66, and only 66, is absence. See the same gate in `publish`.
+          held=0
+          npm run --silent mbuild verify -- --tag "$SHA" --stage prod --artifact "$ARTIFACT" --version "$TAG" || held=$?
+          if [ "$held" -eq 0 ]; then
             echo "::error title=already promoted::prod already holds $ARTIFACT for $TAG ($SHA); nothing was promoted."
+            exit 1
+          fi
+          if [ "$held" -ne 66 ]; then
+            echo "::error title=registry::could not tell whether prod holds $ARTIFACT for $TAG ($SHA); mbuild verify exited $held. Nothing was promoted."
             exit 1
           fi
           echo "prod does not hold $ARTIFACT at $TAG yet; promoting."
@@ -524,8 +543,16 @@ jobs:
           ARTIFACT: ${{ matrix.artifact }}
         run: |
           set -Eeuo pipefail
-          if ! npm run --silent mbuild verify -- --tag "$SHA" --stage dev --artifact "$ARTIFACT" --version "$TAG"; then
+          # Refuses either way, and says which: "publish it first" sends the
+          # dispatcher somewhere useful only when dev really is empty here.
+          held=0
+          npm run --silent mbuild verify -- --tag "$SHA" --stage dev --artifact "$ARTIFACT" --version "$TAG" || held=$?
+          if [ "$held" -eq 66 ]; then
             echo "::error title=not published::dev does not hold $ARTIFACT for $TAG ($SHA). Run this workflow's publish command first."
+            exit 1
+          fi
+          if [ "$held" -ne 0 ]; then
+            echo "::error title=registry::could not tell whether dev holds $ARTIFACT for $TAG ($SHA); mbuild verify exited $held. Nothing was promoted."
             exit 1
           fi
 
