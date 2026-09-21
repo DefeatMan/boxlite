@@ -369,10 +369,11 @@ reported success.
 and `--version` have not always existed, and an mbuild without them takes them
 as unknown flags and drops them — so a tag cut before them publishes commit
 images at `<sha>`, reports success, and leaves `v<X.Y.Z>-<sha>` unwritten for
-the promotion to look for. `resolve` reads `apps/infra/mbuild/package.json` out
-of the released commit and refuses anything below the minimum that step names.
-That is what mbuild's package version is for: it says which contract a commit
-carries, where merge topology and the presence of a file only guess.
+the promotion to look for. `mbuild-release.yml`'s own `resolve` — not the one
+above — reads `apps/infra/mbuild/package.json` out of the released commit and
+refuses anything below the minimum that step names. That is what mbuild's
+package version is for: it says which contract a commit carries, where merge
+topology and the presence of a file only guess.
 
 The images half is also dispatchable on its own: `mbuild-release.yml` publishes
 or promotes a version. `mbuild.yml` is callee-only — nobody publishes a bare
