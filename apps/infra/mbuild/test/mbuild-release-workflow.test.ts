@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { load } from 'js-yaml'
@@ -19,6 +22,94 @@ const commands = source
 
 /** The two jobs that reach a registry. `resolve` and `source` reach none. */
 const acting = ['publish', 'promote']
+
+/** What a release cut from this tree would carry, and so must be accepted. */
+const shippedVersion = (
+  JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')) as {
+    version: string
+  }
+).version
+
+const git = (cwd: string, ...args: string[]): string => {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8' })
+  assert.equal(result.status, 0, result.stderr)
+  return result.stdout.trim()
+}
+
+/** An mbuild manifest declaring one version, as a released commit holds it. */
+const manifestFor = (version: string): string =>
+  `${JSON.stringify({ name: 'mbuild', version }, undefined, 2)}\n`
+
+/**
+ * A commit as a release sees it: whatever mbuild manifest it carries, and one
+ * artifact so the step after the guard has something to read.
+ *
+ * `manifest` absent is a commit from before mbuild existed here at all, which
+ * the oldest taggable commits are.
+ */
+const releasedTree = (manifest?: string): { directory: string; sha: string } => {
+  const directory = mkdtempSync(join(tmpdir(), 'mbuild-release-'))
+  mkdirSync(join(directory, 'apps/infra'), { recursive: true })
+  writeFileSync(join(directory, 'apps/infra/mstage.env.json'), '{"artifacts":{"api":{}}}\n')
+  if (manifest !== undefined) {
+    mkdirSync(join(directory, 'apps/infra/mbuild'), { recursive: true })
+    writeFileSync(join(directory, 'apps/infra/mbuild/package.json'), manifest)
+  }
+  git(directory, 'init', '--quiet')
+  git(directory, 'add', '.')
+  git(
+    directory,
+    '-c',
+    'user.name=mbuild test',
+    '-c',
+    'user.email=mbuild@example.invalid',
+    '-c',
+    'commit.gpgsign=false',
+    'commit',
+    '--quiet',
+    '--message=fixture',
+  )
+  return { directory, sha: git(directory, 'rev-parse', 'HEAD') }
+}
+
+/**
+ * Run the real resolver shell after the tag has become a commit.
+ *
+ * Conditional steps belong to the reusable-workflow caller agreement, so a
+ * direct dispatch does not run them. Everything else must succeed before the
+ * resolver can hand artifacts to a job that binds an Environment and logs in.
+ */
+const resolveReleasedTree = ({ directory, sha }: { directory: string; sha: string }) => {
+  const steps = workflow.jobs.resolve.steps as any[]
+  const start = steps.findIndex((step) => step.id === 'ref') + 1
+  const end = steps.findIndex((step) => step.id === 'artifacts') + 1
+  assert.ok(start > 0 && end >= start, 'resolve has no post-ref artifact path')
+
+  const output = join(directory, 'github-output')
+  writeFileSync(output, '')
+  let stdout = ''
+  let stderr = ''
+  for (const step of steps.slice(start, end).filter((candidate) => candidate.run && !candidate.if)) {
+    const stepEnvironment = Object.fromEntries(
+      Object.entries(step.env ?? {}).map(([name, value]) => [name, String(value)]),
+    )
+    const result = spawnSync('/usr/bin/env', ['bash', '-c', String(step.run)], {
+      cwd: directory,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        ...stepEnvironment,
+        GITHUB_OUTPUT: output,
+        SHA: sha,
+        TAG: 'v1.2.3',
+      },
+    })
+    stdout += result.stdout
+    stderr += result.stderr
+    if (result.status !== 0) return { status: result.status, stdout, stderr }
+  }
+  return { status: 0, stdout, stderr }
+}
 
 test('a release runs from main and from nowhere else', () => {
   /*
@@ -65,12 +156,86 @@ test('the version is refused before a registry is asked about it', () => {
   assert.match(step.run, /git rev-parse --verify --quiet/, 'the tag existence is not proved')
 })
 
+test('every job that binds an Environment waits for resolve first', () => {
+  // The refusals live in `resolve`, and a job that bound a stage beside it
+  // would start that stage's reviewer wait on a tag about to be refused —
+  // spending the approval the checks above exist to save. `source` binds dev
+  // to read one variable and is the easy one to forget.
+  for (const [name, job] of Object.entries(workflow.jobs as Record<string, any>)) {
+    if (job.environment === undefined) continue
+    assert.ok(
+      (job.needs ?? []).includes('resolve'),
+      `${name} binds ${job.environment} without waiting for resolve`,
+    )
+  }
+})
+
 test('the commit a version names must be on the branch that dispatched it', () => {
   // resolve-ref's branch check. Without it a tag on a force-pushed branch
   // still resolves and still names bytes.
   const uses = [...source.matchAll(/uses: \.\/\.github\/actions\/resolve-ref\n\s*with:\n((?:\s{10}\S[^\n]*\n)+)/g)]
   assert.equal(uses.length, 1, 'a version becomes a commit in exactly one place')
   assert.match(uses[0]![1]!, /branch: \$\{\{ github\.ref_name \}\}/)
+})
+
+test('a release refuses a commit whose mbuild ignores the flags it will be given', (context) => {
+  // 0.0.1 is what every commit before those flags existed actually carries,
+  // and such an mbuild takes them as unknown and publishes commit images at
+  // the commit address while reporting success.
+  const released = releasedTree(manifestFor('0.0.1'))
+  context.after(() => rmSync(released.directory, { recursive: true, force: true }))
+
+  const result = resolveReleasedTree(released)
+  const output = `${result.stdout}\n${result.stderr}`
+  assert.notEqual(result.status, 0, `mbuild 0.0.1 was accepted:\n${output}`)
+  // The refusal names the version it read and what that version cannot do, so
+  // an operator reads why the tag was refused rather than that it was.
+  assert.match(output, /mbuild 0\.0\.1/)
+  assert.match(output, /--artifact and --version/)
+})
+
+test('a release refuses a commit from before mbuild existed here', (context) => {
+  const released = releasedTree()
+  context.after(() => rmSync(released.directory, { recursive: true, force: true }))
+
+  const result = resolveReleasedTree(released)
+  const output = `${result.stdout}\n${result.stderr}`
+  assert.notEqual(result.status, 0, `a commit with no mbuild was accepted:\n${output}`)
+  assert.match(output, /no readable mbuild version/)
+})
+
+test('a manifest that will not parse is refused', (context) => {
+  const released = releasedTree('not a manifest\n')
+  context.after(() => rmSync(released.directory, { recursive: true, force: true }))
+
+  const result = resolveReleasedTree(released)
+  const output = `${result.stdout}\n${result.stderr}`
+  assert.notEqual(result.status, 0, `an unparseable manifest was accepted:\n${output}`)
+  assert.match(output, /no readable mbuild version/)
+})
+
+test('a version out of the manifest cannot talk to Actions on the way to the log', (context) => {
+  // A declared version is a string out of an arbitrary commit, and it lands in
+  // a log where `::` at the start of a line is a command to Actions. Refusing
+  // it is not enough — the refusal has to be able to say what it read without
+  // the manifest getting a turn.
+  const released = releasedTree(manifestFor('1.0\n::error title=crafted::from the manifest'))
+  context.after(() => rmSync(released.directory, { recursive: true, force: true }))
+
+  const result = resolveReleasedTree(released)
+  const output = `${result.stdout}\n${result.stderr}`
+  assert.notEqual(result.status, 0, `a crafted version was accepted:\n${output}`)
+  assert.doesNotMatch(output, /^::error title=crafted/m)
+})
+
+test('a release accepts a commit carrying the mbuild this repository ships', (context) => {
+  // The version on disk rather than a literal: this is also what refuses a
+  // minimum raised past what main can actually cut a release from.
+  const released = releasedTree(manifestFor(shippedVersion))
+  context.after(() => rmSync(released.directory, { recursive: true, force: true }))
+
+  const result = resolveReleasedTree(released)
+  assert.equal(result.status, 0, `mbuild ${shippedVersion} was refused:\n${result.stdout}\n${result.stderr}`)
 })
 
 test('every artifact gets its own job, from the declaration that release carries', () => {

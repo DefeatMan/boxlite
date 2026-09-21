@@ -365,6 +365,15 @@ tag whose Release is missing, still a draft, or carrying no runner asset yet,
 because that download otherwise 404s on the host at boot, long after the apply
 reported success.
 
+**A release is refused at a commit whose mbuild would ignore it.** `--artifact`
+and `--version` have not always existed, and an mbuild without them takes them
+as unknown flags and drops them — so a tag cut before them publishes commit
+images at `<sha>`, reports success, and leaves `v<X.Y.Z>-<sha>` unwritten for
+the promotion to look for. `resolve` reads `apps/infra/mbuild/package.json` out
+of the released commit and refuses anything below the minimum that step names.
+That is what mbuild's package version is for: it says which contract a commit
+carries, where merge topology and the presence of a file only guess.
+
 The images half is also dispatchable on its own: `mbuild-release.yml` publishes
 or promotes a version. `mbuild.yml` is callee-only — nobody publishes a bare
 commit by hand.
