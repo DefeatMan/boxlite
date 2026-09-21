@@ -240,29 +240,38 @@ jobs:
             echo "::error title=pull request::no pull request #$PR in this repository ($pr_json)"
             exit 1
           fi
-          state="$(jq -r '.state' <<<"$pr_json")"
-          if [ "$state" != 'OPEN' ]; then
-            echo "::error title=pull request::#$PR is $state, not open; a closed pull request names no live ref"
-            exit 1
-          fi
           # Mergeability is computed lazily, so UNKNOWN is a "not yet" rather
           # than a verdict. There is no event to await — the answer only exists
           # once GitHub recomputes it — so this polls rather than failing a
           # dispatch on a cold cache.
+          #
+          # Every field is read inside the loop, so the verdict below is about
+          # the pull request as it stands when the loop leaves rather than as
+          # the first response found it: one closed while this waited is not a
+          # request to roll out, whatever the first response said.
           for attempt in 1 2 3 4 5; do
+            state="$(jq -r '.state' <<<"$pr_json")"
             mergeable="$(jq -r '.mergeable' <<<"$pr_json")"
             sha="$(jq -r '.potentialMergeCommit.oid // empty' <<<"$pr_json")"
-            [ "$mergeable" = 'UNKNOWN' ] || [ -z "$sha" ] || break
-            [ "$attempt" -lt 5 ] || break
+            if [ "$state" != 'OPEN' ]; then break; fi
+            if [ "$mergeable" != 'UNKNOWN' ] && [ -n "$sha" ]; then break; fi
+            if [ "$attempt" -eq 5 ]; then break; fi
             sleep 5
             pr_json="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json "$fields")"
           done
+          if [ "$state" != 'OPEN' ]; then
+            echo "::error title=pull request::#$PR is $state, not open; a closed pull request names no live ref"
+            exit 1
+          fi
           if [ "$mergeable" = 'CONFLICTING' ]; then
             echo "::error title=pull request::#$PR conflicts with its base, so it has no merge commit to deploy; resolve and re-dispatch"
             exit 1
           fi
-          if [ -z "$sha" ]; then
-            echo "::error title=pull request::#$PR has no merge commit yet (mergeable=$mergeable) after 5 attempts; open it once to force the computation, then re-dispatch"
+          # MERGEABLE, not "anything but CONFLICTING": UNKNOWN can arrive
+          # beside a merge commit computed before the last push, and rolling
+          # that out installs a tree neither side of the request has.
+          if [ "$mergeable" != 'MERGEABLE' ] || [ -z "$sha" ]; then
+            echo "::error title=pull request::#$PR has no merge commit this run can trust (mergeable=$mergeable, merge commit ${sha:-none}) after 5 attempts; open it once to force the computation, then re-dispatch"
             exit 1
           fi
           # Logged, never gated on. Dispatching this workflow already needs

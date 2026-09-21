@@ -155,12 +155,45 @@ test('a pull request resolves to the commit it would merge, never its head', () 
   assert.match(resolve, /sha="\$\(jq -r '\.potentialMergeCommit\.oid \/\/ empty' <<<"\$pr_json"\)"/)
   assert.match(resolve, /head="\$\(jq -r '\.headRefOid'/, 'the head is not read, so this test guards nothing')
   // Three refusals, each naming what the operator has to do about it.
-  for (const refused of [/is \$state, not open/, /conflicts with its base/, /has no merge commit yet/]) {
+  for (const refused of [
+    /is \$state, not open/,
+    /conflicts with its base/,
+    /has no merge commit this run can trust/,
+  ]) {
     assert.match(resolve, refused, `a pull request is accepted where it should be refused: ${refused}`)
   }
   // UNKNOWN is a "not yet", not a verdict: GitHub computes it lazily and there
   // is no event to await, so this is the one place a poll is right.
   assert.match(resolve, /for attempt in 1 2 3 4 5/)
+})
+
+test('the pull request that gets deployed is the one the poll ended on', () => {
+  /*
+   * The loop refreshes the response, so every field the verdict rests on has
+   * to be read from the refreshed one. A `state` read once above the loop
+   * describes a pull request that may have been closed in the twenty seconds
+   * since, and a closed request is not one to roll out.
+   *
+   * The other half is the verdict itself. `mergeable` comes back UNKNOWN
+   * beside a `potentialMergeCommit` computed before the last push, so
+   * "anything but CONFLICTING" accepts a merge of a tree neither side of the
+   * request has — the positive answer is the only one worth deploying.
+   */
+  const resolve = jobAt('resolve')
+  const polls = resolve.indexOf('for attempt in 1 2 3 4 5')
+  assert.notEqual(polls, -1, 'nothing polls, so there is no refreshed response to read')
+  for (const field of ['state', 'mergeable', 'sha']) {
+    const read = resolve.indexOf(`${field}="$(jq -r`)
+    assert.notEqual(read, -1, `${field} is never read from the response`)
+    assert.ok(read > polls, `${field} is read above the poll, so the verdict is about the first response`)
+  }
+  assert.match(
+    resolve,
+    /if \[ "\$mergeable" != 'MERGEABLE' \] \|\| \[ -z "\$sha" \]; then/,
+    'a merge commit is deployed without the answer that it merges cleanly',
+  )
+  const verdict = resolve.indexOf("!= 'MERGEABLE'")
+  assert.ok(verdict < resolve.indexOf("printf 'sha=%s"), 'the commit is published before it is judged')
 })
 
 test('the branch check is replaced for a pull request, not skipped', () => {

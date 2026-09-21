@@ -306,7 +306,7 @@ a commit SHA, or #<number> for a pull request        (dev only)
      │             ├▸ build-runner  compile, stage in this stage's bucket
      │             └▸ deploy        RUNNER_ARTIFACT_SOURCE=build
      └▸ a pull request resolves to the commit it would merge to,
-        and must be open and free of conflicts
+        and must be open and known to merge cleanly
 
 a release tag v<X.Y.Z>
   resolve ─▸ plan ─┬▸ mbuild-release  publish (dev) / promote (prod)
@@ -321,8 +321,12 @@ is the same work missing whatever its base gained since it was branched, so
 shaking one out answers about a tree nobody will merge. It buys no ordering
 against the ref this workflow's definition came from — on the dev path that ref
 need not be the request's base, and the merge can sit behind it. The request has
-to be open and free of conflicts; GitHub computes that lazily, so `resolve`
-polls rather than failing a dispatch on a cold cache.
+to be open and known to merge cleanly. GitHub computes mergeability lazily, so
+`resolve` polls rather than failing a dispatch on a cold cache; it reads the
+state off the last poll rather than the first, because a request can be closed
+while this waits; and it requires MERGEABLE rather than merely not
+CONFLICTING, because an unknown answer can arrive beside a merge commit
+computed before the last push.
 
 A fork's request is accepted and logged as one. Two things stand behind that.
 Dispatching at all needs write access on this repository. And `build-runner`
