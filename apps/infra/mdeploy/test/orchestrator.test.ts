@@ -92,6 +92,101 @@ test('the release line goes through the workflow that refuses a version twice', 
   }
 })
 
+test('a pull request is a third ref shape, told apart in the one place that classifies', () => {
+  /*
+   * `classify` is where a run learns what it is about; every job below reads a
+   * decision rather than re-parsing the input. A bare number cannot collide
+   * with `v<X.Y.Z>` or with 40 hex characters, so the third shape costs one
+   * branch there and nothing anywhere else.
+   */
+  const resolve = jobAt('resolve')
+  // `#` and digits, the way GitHub writes a pull request. A bare number would
+  // be a valid abbreviated SHA somewhere, so the sigil is what keeps the
+  // operator's intent explicit instead of letting the shape guess it.
+  assert.match(resolve, /\[\[ "\$candidate" =~ \^#\[1-9\]\[0-9\]\*\$ \]\]/, 'a pull request is not recognised')
+  assert.match(resolve, /pr="\$\{candidate#\\#\}"/, 'the sigil reaches the API call')
+  assert.match(resolve, /printf 'pr=%s\\n' "\$pr"/, 'the decision does not leave classify')
+  // And the refusal names all three, so an operator who typed a branch name
+  // learns what the field does take.
+  assert.match(resolve, /is none of a release tag[^\n]*pull request \(#<number>\)[^\n]*commit SHA/)
+})
+
+test('a pull request resolves to the commit it would merge, never its head', () => {
+  /*
+   * `refs/pull/N/merge` is the request's own base plus the request, which is
+   * the tree that would land. A head is the same work missing whatever its
+   * base gained since it was branched.
+   *
+   * Asked by number rather than by SHA because the API cannot name the pull
+   * request a fork's head belongs to — a SHA-first lookup can never accept a
+   * fork.
+   */
+  const resolve = jobAt('resolve')
+  assert.match(resolve, /gh pr view "\$PR"/, 'the pull request is not read from the API')
+  // The variable the output is written from, not merely the presence of the
+  // field somewhere above it: `$head` is read in this step too, so a slice
+  // taken after the printf would stay green while the printf published it.
+  const published = resolve.match(/printf 'sha=%s\\n' "\$\{?(\w+)\}?"/)
+  assert.ok(published, 'nothing writes the resolved commit to an output')
+  assert.equal(published[1], 'sha', `the output is written from $${published[1]}, not the merge commit`)
+  assert.match(resolve, /sha="\$\(jq -r '\.potentialMergeCommit\.oid \/\/ empty' <<<"\$pr_json"\)"/)
+  assert.match(resolve, /head="\$\(jq -r '\.headRefOid'/, 'the head is not read, so this test guards nothing')
+  // Three refusals, each naming what the operator has to do about it.
+  for (const refused of [/is \$state, not open/, /conflicts with its base/, /has no merge commit yet/]) {
+    assert.match(resolve, refused, `a pull request is accepted where it should be refused: ${refused}`)
+  }
+  // UNKNOWN is a "not yet", not a verdict: GitHub computes it lazily and there
+  // is no event to await, so this is the one place a poll is right.
+  assert.match(resolve, /for attempt in 1 2 3 4 5/)
+})
+
+test('the branch check is replaced for a pull request, not skipped', () => {
+  /*
+   * A merge commit sits on no branch, so `--is-ancestor` could only ever
+   * refuse it. What stands in its place is stronger for this purpose: the pull
+   * request is open now and merges cleanly, and GitHub recomputes the ref
+   * whenever either side moves.
+   *
+   * The two resolutions are mutually exclusive, and exactly one output feeds
+   * every job below — a second source of "which commit" is what the whole
+   * resolve-once rule exists to prevent.
+   */
+  const resolve = jobAt('resolve')
+  assert.match(resolve, /if: steps\.classify\.outputs\.pr == ''\n\s*uses: \.\/\.github\/actions\/resolve-ref/)
+  assert.match(resolve, /if: steps\.classify\.outputs\.pr != ''/, 'the pull-request resolve is unconditional')
+  assert.match(resolve, /sha="\$\{RESOLVED:-\$MERGED\}"/, 'the two resolutions do not converge on one value')
+  assert.match(jobAt('resolve'), /sha: \$\{\{ steps\.tag\.outputs\.sha \}\}/, 'the job publishes a different commit')
+})
+
+test('a pull request reaches dev and no further', () => {
+  // prod's refusal is written on the absence of a version, so it catches a
+  // pull request for the same reason it catches a bare commit — one rule, not
+  // one per shape.
+  const resolve = jobAt('resolve')
+  assert.match(resolve, /if \[ "\$STAGE" != 'dev' \] && \[ -z "\$version" \]; then/)
+  assert.match(resolve, /rather than a commit or a pull request/)
+})
+
+test('reading a pull request is all the extra permission it takes', () => {
+  // Read-only, and the only job that uses it binds no Environment — so a
+  // mistyped number costs an API call, not an approval.
+  /*
+   * On the one job that reads the API, not at workflow level. A job-level
+   * block replaces the workflow-level one rather than merging with it, so
+   * granting it above would hand `pull-requests: read` to `plan`,
+   * `build-runner` and `deploy` — the three that bind this stage's
+   * Environment and reach its cloud role — none of which declares a block of
+   * its own to drop it again.
+   */
+  const top = workflow.slice(workflow.indexOf('\npermissions:\n') + 1)
+  assert.doesNotMatch(top.slice(0, top.search(/\n[a-z]/)), /pull-requests/, 'every job would carry it')
+  assert.match(jobAt('resolve'), /^ {4}permissions:\n(?: {6}[a-z-]+: [a-z]+\n)* {6}pull-requests: read$/m)
+  assert.doesNotMatch(workflow, /pull-requests: write/)
+  // And that job binds no Environment, so a mistyped number costs an API call
+  // rather than an approval.
+  assert.doesNotMatch(jobAt('resolve'), /^ {4}environment:/m)
+})
+
 test('prod deploys released versions and refuses a bare commit', () => {
   /*
    * The property the release line exists for. Written as a refusal on the
@@ -109,7 +204,7 @@ test('an image address carries the version when there is one', () => {
   // A release build and a commit build of one commit are different bytes, so
   // they are different addresses; prod can be narrowed to the release line only
   // because of that. Composed once, in the job that resolved the ref.
-  assert.match(jobAt('resolve'), /printf 'image=%s\\n' "\$\{VERSION:\+\$\{VERSION\}-\}\$\{SHA\}"/)
+  assert.match(jobAt('resolve'), /printf 'image=%s\\n' "\$\{VERSION:\+\$\{VERSION\}-\}\$\{sha\}"/)
   assert.match(jobAt('plan'), /mbuild verify -- --tag "\$IMAGE_TAG"/, 'the plan asks about a different address')
   assert.match(jobAt('deploy'), /BOXLITE_IMAGE_TAG=%s\\n' "\$IMAGE_TAG"/, 'the apply installs a different address')
 })

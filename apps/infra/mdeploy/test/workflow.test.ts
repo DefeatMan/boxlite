@@ -273,7 +273,11 @@ test('every deploy-path ref is pinned to the branch it was dispatched from', () 
    * across every call in the deploy workflows, because the guard is only worth
    * as much as the call site that forgets it.
    */
-  const workflows = ['mdeploy-all.yml', 'mbuild.yml', 'mbuild-release.yml']
+  // mbuild.yml is absent deliberately: it is callee-only and no longer
+  // resolves anything. Its caller hands it a SHA already resolved and already
+  // proved — and for a pull request that proof cannot be a branch, because a
+  // merge commit sits on none. What mbuild.yml owes instead is asserted below.
+  const workflows = ['mdeploy-all.yml', 'mbuild-release.yml']
   for (const name of workflows) {
     const text = readFileSync(fileURLToPath(new URL(`../../../../.github/workflows/${name}`, import.meta.url)), 'utf8')
     const uses = [...text.matchAll(/uses: \.\/\.github\/actions\/resolve-ref\n\s*with:\n((?:\s{10}\S[^\n]*\n)+)/g)]
@@ -282,6 +286,32 @@ test('every deploy-path ref is pinned to the branch it was dispatched from', () 
       assert.match(block, /branch: \$\{\{ github\.ref_name \}\}/, `${name} resolves a ref against no branch:\n${block}`)
     }
   }
+})
+
+test('a callee trusts no ref it was handed, and resolves none of its own', () => {
+  /*
+   * What `mbuild.yml` owes now that the branch pin above cannot cover it.
+   *
+   * It is reachable only by call, and its one caller resolves a tag, a commit
+   * or a pull request into a single SHA and refuses each shape for its own
+   * reasons. Resolving again here would be a second answer to "which commit",
+   * and for a pull request it could not reach the same one at all — the merge
+   * commit sits on no branch, so the check would refuse the very ref the
+   * caller just proved.
+   *
+   * So the rule is: no resolution, and no trust either. The shape is re-checked
+   * where the value enters, which is what `build-apps-api-image.yml` does with
+   * the same guarantee from the same caller.
+   */
+  const mbuild = readFileSync(fileURLToPath(new URL('../../../../.github/workflows/mbuild.yml', import.meta.url)), 'utf8')
+  assert.doesNotMatch(mbuild, /^ {2}workflow_dispatch:$/m, 'a dispatcher could hand it an unproved ref')
+  assert.match(mbuild, /^ {2}workflow_call:$/m, 'nothing can reach it at all')
+  assert.doesNotMatch(mbuild, /actions\/resolve-ref/, 'it resolves a ref its caller already resolved')
+  assert.match(
+    mbuild,
+    /if \[\[ ! "\$TAG" =~ \^\[0-9a-f\]\{40\}\$ \]\]/,
+    'it takes the caller’s tag without re-checking its shape',
+  )
 })
 
 test('the only stage a deploy workflow runs for off main is dev', () => {

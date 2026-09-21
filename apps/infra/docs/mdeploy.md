@@ -297,14 +297,16 @@ derived-only zone makes that a deploy nothing can fix without editing code.
 
 `mdeploy-all.yml` is the whole of it from a browser, and the only way a stage is
 rolled out: pick a stage, pick what the ref needs — `api+runner`, `api` or
-`runner` — name a commit or a release tag, and say whether to apply or only
-preview. What the ref is decides the rest.
+`runner` — name a commit, a pull request or a release tag, and say whether to
+apply or only preview. What the ref is decides the rest.
 
 ```
-a commit SHA (dev only)
+a commit SHA, or #<number> for a pull request        (dev only)
   resolve ─▸ plan ─┬▸ mbuild        publish <sha> images
-                   ├▸ build-runner  compile, stage in this stage's bucket
-                   └▸ deploy        RUNNER_ARTIFACT_SOURCE=build
+     │             ├▸ build-runner  compile, stage in this stage's bucket
+     │             └▸ deploy        RUNNER_ARTIFACT_SOURCE=build
+     └▸ a pull request resolves to the commit it would merge to,
+        and must be open and free of conflicts
 
 a release tag v<X.Y.Z>
   resolve ─▸ plan ─┬▸ mbuild-release  publish (dev) / promote (prod)
@@ -313,9 +315,23 @@ a release tag v<X.Y.Z>
         boxlite-runner-v<X.Y.Z>-linux-amd64.tar.gz + .sha256
 ```
 
-**prod takes a release tag and nothing else.** A commit aimed at it is refused in
-`resolve`, before any Environment is bound. Promotion is preferred over a build
-for a reason that is not speed: it moves the bytes dev already serves, and a
+**A pull request deploys its merge, not its head.** `refs/pull/N/merge` is the
+request's own base plus the request, which is the tree that would land; a head
+is the same work missing whatever its base gained since it was branched, so
+shaking one out answers about a tree nobody will merge. It buys no ordering
+against the ref this workflow's definition came from — on the dev path that ref
+need not be the request's base, and the merge can sit behind it. The request
+has to be open and free of
+conflicts; GitHub computes that lazily, so `resolve` polls rather than failing a
+dispatch on a cold cache. A fork's request is accepted and logged as one:
+dispatching this workflow already needs write access, and `build-runner` and
+mbuild's publish compile that tree behind the stage's own Environment, which is
+where a fork's build code gets looked at.
+
+**prod takes a release tag and nothing else.** A commit or a pull request aimed
+at it is refused in `resolve`, before any Environment is bound. Promotion is
+preferred over a build for a reason that is not speed: it moves the bytes dev
+already serves, and a
 rebuild of one commit is not byte-identical, while everything downstream treats
 version+commit as an identity and never looks inside. Two stages that each built
 the same commit hold two sets of bytes under one reported version.
