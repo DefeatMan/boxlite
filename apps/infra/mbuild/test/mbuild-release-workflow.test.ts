@@ -194,6 +194,28 @@ test('a release refuses a commit whose mbuild ignores the flags it will be given
   assert.match(output, /--artifact and --version/)
 })
 
+test('a release refuses the mbuild that came before the answer its gates read', (context) => {
+  /*
+   * 0.1.0 takes `--artifact` and `--version` and would build the right
+   * images, but it does not say how it answers an artifact the registry
+   * plainly does not hold: exit 66 landed under that same version, so some
+   * 0.1.0 commits exit 66 and the earlier ones exit 1. The gates continue
+   * only on 66, and would stop on "could not tell whether dev holds it"
+   * against a registry that answered.
+   *
+   * A version that cannot be told apart is refused whichever it carries.
+   * 0.1.1 is the first that declares the answer.
+   */
+  const released = releasedTree(manifestFor('0.1.0'))
+  context.after(() => rmSync(released.directory, { recursive: true, force: true }))
+
+  const result = resolveReleasedTree(released)
+  const output = `${result.stdout}\n${result.stderr}`
+  assert.notEqual(result.status, 0, `mbuild 0.1.0 was accepted:\n${output}`)
+  assert.match(output, /mbuild 0\.1\.0/)
+  assert.match(output, /exit 66/)
+})
+
 test('a release refuses a commit from before mbuild existed here', (context) => {
   const released = releasedTree()
   context.after(() => rmSync(released.directory, { recursive: true, force: true }))

@@ -190,12 +190,20 @@ jobs:
       # read out of the released commit in this job, which binds no Environment:
       # a tag too old is refused before an approval is spent or a registry is
       # reached.
-      - name: Require an mbuild that reads --artifact and --version
+      #
+      # The contract is every answer the gates below read, not just the flags.
+      # Absence became exit 66 while the version still said 0.1.0, so 0.1.0
+      # does not say whether a commit answers it and some of them do. 0.1.1 is
+      # the first version that declares it, and an mbuild that reports absence
+      # as a plain failure has each gate stop on "could not tell" against a
+      # registry that answered. So 0.1.1 is what this minimum names, and 0.1.0
+      # is refused whichever of the two it happens to carry.
+      - name: Require the mbuild contract a release reads
         shell: bash
         env:
           SHA: ${{ steps.ref.outputs.sha }}
           # Raised when a release starts needing something mbuild learned later.
-          MINIMUM: '0.1.0'
+          MINIMUM: '0.1.1'
         run: |
           set -Eeuo pipefail
           manifest='apps/infra/mbuild/package.json'
@@ -216,7 +224,7 @@ jobs:
           fi
           # The older of the two must be MINIMUM, which equal also satisfies.
           if [ "$(printf '%s\n%s\n' "$version" "$MINIMUM" | sort -V | head -n 1)" != "$MINIMUM" ]; then
-            echo "::error title=mbuild::${SHA} carries mbuild ${version}, which ignores --artifact and --version rather than reading them; a release needs ${MINIMUM} or later. Cut it from a commit that has one."
+            echo "::error title=mbuild::${SHA} carries mbuild ${version}, which either ignores --artifact and --version or answers absence with a plain failure rather than exit 66; the gates below read both. A release needs ${MINIMUM} or later; cut it from a commit that has one."
             exit 1
           fi
           echo "$SHA carries mbuild $version"

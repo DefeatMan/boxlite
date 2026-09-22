@@ -369,15 +369,19 @@ tag whose Release is missing, still a draft, or carrying no runner asset yet,
 because that download otherwise 404s on the host at boot, long after the apply
 reported success.
 
-**A release is refused at a commit whose mbuild would ignore it.** `--artifact`
-and `--version` have not always existed, and an mbuild without them takes them
-as unknown flags and drops them — so a tag cut before them publishes commit
-images at `<sha>`, reports success, and leaves `v<X.Y.Z>-<sha>` unwritten for
-the promotion to look for. `mbuild-release.yml`'s own `resolve` — not the one
-above — reads `apps/infra/mbuild/package.json` out of the released commit and
-refuses anything below the minimum that step names. That is what mbuild's
-package version is for: it says which contract a commit carries, where merge
-topology and the presence of a file only guess.
+**A release is refused at a commit whose mbuild answers differently.** Two
+answers a release reads arrived after the first tags were cut. `--artifact` and
+`--version`: an mbuild without them drops them as unknown flags, so a tag cut
+before them publishes commit images at `<sha>`, reports success, and leaves
+`v<X.Y.Z>-<sha>` unwritten for the promotion to look for. And exit 66 for
+absence: an mbuild that reports a plainly missing artifact as a plain failure
+stops every gate on "could not tell whether dev holds it", against a registry
+that answered. `mbuild-release.yml`'s own `resolve` — not the one above — reads
+`apps/infra/mbuild/package.json` out of the released commit and refuses
+anything below the minimum that step names. That is what mbuild's package
+version is for: it says which contract a commit carries, where merge topology
+and the presence of a file only guess. Raise it, and the minimum with it,
+whenever a release starts reading an answer an older mbuild does not give.
 
 The images half is also dispatchable on its own: `mbuild-release.yml` publishes
 or promotes a version. `mbuild.yml` is callee-only — nobody publishes a bare
