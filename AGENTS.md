@@ -3,7 +3,7 @@
 ## Project Overview
 
 - [README.md](./README.md) — features, quick start, supported platforms
-- [docs/architecture/README.md](./docs/architecture/README.md) — components, use cases
+- [docs/concepts/README.md](./docs/concepts/README.md) — how BoxLite works: boxes, images, storage, networking, security
 - [sdks/python/README.md](./sdks/python/README.md) — Python SDK (3.10+, PyO3 bindings, async API)
 - [sdks/node/README.md](./sdks/node/README.md) — Node.js/TypeScript SDK (18+, napi-rs bindings)
 - [sdks/go/README.md](./sdks/go/README.md) — Go SDK (1.24+, CGO + prebuilt native library)
@@ -13,12 +13,16 @@
 
 ## Tech Stack
 
-- [docs/architecture/README.md#tech-stack](./docs/architecture/README.md#tech-stack)
+- [docs/contributing/architecture/README.md](./docs/contributing/architecture/README.md) — runtime components, SDK bindings, and the source map
 
 ## Project Structure
 
 - [CONTRIBUTING.md](./CONTRIBUTING.md#project-structure) — directory layout
-- [docs/architecture/README.md](./docs/architecture/README.md) — component architecture
+- [docs/contributing/architecture/README.md](./docs/contributing/architecture/README.md) — component architecture
+
+## Documentation
+
+- [CONTRIBUTING.md](./CONTRIBUTING.md#documentation) — where each doc goes; place every new or moved doc by its rules.
 
 ## Common Commands
 
@@ -27,7 +31,7 @@
 
 ## Code Style
 
-- [docs/development/rust-style.md](./docs/development/rust-style.md)
+- [docs/contributing/development/rust-style.md](./docs/contributing/development/rust-style.md)
 
 ## Commit & PR Messages
 
@@ -38,7 +42,7 @@
 - High-cohesion facade (the shared Design rule's exemplar here): [`ImageManager`](src/boxlite/src/images/manager.rs) exposes `new`/`pull`/`list`/`load_from_local` and hides `Arc<ImageStore>`, blob sources, and manifest handling.
 - Facade exception — stateless utilities: [`jailer/common/`](src/boxlite/src/jailer/common/) async-signal-safe helpers.
 
-<!-- agent-tooling:guidance:begin rev=7584e7c08bb4 sha256=958e059bf437 -->
+<!-- agent-tooling:guidance:begin rev=80d15440ee9f sha256=8c5c935f87eb -->
 
 > Managed by **boxlite-ai/agent-tooling** — do not edit between the markers. Change `plugins/boxlite-agent-tooling/guidance/workflow.md` there, then rerun `./.agent-tooling/install.sh` here.
 
@@ -115,8 +119,8 @@ Every change goes: understand → research → design → implement → test →
 **Communication**
 
 - Help the human understand quickly. Choose a call graph, sequence diagram, real example, bullets, table, or short prose—whichever explains the point best. These are recommendations, not mandatory forms; do not force a diagram, source annotations, or fixed sections.
-- Walls of text are always forbidden. Keep paragraphs and items short, remove repetition, and link detailed evidence. Requests for depth allow more focused sections, not dense text. Keep material risks, failures, and uncertainty visible.
-- PR descriptions: state the problem, resulting behavior, and decisive verification once. Keep the whole body within 200 words and 2000 characters, including diagrams and Markdown. Omit work logs, file inventories, and exhaustive test counts. Repository templates are starting points; use any clearer form.
+- Walls of text are always forbidden. Keep paragraphs and items short, remove repetition, and link detailed evidence. GitHub PRs (including drafts), issues, comments, reviews, discussions, and release notes use the same reply-summary prompt. Requests for depth allow more focused sections, not dense text. Keep material risks, failures, and uncertainty visible.
+- Every PR description must explain how the change produces its intended result through the key steps or decisions, using the form best suited to that PR. Listing modified files is not an explanation. State the problem, resulting behavior, and decisive verification once. Review the explanation against the diff, including for drafts and after description edits. Link detailed evidence; omit work logs and exhaustive test counts. Repository templates are starting points.
 
 Adapted from Clean Code (Robert C. Martin) via the polygala-inc AGENTS.md distillation.
 <!-- agent-tooling:guidance:end -->
