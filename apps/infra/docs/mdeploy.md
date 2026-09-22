@@ -295,34 +295,104 @@ derived-only zone makes that a deploy nothing can fix without editing code.
 
 ## One dispatch
 
-`mdeploy-all.yml` is the whole of it from a browser: pick a stage, pick what the
-commit needs — `api+runner`, `api` or `runner` — name a commit or a tag, and say
-whether to apply or only preview. What it does first is read: does this stage
-already hold the images for that commit, and a runner binary staged under it?
-Each answer decides one leg.
+`mdeploy-all.yml` is the whole of it from a browser, and the only way a stage is
+rolled out: pick a stage, pick what the ref needs — `api+runner`, `api` or
+`runner` — name a commit, a pull request or a release tag, and say whether to
+apply or only preview. What the ref is decides the rest.
 
 ```
-ref ──▸ source? ──▸ plan ──┬─▸ promote-api / build-api ───┐
-                           └─▸ promote-runner / build-runner ─┴─▸ deploy
+a commit SHA, or #<number> for a pull request        (dev only)
+  resolve ─▸ plan ─┬▸ mbuild        publish <sha> images
+     │             ├▸ build-runner  compile, stage in this stage's bucket
+     │             └▸ deploy        RUNNER_ARTIFACT_SOURCE=build
+     └▸ a pull request resolves to the commit it would merge to,
+        and must be open and known to merge cleanly
+
+a release tag v<X.Y.Z>
+  resolve ─▸ plan ─┬▸ mbuild-release  publish (dev) / promote (prod)
+     │             └▸ deploy          RUNNER_ARTIFACT_SOURCE=release
+     └▸ the GitHub Release must exist and already carry
+        boxlite-runner-v<X.Y.Z>-linux-amd64.tar.gz + .sha256
 ```
 
-`auto_promote_from` is where it looks when the stage holds neither — `dev` by
-default, `none` to switch it off. A promotion is preferred over a build for a
-reason that is not speed: it moves the bytes that stage already serves, and a
-rebuild of one commit is not byte-identical, while everything downstream treats
-version+commit as an identity and never looks inside. Two stages that each built
-the same commit hold two sets of bytes under one reported version.
+**A pull request deploys its merge, not its head.** `refs/pull/N/merge` is the
+request's own base plus the request, which is the tree that would land; a head
+is the same work missing whatever its base gained since it was branched, so
+shaking one out answers about a tree nobody will merge. It buys no ordering
+against the ref this workflow's definition came from — on the dev path that ref
+need not be the request's base, and the merge can sit behind it. The request has
+to be open and known to merge cleanly. GitHub computes mergeability lazily, so
+`resolve` polls rather than failing a dispatch on a cold cache; it reads the
+state off the last poll rather than the first, because a request can be closed
+while this waits; and it requires MERGEABLE rather than merely not
+CONFLICTING, because an unknown answer can arrive beside a merge commit
+computed before the last push.
 
-Each leg is also dispatchable on its own — `mbuild.yml` for the images,
-`mrunner.yml` for the runner binary, `mdeploy.yml` for the apply — and the
-orchestrator calls exactly those.
+A fork's request is accepted and logged as one. Two things stand behind that.
+Dispatching at all needs write access on this repository. And `build-runner`
+and mbuild's publish, which are the jobs that compile the request's tree, bind
+the stage's Environment, where `bootstrap` asks for at least one required
+reviewer on every stage it creates (`bootstrap.ts:1237`, and `:1084` on GCP) —
+so a fork's tree waits on a human pressing approve.
+
+What that approval is worth is narrower than it looks, in three ways worth
+knowing before leaning on it. It is a person unblocking a run, not a reading
+of the diff. The reviewer `bootstrap` requests defaults to whoever ran it, so
+on a stage nobody has since edited, the dispatcher may be the approver.
+And `ensureGithubEnvironment` falls back to an Environment with no reviewers
+at all when GitHub refuses protection rules outright (`bootstrap.ts:595`),
+which needs a private repository without Pro/Team/Enterprise — not this one,
+but a fork of this setup into one loses the gate on every stage except prod,
+which fails closed instead.
+
+`dev` here currently also carries `prevent_self_review`, alongside
+`can_admins_bypass: true` — so it excludes a dispatcher who is not an admin.
+Nothing in this repository sets either: `githubEnvironmentPayload`
+(`bootstrap/github.ts:31`) sends `reviewers` and `deployment_branch_policy`
+and no more. Both were applied by hand, and since the environment call is a
+`PUT`, a `bootstrap` rerun is the thing most likely to lose them — worth
+re-checking after one rather than assuming. Read them as the state of this
+repository today, not as part of the shape bootstrap reproduces.
+
+**prod takes a release tag and nothing else.** A commit or a pull request aimed
+at it is refused in `resolve`, before any Environment is bound. Promotion is
+preferred over a build for a reason that is not speed: it moves the bytes dev
+already serves, and a rebuild of one commit is not byte-identical, while
+everything downstream treats version+commit as an identity and never looks
+inside. Two stages that each built the same commit hold two sets of bytes under
+one reported version.
+
+**A release installs the runner it was cut from, not a rebuild of it.**
+`mdeploy/stack/runner-binary.ts` addresses the tarball on the GitHub Release
+directly, so the release path compiles no runner at all — and `resolve` refuses a
+tag whose Release is missing, still a draft, or carrying no runner asset yet,
+because that download otherwise 404s on the host at boot, long after the apply
+reported success.
+
+**A release is refused at a commit whose mbuild answers differently.** Two
+answers a release reads arrived after the first tags were cut. `--artifact` and
+`--version`: an mbuild without them drops them as unknown flags, so a tag cut
+before them publishes commit images at `<sha>`, reports success, and leaves
+`v<X.Y.Z>-<sha>` unwritten for the promotion to look for. And exit 66 for
+absence: an mbuild that reports a plainly missing artifact as a plain failure
+stops every gate on "could not tell whether dev holds it", against a registry
+that answered. `mbuild-release.yml`'s own `resolve` — not the one above — reads
+`apps/infra/mbuild/package.json` out of the released commit and refuses
+anything below the minimum that step names. That is what mbuild's package
+version is for: it says which contract a commit carries, where merge topology
+and the presence of a file only guess. Raise it, and the minimum with it,
+whenever a release starts reading an answer an older mbuild does not give.
+
+The images half is also dispatchable on its own: `mbuild-release.yml` publishes
+or promotes a version. `mbuild.yml` is callee-only — nobody publishes a bare
+commit by hand.
 
 **A promotion crosses two stages, and on GCP that means two projects.** One
 identity does each move — the destination's, because that is the one that has to
-write — but the two legs do not run as the same account: `mbuild.yml`
-authenticates as the destination's `GCP_IMAGE_PUBLISHER`, `mrunner.yml` as its
-`GCP_DEPLOYER`. Each of those two needs read on the source, in a policy the
-source's project owns.
+write — but the two legs do not run as the same account: `mbuild.yml` and
+`mbuild-release.yml` authenticate as the destination's `GCP_IMAGE_PUBLISHER`,
+and `mdeploy-all`'s own jobs as its `GCP_DEPLOYER`. Each of those two needs read
+on the source, in a policy the source's project owns.
 
 The destination declares where it is promoted from, and `bootstrap` makes both
 grants:
@@ -344,9 +414,11 @@ whoever does hold that project.
 
 ```
 gcloud projects add-iam-policy-binding <source project> \
-  --member=serviceAccount:<destination publisher> --role=roles/artifactregistry.reader
+  --member=serviceAccount:<destination publisher> --role=roles/artifactregistry.reader \
+  --condition=None
 gcloud storage buckets add-iam-policy-binding gs://<source artifacts bucket> \
-  --member=serviceAccount:<destination deployer> --role=roles/storage.objectViewer
+  --member=serviceAccount:<destination deployer> --role=roles/storage.objectViewer \
+  --condition=None
 ```
 
 The registry grant is what `mbuild promote` pulls with, and it goes to the
@@ -358,10 +430,35 @@ which is why `runner:promote` reads the source by listing it and never asks that
 bucket for its metadata. Without the grants a promotion fails at the read with a
 permissions error and nothing is written.
 
-`promoteFrom` is read by nothing at deploy time, and `mdeploy-all`'s
-`auto_promote_from` still chooses the source for a given dispatch. The two
-answer different questions: one is a standing declaration a workstation can act
-on, the other is what this run was asked to do.
+`--condition=None` is not decoration. `add-iam-policy-binding` reads the policy,
+edits it and writes it back, and it refuses to edit in a binding carrying no
+condition when the policy it just read holds one — unless the command says that
+is what it means. Neither command above can know which case it is in before it
+runs, and a refusal leaves the policy untouched. The bucket grant meets such a
+policy whenever the source stage stages its runner binary rather than installing
+a release: the deploy attaches `runner-artifacts-only` to that bucket. Against
+one, a line without the flag is refused outright where no prompt can be
+answered, and prompts where one can.
+
+`promoteFrom` is read by nothing at deploy time. It exists for `bootstrap`,
+which has to know whose project holds the bucket and repository it is granting
+on; a rollout no longer chooses a source at all, because a promotion's source is
+dev.
+
+### Known loose ends
+
+Two, both noticed while the pull-request shape landed and both deliberately
+left for their own change rather than folded into it:
+
+- `.github/actions/resolve-ref` still declares a `fallback` input and a
+  `resolved-from` output that no caller uses. The action does read its own
+  `fallback` (`action.yml:53`); what is gone is anyone passing one.
+  `mbuild.yml` was the last consumer of either, and the two remaining call
+  sites pass and read neither. Removing them edits an action two workflows
+  call, so it wants its own verification.
+- `mdeploy-all`'s `line` label and the two step summaries built from it have no
+  test. `mbuild-release-workflow.test.ts` pins a `run-name` and is the pattern
+  to follow.
 
 ## Commands
 
