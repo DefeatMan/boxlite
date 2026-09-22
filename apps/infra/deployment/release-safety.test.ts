@@ -953,16 +953,25 @@ test('deployment previews and reconciles the full stack in guarded GitHub CI', (
   // A conflicting PR has no merge commit, and an uncomputed one is a "not yet" rather than a
   // verdict — distinct causes, so distinct refusals. Emitting the head as a fallback would
   // silently reintroduce exactly the behaviour this replaces.
+  assertShellLine(refGuardStep.run, /\[ "\$state" = "OPEN" \] \|\| \{/)
   assertShellLine(refGuardStep.run, /\[ "\$mergeable" != "CONFLICTING" \] \|\| \{/)
-  assertShellLine(refGuardStep.run, /\[ -n "\$sha" \] \|\| \{/)
+  // MERGEABLE, not merely "not CONFLICTING": UNKNOWN arrives beside a merge commit computed
+  // before the last push, which is a tree neither side of the request has.
+  assertShellLine(refGuardStep.run, /\{ \[ "\$mergeable" = "MERGEABLE" \] && \[ -n "\$sha" \]; \} \|\| \{/)
   // Mergeability is computed lazily, so a cold cache answers UNKNOWN and the merge SHA is empty.
   // Both the loop AND its re-query are pinned: without the re-query the loop spins over the same
   // stale JSON, which fails a dispatch that one refresh would have resolved and makes the "after
   // 5 attempts" message untrue.
   assertShellLine(refGuardStep.run, /for attempt in 1 2 3 4 5; do/)
-  assertShellLine(refGuardStep.run, /\[ "\$mergeable" = "UNKNOWN" \] \|\| \[ -z "\$sha" \] \|\| break/)
+  assertShellLine(refGuardStep.run, /if \[ "\$mergeable" != "UNKNOWN" \] && \[ -n "\$sha" \]; then break; fi/)
   const retryBody = liveShell(refGuardStep.run)
   const loopStart = retryBody.indexOf('for attempt in 1 2 3 4 5; do')
+  // Every field the verdict rests on is read from the refreshed response, never from the first:
+  // a request closed while this polled is one the verdict above has to see as closed.
+  for (const field of ['state', 'mergeable', 'sha']) {
+    const read = retryBody.indexOf(`${field}="$(jq -r`)
+    assert.ok(read > loopStart, `${field} is read above the poll, so the verdict is about the first response`)
+  }
   assert.match(
     retryBody.slice(loopStart, retryBody.indexOf('done', loopStart)),
     /pr_json="\$\(gh pr view/,
@@ -972,7 +981,7 @@ test('deployment previews and reconciles the full stack in guarded GitHub CI', (
   // preceded by whitespace as a comment and deletes the rest of the line. The guards above are
   // pinned live — they carry the behaviour; these two only pin that each cause says its own name.
   assert.match(refGuardStep.run, /conflicts with main, so it has no merge commit to deploy/)
-  assert.match(refGuardStep.run, /has no merge commit yet \(mergeable=\$mergeable\)/)
+  assert.match(refGuardStep.run, /has no merge commit this run can trust \(mergeable=\$mergeable\)/)
   assert.doesNotMatch(
     liveShell(refGuardStep.run),
     /sha="\$head_sha"/,
