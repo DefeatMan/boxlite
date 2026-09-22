@@ -65,14 +65,20 @@ async def test_exec_roundtrip_proves_api_to_runner_chain(rt, image):
         headers=ctx.auth_headers(content_type=True),
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
-        headers = dict(resp.headers)
+        # `resp.headers` looks up case-insensitively; `dict()` of it does not.
+        # A cloud stage behind an HTTP/2 load balancer sends header names
+        # lowercased, so the `dict()` form failed against api.dev.boxlite.ai
+        # on a header the response was in fact carrying
+        # (`x-boxlite-api-version: 0.0.1`).
+        api_version = resp.headers.get("X-BoxLite-Api-Version")
+        header_names = sorted(resp.headers.keys())
         body = json.loads(resp.read())
         bid = body["box_id"]
 
     try:
-        assert "X-BoxLite-Api-Version" in headers, (
+        assert api_version, (
             f"create response missing X-BoxLite-Api-Version header — "
-            f"request may have bypassed the API layer. headers={sorted(headers)}"
+            f"request may have bypassed the API layer. headers={header_names}"
         )
 
         # exec through SDK to verify runner actually runs the command

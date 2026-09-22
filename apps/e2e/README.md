@@ -150,6 +150,36 @@ targets.
 time, no quota probing, no deliberate error storms. Mark a new case
 `@pytest.mark.smoke` only if it stays inside that budget.
 
+### What a green run does not cover
+
+Two limits worth knowing before reading a green dev run as proof:
+
+- The volume cases skip unless the stage's key carries volume permission —
+  `POST /v1/volumes` answers 403 without it, and dev's key did on 2026-09-22.
+  That takes the read-only-mount refusal with it, so that contract is pinned
+  but unexercised.
+- Short-exec stdout is dropped intermittently on a stage running without
+  #1569: the runner writes Close and drops TCP while the balancer is still
+  relaying the `101`, so a command that finishes before the client attaches
+  can return nothing with exit 0. `test_p0_6_exec_stdout_race.py` reports it.
+  Cases that grade a *negative* on stdout — "the secret is not in this dump" —
+  carry a sentinel so an empty stream fails instead of passing.
+
+### Known-broken on a cloud stage
+
+Tunnel and preview cases are `xfail(strict=True)`, not skipped, because no SDK
+caller can create a public box today. #1370 made an unspecified inbound mode
+mean private, and `CreateBoxNetworkSpec::from_options`
+(`src/boxlite/src/rest/types.rs:327-333`) drops the `inbound` field whenever
+its allow-list is empty — which is exactly what `mode="enabled"` looks like.
+Raw REST with the nested shape returns preview 200 against the same stage, so
+the server is not at fault. Telling "unset" from "enabled" needs an option
+change in the Rust core and every SDK, hence the marks rather than a local
+workaround. Strict means CI fails the day the SDK is fixed, which is when the
+marks should come off. What strict cannot do is tell that cause from a later
+break inside `tunnelable_box` itself — both read as "expected failure" — so a
+green run on those cases proves only that they still fail, not why.
+
 ### Boxes must not outlive their run
 
 `auto_remove=True` is a no-op over REST and the API defaults `auto_delete` to
@@ -161,24 +191,36 @@ failures, every one `Organization quota exceeded: disk limit exceeded (max
 Two things keep that from recurring:
 
 - `conftest.bound_box_lifetime` fills in `auto_stop` / `auto_delete` on every
-  box created through the SDK, and `conftest.with_bounded_lifetime` does the
-  same for the cases that hand-build a REST body, so the stage reclaims a
-  stranded box within minutes. A case that needs a different policy sets it
-  and keeps it.
-- `apps/e2e/sweep.py` clears what earlier runs left behind — including boxes
-  created by the polyglot drivers and the CLI, which never pass through that
-  fixture:
+  box created through the SDK, and `conftest.with_bounded_lifetime` names and
+  bounds the cases that hand-build a REST body, so the stage reclaims a
+  stranded box within minutes. They differ in one respect: the SDK door
+  applies the pair or neither, because the SDK rejects `auto_delete` that does
+  not exceed `auto_stop`; a hand-built body never meets that rule, and the API
+  checks only the floors, so each window is filled on its own there.
+- `apps/e2e/sweep.py` clears what earlier runs left behind — boxes named
+  `e2e-<random>`, which both doors produce (`conftest.e2e_box_name`):
 
   ```bash
   python3 apps/e2e/sweep.py                     # report only
   python3 apps/e2e/sweep.py --apply             # delete what it reports
   python3 apps/e2e/sweep.py --idle-minutes 120  # narrower window
+  python3 apps/e2e/sweep.py --any-name          # ignore the name prefix
   ```
 
-  It only sees the organization its credential belongs to, and only considers
-  boxes idle for a day by default — nothing records which run made a box, so a
-  maintainer's own long-stopped box is a candidate too. That is why the window
-  is a day, why `--apply` is opt-in, and why only the dev leg runs it.
+  It only sees the organization its credential belongs to, only considers
+  boxes idle for a day, and only ones carrying that prefix. The prefix is what
+  makes it safe to run unattended: a report against dev on 2026-09-21 listed
+  `pol599-repro` and four siblings — someone's investigation, idle for a day,
+  indistinguishable from a stranded box by age alone.
+
+  What that leaves uncovered, deliberately: the polyglot drivers
+  (`apps/e2e/sdks/`) and the CLI cases create boxes with neither the prefix
+  nor a lifetime, so no sweep that CI runs can reclaim one. The ones the
+  cloud legs run — Node and the CLI — remove their box in a `finally`, so
+  there this only bites when a run is killed mid-driver; the Go and C drivers
+  exit past their own cleanup, and both legs `--ignore` those cases.
+  Clearing anything left behind means `--any-name`, by a human who has read
+  the report first — which is why CI never passes it.
 
 ## Running against local stack
 

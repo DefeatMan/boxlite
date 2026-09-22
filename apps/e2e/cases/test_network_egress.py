@@ -72,6 +72,25 @@ async def test_outbound_disabled_seals_the_box(rt, image):
 
 @pytest.mark.asyncio
 async def test_allow_net_admits_only_the_listed_host(rt, image):
+    """An allow-list admits its host and nothing else.
+
+    The control box carries no allow-list, so it answers the question the
+    skip needs answered — can this stage reach the host at all — without the
+    policy under test in the way. Skipping on the allow-listed box instead
+    would turn a deny-everything regression into a silent skip.
+    """
+    control = await rt.create(
+        boxlite.BoxOptions(
+            image=image,
+            network=boxlite.NetworkSpec(outbound=boxlite.OutboundNetworkSpec(mode="enabled")),
+        ),
+    )
+    try:
+        if not await _reaches(control, REACHABLE_HOST):
+            pytest.skip(f"stage cannot reach {REACHABLE_HOST} even with outbound enabled")
+    finally:
+        await rt.remove(control.id, force=True)
+
     box = await rt.create(
         boxlite.BoxOptions(
             image=image,
@@ -83,8 +102,9 @@ async def test_allow_net_admits_only_the_listed_host(rt, image):
         ),
     )
     try:
-        if not await _reaches(box, REACHABLE_HOST):
-            pytest.skip(f"stage cannot reach the allow-listed {REACHABLE_HOST}")
+        assert await _reaches(box, REACHABLE_HOST), (
+            f"allow_net=[{REACHABLE_HOST}] blocked the host it names"
+        )
         assert not await _reaches(box, UNLISTED_HOST), (
             f"allow_net=[{REACHABLE_HOST}] still let the box reach {UNLISTED_HOST}"
         )

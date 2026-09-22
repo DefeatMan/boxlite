@@ -26,7 +26,7 @@ import uuid
 import boxlite
 import pytest
 
-from conftest import drain
+from conftest import drain, with_bounded_lifetime
 from e2e_auth import auth_context, request_json
 
 
@@ -77,6 +77,39 @@ async def test_volume_is_listed_and_fetchable_through_the_sdk(rt, managed_volume
     info = await rt.volumes().get(volume_id)
     assert info.name == managed_volume["name"], (
         f"name changed between create and get: {info.name!r} vs {managed_volume['name']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_read_only_mount_is_refused_rather_than_downgraded(managed_volume):
+    """Asking for read-only must fail, not quietly hand back a writable mount.
+
+    Ported from the intent of `src/boxlite/tests/mount_security.rs` and
+    `sdks/python/tests/test_readonly_volume_remount.py`, which pin read-only
+    enforcement on the local runtime. The cloud has no such enforcement yet and
+    says so at the boundary: `VolumeSpecDto.read_only` is `@IsIn([false])`
+    (apps/api/src/boxlite-rest/dto/create-box.dto.ts:170-179), rejected
+    "rather than silently downgraded to read-write, which would hand the caller
+    a writable mount they believe is protected". Raw REST because the point is
+    the server's answer, and the SDK sends `read_only` on every volume spec.
+    """
+    from conftest import DEFAULT_IMAGE
+
+    status, body = request_json(
+        "POST",
+        auth_context().v1("boxes"),
+        with_bounded_lifetime({
+            "image": DEFAULT_IMAGE,
+            "volumes": [{
+                "managed_volume": managed_volume["id"],
+                "guest_path": GUEST_PATH,
+                "read_only": True,
+            }],
+        }),
+    )
+    assert status == 400, (
+        f"a read-only managed mount must be refused while enforcement is "
+        f"missing, got HTTP {status}: {body}"
     )
 
 
