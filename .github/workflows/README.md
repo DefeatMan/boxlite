@@ -33,8 +33,9 @@ CONFIG                                  ci-config action ◀── lint, test, c
 
 ## Workflows
 
-**Callable** marks a workflow another one can invoke with `uses:`. `config.yml` is the only one that
-is *exclusively* callable; workflows with `workflow_dispatch` can also run on their own.
+**Callable** marks a workflow another one can invoke with `uses:`. `config.yml` and `mbuild.yml` are
+the two that are *exclusively* callable; workflows with `workflow_dispatch` can also run on their
+own.
 
 | Workflow | Triggers | Callable | Purpose |
 | --- | --- | --- | --- |
