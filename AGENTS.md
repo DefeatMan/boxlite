@@ -42,6 +42,32 @@
 - High-cohesion facade (the shared Design rule's exemplar here): [`ImageManager`](src/boxlite/src/images/manager.rs) exposes `new`/`pull`/`list`/`load_from_local` and hides `Arc<ImageStore>`, blob sources, and manifest handling.
 - Facade exception — stateless utilities: [`jailer/common/`](src/boxlite/src/jailer/common/) async-signal-safe helpers.
 
+## API Surface Ownership
+
+BoxLite has two HTTP contracts. Before adding or moving an endpoint, decide which one owns it — putting a capability in the wrong document is not a cosmetic mistake: an operation that lives only on the control plane is one no SDK or CLI user can call, because both speak the Box API dialect exclusively ([`src/boxlite/src/rest/client.rs`](src/boxlite/src/rest/client.rs) appends `/v1[/{prefix}]…` to its configured base URL, and never `/api/…` paths of its own).
+
+| Contract | Document | Implemented by | Served at |
+| --- | --- | --- | --- |
+| **Box API** — the portable contract | [`openapi/box.openapi.yaml`](./openapi/box.openapi.yaml), hand-written, spec-first | `boxlite serve` ([`src/cli/src/commands/serve/`](src/cli/src/commands/serve/)) and [`apps/api/src/boxlite-rest/`](apps/api/src/boxlite-rest/) | `/v1[/{prefix}]/…` on a local server; `/api/v1[/{prefix}]/…` on the hosted one, which mounts every controller under a global `/api` prefix |
+| **Control-plane API** — the hosted product | [`apps/libs/api-client-go/api/control-plane-api.yaml`](./apps/libs/api-client-go/api/control-plane-api.yaml), **generated**, never hand-edited | `apps/api/src/` controllers outside `boxlite-rest/` | `/api/…` |
+
+### Which document owns an endpoint
+
+An endpoint belongs to the **Box API** when a user reaches it through an SDK or the `boxlite` CLI: anything a box, volume, execution, file transfer, tunnel, or image can do. It must stay vendor- and tenancy-free — no `organizationId`, no `/organizations`, no billing — so that one SDK dialect works against a local, self-hosted, and hosted server alike. Multi-tenancy enters only through the opaque `{prefix}` path segment.
+
+An endpoint belongs to the **control-plane API** when it is either service-to-service (runner, proxy, or collector calling home through `apps/libs/api-client-go`) or console and account management (organizations, members, roles, API keys, regions, webhooks, audit, billing, `/admin/*`). None of these are box capability, and none are reachable from an SDK.
+
+Two rules follow, and they are not symmetric:
+
+- **Never hand-edit the control-plane document.** It is an output of `nx run api-client-go:generate:api-client`, which regenerates it from the NestJS decorators in `apps/api/src/`. Change the controller; the spec follows. Editing the YAML is reverted by the next generation run and caught by the API client drift workflow.
+- **Exclude Box API controllers from it.** The `boxlite-rest/` controllers carry `@ApiExcludeController()` precisely so the portable contract is described in one place. A new controller under `boxlite-rest/` needs that decorator too.
+
+### When you are not sure
+
+Stop and ask rather than guessing. An endpoint that looks ambiguous — customer-reachable but cloud-specific, or a hosted-only variant of a portable capability — is a product question, and a wrong answer is expensive in both directions: a cloud concept in the Box API breaks portability for every non-hosted server, and a user capability on the control plane is invisible to every SDK user.
+
+[`apps/API.md`](./apps/API.md) is the route-level inventory of every interface in `apps/`. The contract boundary guard in [`.github/workflows/api-client-drift.yml`](./.github/workflows/api-client-drift.yml) enforces part of this split in CI.
+
 <!-- agent-tooling:guidance:begin rev=80d15440ee9f sha256=8c5c935f87eb -->
 
 > Managed by **boxlite-ai/agent-tooling** — do not edit between the markers. Change `plugins/boxlite-agent-tooling/guidance/workflow.md` there, then rerun `./.agent-tooling/install.sh` here.
