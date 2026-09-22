@@ -33,6 +33,7 @@ function makeService() {
     boxRepository, // boxRepository
     noop, // runnerRepository
     noop, // runnerService
+    noop, // boxExitCodeService
     noop, // volumeService
     noop, // configService
     noop, // warmPoolService
@@ -74,6 +75,7 @@ function makePreviewUrlService() {
     noop, // boxRepository
     noop, // runnerRepository
     noop, // runnerService
+    noop, // boxExitCodeService
     noop, // volumeService
     configService, // configService
     noop, // warmPoolService
@@ -277,7 +279,8 @@ function makeNetworkTunnelService() {
   const service = new BoxService(
     noop,
     noop,
-    noop,
+    noop, // runnerService
+    noop, // boxExitCodeService
     noop,
     configService,
     noop,
