@@ -495,12 +495,15 @@ export const parseConfig = ({
  * Shared, so every caller reports an unknown stage the same way.
  */
 export const stageIn = (config: Pick<MstageConfig, 'stages' | 'path'>, stage: string): StageConfig => {
-  const declared = config.stages[stage]
-  if (!declared) {
+  // Own properties only. The name comes from `--stage` and the map from
+  // `JSON.parse`, so a lookup through the prototype chain answers "declared"
+  // for `toString` and hands back a function — a caller then reads `.home` off
+  // it and fails somewhere with no stage name in the message.
+  if (!Object.hasOwn(config.stages, stage)) {
     const known = Object.keys(config.stages).join(', ')
     throw new ConfigError(`${config.path} declares no stage "${stage}". Declared: ${known}`)
   }
-  return declared
+  return config.stages[stage]!
 }
 
 /**

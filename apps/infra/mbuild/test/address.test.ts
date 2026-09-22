@@ -352,6 +352,31 @@ test('one artifact can be addressed without the rest, and a typo cannot', () => 
   assert.throws(() => onlyArtifact(config, 'proxy'), /declares no artifact "proxy"\. Declared: console, api/)
 })
 
+test('a name every object inherits is not a name the file declares', () => {
+  /*
+   * `--artifact` and `--stage` come from argv and are looked up in objects
+   * parsed out of JSON, so they carry `Object.prototype` with them. A lookup
+   * that reads through it answers "declared" for `toString` and hands back a
+   * function: `onlyArtifact` would narrow to an artifact with no Dockerfile,
+   * and `addressFor` would compose an address for an image nothing builds —
+   * far enough in for `publish` to have created the repository first.
+   */
+  const registry = resolveRegistry({ config, stage: 'dev', region: REGION.dev, accountId: ACCOUNT })
+  for (const inherited of ['toString', 'constructor', 'hasOwnProperty']) {
+    assert.throws(
+      () => onlyArtifact(config, inherited),
+      BuildConfigError,
+      `${inherited} narrowed to something the file never declared`,
+    )
+    assert.throws(
+      () => addressFor({ config, registry, artifact: inherited, tag: SHA }),
+      ImageAddressError,
+      `${inherited} was given an address`,
+    )
+    assert.throws(() => registryFor(config, inherited), BuildConfigError, `${inherited} resolved to a registry`)
+  }
+})
+
 test('narrowing changes which images are addressed and nothing about where', () => {
   // The registry belongs to the stage, not to the image, so it has to survive
   // the narrowing — a promotion that lost it would push at the wrong account.

@@ -118,8 +118,9 @@ export const releaseTagFor = ({ version, sha }: { version: string; sha: string }
   return assertTag(`${version}-${sha}`)
 }
 
+/** Own properties only, for the reason `onlyArtifact` says: `in` finds `toString`. */
 const assertArtifact = (config: BuildConfig, artifact: string): string => {
-  if (!(artifact in config.artifacts)) {
+  if (!Object.hasOwn(config.artifacts, artifact)) {
     const known = Object.keys(config.artifacts).join(', ')
     throw new ImageAddressError(`${config.path} declares no artifact "${artifact}". Declared: ${known}`)
   }

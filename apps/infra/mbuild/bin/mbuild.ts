@@ -117,11 +117,10 @@ const accountId = async (): Promise<string> => {
 /** mstage declares where every stage lives; this reads that rather than a copy. */
 const stageOf = (stage: string): StageConfig => {
   const stages = loadStageConfig().stages
-  const declared = stages[stage]
-  if (!declared) {
+  if (!Object.hasOwn(stages, stage)) {
     throw new Error(`mstage.config.json declares no stage "${stage}". Declared: ${Object.keys(stages).join(', ')}`)
   }
-  return declared
+  return stages[stage]!
 }
 
 const regionOf = (stage: string): string => {

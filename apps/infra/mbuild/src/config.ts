@@ -467,13 +467,12 @@ export const loadBuildConfig = ({
  * create a repository nothing ever pulls from.
  */
 export const stageIn = (config: BuildConfig, stage: string): StageConfig => {
-  const declared = config.stages[stage]
-  if (!declared) {
+  if (!Object.hasOwn(config.stages, stage)) {
     throw new BuildConfigError(
       `${config.path} declares no stage "${stage}". Declared: ${Object.keys(config.stages).join(', ')}`,
     )
   }
-  return declared
+  return config.stages[stage]!
 }
 
 /** One stage's registry. */
@@ -490,12 +489,16 @@ export const registryFor = (config: BuildConfig, stage: string): RegistryConfig 
  * Refuses a name the file does not declare rather than returning an empty set:
  * an empty one publishes nothing and reports success, and the typo would only
  * surface as a stage missing an image nobody noticed was never built.
+ *
+ * Own properties only. These keys come from argv, and every plain object
+ * inherits `toString` and `constructor` — a lookup that reads the prototype
+ * chain answers "declared" for names the file has never heard of, and what
+ * comes back is a function rather than an artifact.
  */
 export const onlyArtifact = (config: BuildConfig, artifact: string): BuildConfig => {
-  const declared = config.artifacts[artifact]
-  if (!declared) {
+  if (!Object.hasOwn(config.artifacts, artifact)) {
     const known = Object.keys(config.artifacts).join(', ')
     throw new BuildConfigError(`${config.path} declares no artifact "${artifact}". Declared: ${known}`)
   }
-  return { ...config, artifacts: { [artifact]: declared } }
+  return { ...config, artifacts: { [artifact]: config.artifacts[artifact]! } }
 }

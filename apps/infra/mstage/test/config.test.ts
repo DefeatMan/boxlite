@@ -132,6 +132,23 @@ test('homeFor refuses a stage the config never declared rather than guessing the
   assert.throws(() => homeFor(parse({}), 'dve'), /declares no stage "dve"\. Declared: dev, prod/)
 })
 
+test('a name every object inherits is not a stage the file declares', () => {
+  /*
+   * The stage name comes from `--stage` and the map comes out of `JSON.parse`,
+   * so it carries `Object.prototype` with it. A lookup that reads through the
+   * chain answers "declared" for `toString` and returns a function; the caller
+   * then reads `.home` or `.region` off it and fails somewhere downstream with
+   * no stage name in the message.
+   */
+  for (const inherited of ['toString', 'constructor', 'hasOwnProperty']) {
+    assert.throws(
+      () => homeFor(parse({}), inherited),
+      new RegExp(`declares no stage "${inherited}"\\. Declared: dev, prod`),
+      `${inherited} resolved to a home`,
+    )
+  }
+})
+
 test('a GCP stage declares the project it lives in; an AWS stage declares no tenant at all', () => {
   // The AWS account is read back from the credentials by whoever has to name it
   // in an ARN, so there is nothing here to keep in step with it. GCP's clients
