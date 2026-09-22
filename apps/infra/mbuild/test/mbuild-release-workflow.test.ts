@@ -187,7 +187,7 @@ test('a release refuses a commit whose mbuild ignores the flags it will be given
 
   const result = resolveReleasedTree(released)
   const output = `${result.stdout}\n${result.stderr}`
-  assert.notEqual(result.status, 0, `mbuild 0.0.1 was accepted:\n${output}`)
+  assert.equal(result.status, 1, `mbuild 0.0.1 was not refused with the gate's own status:\n${output}`)
   // The refusal names the version it read and what that version cannot do, so
   // an operator reads why the tag was refused rather than that it was.
   assert.match(output, /mbuild 0\.0\.1/)
@@ -211,7 +211,7 @@ test('a release refuses the mbuild that came before the answer its gates read', 
 
   const result = resolveReleasedTree(released)
   const output = `${result.stdout}\n${result.stderr}`
-  assert.notEqual(result.status, 0, `mbuild 0.1.0 was accepted:\n${output}`)
+  assert.equal(result.status, 1, `mbuild 0.1.0 was not refused with the gate's own status:\n${output}`)
   assert.match(output, /mbuild 0\.1\.0/)
   assert.match(output, /exit 66/)
 })
@@ -222,7 +222,7 @@ test('a release refuses a commit from before mbuild existed here', (context) => 
 
   const result = resolveReleasedTree(released)
   const output = `${result.stdout}\n${result.stderr}`
-  assert.notEqual(result.status, 0, `a commit with no mbuild was accepted:\n${output}`)
+  assert.equal(result.status, 1, `a commit with no mbuild was not refused with the gate's own status:\n${output}`)
   assert.match(output, /no readable mbuild version/)
 })
 
@@ -232,7 +232,7 @@ test('a manifest that will not parse is refused', (context) => {
 
   const result = resolveReleasedTree(released)
   const output = `${result.stdout}\n${result.stderr}`
-  assert.notEqual(result.status, 0, `an unparseable manifest was accepted:\n${output}`)
+  assert.equal(result.status, 1, `an unparseable manifest was not refused with the gate's own status:\n${output}`)
   assert.match(output, /no readable mbuild version/)
 })
 
@@ -246,7 +246,7 @@ test('a version out of the manifest cannot talk to Actions on the way to the log
 
   const result = resolveReleasedTree(released)
   const output = `${result.stdout}\n${result.stderr}`
-  assert.notEqual(result.status, 0, `a crafted version was accepted:\n${output}`)
+  assert.equal(result.status, 1, `a crafted version was not refused with the gate's own status:\n${output}`)
   assert.doesNotMatch(output, /^::error title=crafted/m)
 })
 
