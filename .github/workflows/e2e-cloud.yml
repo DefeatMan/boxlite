@@ -36,10 +36,11 @@
 #
 # Both are named, not inherited, so a run can only ever hold the key for
 # the stage it targets. The repo also carries an older, unreferenced
-# BOXLITE_API_KEY; if that one is a prod key, copy it into
-# BOXLITE_PROD_API_KEY rather than teaching this workflow a second name —
-# an undeclared secret resolves to empty inside a called workflow, which
-# would surface as a puzzling 401 instead of a missing-secret error.
+# BOXLITE_API_KEY — that one is a *dev* key, so it is no substitute for
+# BOXLITE_PROD_API_KEY: pointing the prod leg at it would authenticate
+# against the wrong organization. BOXLITE_PROD_API_KEY has to be issued and
+# added before the prod leg can run at all; until then it resolves to empty
+# and the credential step says so by name.
 #
 # That is the whole of it — the suite reads [profiles.p1] from
 # ~/.boxlite/credentials.toml and every request is
@@ -188,9 +189,10 @@ permissions:
 # because a run killed mid-suite strands every box it had open. Two things
 # now bound that damage rather than one: every box the pytest cases create
 # carries auto_stop/auto_delete (apps/e2e/cases/conftest.py), so the stage
-# reclaims it within minutes; and the sweep step below clears whatever an
-# older run — or a polyglot driver, which does not go through that fixture —
-# left behind. Note this still bounds rather than eliminates: GitHub retains
+# reclaims it within minutes; and the sweep step below clears what an older
+# run left behind. Boxes from the polyglot drivers and the CLI have neither —
+# they rely on their own teardown, and apps/e2e/README.md says what that
+# leaves open. Note this still bounds rather than eliminates: GitHub retains
 # only the newest *pending* run per group, so intermediate queued runs are
 # superseded before they ever start.
 #
@@ -269,6 +271,24 @@ jobs:
         run: |
           set -euo pipefail
 
+          # `stage` is a choice on dispatch but a free string over
+          # workflow_call, and every branch below treats anything that is not
+          # `prod` as dev — so an unrecognised value would quietly run the full
+          # dev suite under a concurrency group of its own, racing the real dev
+          # run over the same boxes. Refuse it instead.
+          case "$STAGE" in
+            dev|prod) ;;
+            *) echo "::error::stage must be dev or prod, got '${STAGE}'"; exit 1 ;;
+          esac
+
+          # The URL can come from a dispatch input or a repo variable, and the
+          # very next thing this step does is send a bearer token to it. Over
+          # plain HTTP that hands the stage's API key to anyone on the path.
+          case "$API_URL" in
+            https://*) ;;
+            *) echo "::error::API_URL must be https, got '${API_URL}'"; exit 1 ;;
+          esac
+
           if [ "$STAGE" = prod ]; then
             API_KEY="${PROD_API_KEY:-}"
             KEY_SECRET_NAME="BOXLITE_PROD_API_KEY"
@@ -316,11 +336,13 @@ jobs:
       # The org's disk quota is a shared, finite resource, and a box whose
       # run died before teardown used to sit in it for good: that is what
       # made run 30787280531 fail 53 tests with "disk limit exceeded".
-      # Only boxes idle for a day are candidates — far longer than this
-      # job's own 45-minute ceiling, so a run in flight can never be its
-      # own victim. It cannot tell a stranded box from a maintainer's own
-      # long-idle one, which is why the window is a day and why this never
-      # runs on prod, where the boxes belong to customers.
+      # Candidates are boxes idle for a day AND named with this suite's
+      # `e2e-` prefix. The day is far longer than this job's own 45-minute
+      # ceiling, so a run in flight can never be its own victim; the prefix
+      # is what keeps it off everything else in a shared org — a report
+      # against dev listed five of a colleague's debugging boxes, idle for a
+      # day and identical to a stranded one by age alone. Never on prod
+      # either way, where the boxes belong to customers.
       #
       # continue-on-error: housekeeping must not decide the job's result. A
       # sweep that cannot delete leaves the suite to fail on the quota it was

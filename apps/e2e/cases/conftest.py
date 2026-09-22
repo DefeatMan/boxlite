@@ -15,6 +15,7 @@ import asyncio
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -52,8 +53,26 @@ DEFAULT_IMAGE = default_image()
 # Two doors lead to a box and both are bounded: `bound_box_lifetime` for the
 # SDK's BoxOptions, `with_bounded_lifetime` for a case that hand-builds the
 # REST body instead.
+#
+# On the SDK door the pair is applied together or not at all: filling one side
+# in beside a caller's other side can manufacture a policy the SDK rejects
+# outright — `auto_delete` must be 0 or greater than `auto_stop`
+# (BoxLifecyclePolicy::validate, src/boxlite/src/runtime/types.rs:299), so a
+# case asking for auto_stop=900 would get (900, 600) and fail inside its own
+# harness. That rule is the client's; `with_bounded_lifetime` fills each side
+# independently because a hand-built body never meets it.
 E2E_AUTO_STOP_SECONDS = 300
 E2E_AUTO_DELETE_SECONDS = 600
+
+# Names the sweep can attribute to this suite. Boxes the cases create are
+# named `e2e-<random>` so `apps/e2e/sweep.py` can reclaim them without
+# touching anything else in a shared org — a maintainer's own idle box looks
+# exactly like a stranded one otherwise.
+E2E_BOX_NAME_PREFIX = "e2e-"
+
+
+def e2e_box_name() -> str:
+    return f"{E2E_BOX_NAME_PREFIX}{uuid.uuid4().hex[:10]}"
 
 
 def bound_box_lifetime(options) -> None:
@@ -64,22 +83,41 @@ def bound_box_lifetime(options) -> None:
     a shape the SDK would refuse — must go through `with_bounded_lifetime`,
     which is the same policy for the same reason.
 
+    A case that sets either window owns both: see the module comment above.
+
     Boxes created by the polyglot drivers (`apps/e2e/sdks/`) and the CLI pass
-    through neither; `apps/e2e/sweep.py` is what reclaims those.
+    through neither, and `apps/e2e/sweep.py` will not reclaim them either: it
+    only touches this prefix, and CI never passes its `--any-name` opt-out.
+    The drivers the cloud legs run — Node and the CLI — remove their own box,
+    so there the gap is a run killed mid-driver. The Go and C drivers have
+    `os.Exit`/`DIE` paths that skip their cleanup entirely; both legs
+    `--ignore` those cases, so they never create a cloud box.
     """
-    if getattr(options, "auto_stop", None) is None:
+    if getattr(options, "auto_stop", None) is None and getattr(options, "auto_delete", None) is None:
         options.auto_stop = E2E_AUTO_STOP_SECONDS
-    if getattr(options, "auto_delete", None) is None:
         options.auto_delete = E2E_AUTO_DELETE_SECONDS
 
 
 def with_bounded_lifetime(body: dict) -> dict:
-    """Return a hand-built create body carrying this suite's lifetime.
+    """Return a hand-built create body named and bounded like the rest.
 
-    Anything the caller set explicitly wins — a case testing a rejected
-    auto_stop keeps the value under test.
+    Each window is filled independently here, unlike `bound_box_lifetime`. The
+    reason the SDK door pairs them does not apply: `auto_delete > auto_stop` is
+    a client-side rule (BoxLifecyclePolicy::validate,
+    src/boxlite/src/runtime/types.rs:299) that a hand-built body never passes
+    through, and the server checks only that auto_stop is 0 or at least 60 and
+    that auto_delete is non-negative (resolveLifecyclePolicy,
+    apps/api/src/box/services/box.service.ts:1472-1493). So filling the missing
+    side is accepted, and leaving it out would hand back an unbounded box — the
+    case that states `auto_stop` alone is exactly the one testing a *rejected*
+    value, and a 4xx is not proof no box was created
+    (test_quota_enforcement.py's `_post_box`).
+
+    The name matters as much as the windows: `apps/e2e/sweep.py` reclaims by
+    the `e2e-` prefix, so a body without one is outside every sweep CI runs.
     """
     return {
+        "name": e2e_box_name(),
         "auto_stop": E2E_AUTO_STOP_SECONDS,
         "auto_delete": E2E_AUTO_DELETE_SECONDS,
         **body,
@@ -110,6 +148,10 @@ class _TrackingRuntime:
                 "lifetime bound has nothing to apply (see bound_box_lifetime)"
             )
         bound_box_lifetime(options)
+        # Name it for the sweep unless the case chose a name — `create` takes
+        # the name as its second positional argument or as `name=`.
+        if "name" not in kwargs and len(args) < 2:
+            kwargs["name"] = e2e_box_name()
         box = await self._inner.create(*args, **kwargs)
         try:
             self._created.append((box.id, time.monotonic()))
