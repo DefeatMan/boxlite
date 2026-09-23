@@ -76,8 +76,13 @@ export type Placement =
        * rule keyed that way admits nothing and the deny at 65534 takes the
        * packet instead — a connect timeout against a host that is plainly
        * running. A network tag is the one label that does reach serverless
-       * traffic, so every rule between a Cloud Run workload and a VM is keyed
-       * on this and every such workload carries it.
+       * traffic, so every rule that admits a Cloud Run workload *to* a VM is
+       * keyed on this, and every such workload carries it.
+       *
+       * That direction and no other. `InternalFirewall` still names the control
+       * plane and the collector by account on both of its ends, and
+       * `RunnerToServicesFirewall` names them as its targets; this field says
+       * nothing about either, and neither is what the 504 was.
        *
        * What that costs, and it applies to every rule keyed this way rather
        * than to any one of them: an ingress rule with a source tag is not

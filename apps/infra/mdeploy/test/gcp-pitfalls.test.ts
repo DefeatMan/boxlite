@@ -37,6 +37,7 @@ import {
   MANAGED_PROXY_CIDR,
   PSC_NAT_CIDR,
   SUBNET_CIDR,
+  networkTagFor,
 } from '../stack/providers/gcp/network.ts'
 import { BOOT_DISK_TYPE, MACHINE as RUNNER_MACHINE } from '../stack/providers/gcp/runners.ts'
 import { apiPrefixRouteRules } from '../stack/providers/gcp/api.ts'
@@ -58,29 +59,7 @@ process.env.MSTAGE_CONFIG ??= fileURLToPath(new URL('../../.mstage.config.exampl
 const sourceOf = (module: string): string =>
   readFileSync(fileURLToPath(new URL(`../stack/providers/gcp/${module}.ts`, import.meta.url)), 'utf8')
 
-/**
- * Every project-level IAM resource this provider constructs, whichever
- * constructor it uses and however deeply it is nested.
- *
- * Scanning to a balanced close rather than matching a closing line. The first
- * version of this pinned `\n    })`, so it enumerated only blocks that closed
- * at exactly four spaces — a grant one level deeper, which is the shape
- * `RunnerArtifactsRead` already uses in this same file, went unseen and green.
- * `IAMBinding` is included because it is authoritative, and so the more
- * dangerous of the two to leave unbounded.
- *
- * It reads source text, which is the limit worth stating: it can see the
- * argument a constructor is written with, not the resource Pulumi synthesises
- * from it. A grant assembled from a variable would satisfy this and still be
- * unbounded.
- *
- * The scan skips comments and quoted literals, because a parenthesis inside
- * either is prose and not structure — counting them, as the first version did,
- * ends a block wherever someone writes one in a comment. What it still cannot
- * do is tell a regex literal from a division; nothing in these providers writes
- * one, and an unbalanced scan now throws rather than running to the end of the
- * file and returning a block that swallows the next grant's `condition:`.
- */
+/** Where the quoted literal opened at `open` ends, or -1 if it never does. */
 const endOfLiteral = (source: string, open: number): number => {
   const quote = source[open]
   for (let index = open + 1; index < source.length; index += 1) {
@@ -93,9 +72,28 @@ const endOfLiteral = (source: string, open: number): number => {
   return -1
 }
 
-const projectIamBlocks = (source: string): string[] => {
+/**
+ * Every constructor call `opener` matches, each scanned to its balanced close.
+ *
+ * Scanning to a balanced close rather than matching a closing line. The first
+ * version of this pinned `\n    })`, so it enumerated only blocks that closed
+ * at exactly four spaces — a grant one level deeper, which is the shape
+ * `RunnerArtifactsRead` already uses in this same file, went unseen and green.
+ *
+ * It reads source text, which is the limit worth stating: it can see the
+ * argument a constructor is written with, not the resource Pulumi synthesises
+ * from it. A grant assembled from a variable would satisfy this and still be
+ * unbounded.
+ *
+ * The scan skips comments and quoted literals, because a parenthesis inside
+ * either is prose and not structure — counting them, as the first version did,
+ * ends a block wherever someone writes one in a comment. What it still cannot
+ * do is tell a regex literal from a division; nothing in these providers writes
+ * one, and an unbalanced scan throws rather than running to the end of the file
+ * and returning a block that swallows the next grant's `condition:`.
+ */
+const blocksOpenedBy = (source: string, opener: RegExp): string[] => {
   const blocks: string[] = []
-  const opener = /new gcp\.projects\.IAM(?:Member|Binding)\(/g
   for (let match = opener.exec(source); match; match = opener.exec(source)) {
     let depth = 0
     let index = match.index + match[0].length - 1
@@ -127,10 +125,80 @@ const projectIamBlocks = (source: string): string[] => {
         break
       }
     }
-    assert.ok(closed, `the IAM grant at offset ${match.index} never closes, so this scan proves nothing`)
+    assert.ok(closed, `the block at offset ${match.index} never closes, so this scan proves nothing`)
     blocks.push(source.slice(match.index, index + 1))
   }
   return blocks
+}
+
+/**
+ * Every project-level IAM resource this provider constructs, whichever
+ * constructor it uses and however deeply it is nested.
+ *
+ * `IAMBinding` is included because it is authoritative, and so the more
+ * dangerous of the two to leave unbounded.
+ */
+const projectIamBlocks = (source: string): string[] =>
+  blocksOpenedBy(source, /new gcp\.projects\.IAM(?:Member|Binding)\(/g)
+
+/**
+ * The same text with its prose removed.
+ *
+ * An assertion about how a rule is keyed has to read the rule and not the
+ * comment above it. `clickhouse.ts` explains itself by naming
+ * `sourceServiceAccounts` in the very paragraph that says why it no longer uses
+ * one, so a search for the word finds that sentence and reports the defect it
+ * was written to record as still present.
+ *
+ * Unterminated input throws rather than returning what it managed to read, for
+ * the reason `blocksOpenedBy` gives: a negative assertion over truncated text
+ * passes because the text stopped, not because the property is absent. A
+ * trailing `//` with no newline is the one benign end, and ends the scan.
+ */
+const withoutComments = (source: string): string => {
+  let stripped = ''
+  for (let index = 0; index < source.length; index += 1) {
+    const pair = source.slice(index, index + 2)
+    if (pair === '//') {
+      const newline = source.indexOf('\n', index)
+      if (newline === -1) break
+      index = newline - 1
+      continue
+    }
+    if (pair === '/*') {
+      const end = source.indexOf('*/', index + 2)
+      assert.notEqual(end, -1, `the block comment at offset ${index} never closes, so this strip proves nothing`)
+      index = end + 1
+      continue
+    }
+    const character = source[index] as string
+    if (character === "'" || character === '"' || character === '`') {
+      const end = endOfLiteral(source, index)
+      assert.notEqual(end, -1, `the literal at offset ${index} never closes, so this strip proves nothing`)
+      stripped += source.slice(index, end + 1)
+      index = end
+      continue
+    }
+    stripped += character
+  }
+  return stripped
+}
+
+/**
+ * One firewall rule as it is written, with its prose stripped — so an assertion
+ * about how it is keyed cannot be satisfied by a different rule in the same
+ * file, nor by a comment explaining the keying it no longer uses.
+ *
+ * The whole point of scoping it. A file-wide search for a property name answers
+ * for whichever rule happens to use it — `gcp/network.ts` holds five, and three
+ * of them name a service account deliberately — so an assertion written that
+ * way either passes on a neighbour's spelling or fails on one it never meant.
+ */
+const firewallBlock = (source: string, resource: string): string => {
+  const named = new RegExp(`^new gcp\\.compute\\.Firewall\\(\\s*'${resource}'`)
+  const blocks = blocksOpenedBy(source, /new gcp\.compute\.Firewall\(/g).filter((block) => named.test(block))
+  assert.equal(blocks.length, 1, `expected exactly one ${resource}, found ${blocks.length}`)
+  return withoutComments(blocks[0] as string)
 }
 
 /**
@@ -657,10 +725,32 @@ test('a Cloud Run service reaches a VM by tag, because its packets arrive with n
   // And each host answers to it.
   assert.match(sourceOf('runners'), /tags: \[placement\.networkTag\]/)
   assert.match(sourceOf('clickhouse'), /tags: \[hostName\]/)
-  // Nothing admits a serverless caller by an identity that never arrives. Keyed
-  // on the property rather than the word, which both files still say in prose.
-  assert.equal(/sourceServiceAccounts: \[accounts\.api\.email\]/.test(network), false)
-  assert.equal(/sourceServiceAccounts:/.test(sourceOf('clickhouse')), false)
+  /*
+   * And neither rule names an account on either end.
+   *
+   * Scoped to the rule rather than to the file, and asserting the absence of
+   * the property rather than of the literal this change happened to delete: the
+   * literal form passes for any spelling that brings identity back, and three
+   * of the five rules in `gcp/network.ts` still name an account — the one
+   * directly above this and the two below it — so a file-wide form could not be
+   * written at all. Both ends,
+   * because Google refuses a source tag paired with a target service account —
+   * the constraint that made this four lines in three files.
+   */
+  assert.equal(/ServiceAccounts/.test(firewallBlock(network, 'RunnerFirewall')), false)
+  assert.equal(/ServiceAccounts/.test(firewallBlock(sourceOf('clickhouse'), 'ClickHouseFirewall')), false)
+
+  /*
+   * The one part of this that runs rather than reads, and it is asserted
+   * against a literal on purpose.
+   *
+   * The source above proves both ends call `tagFor`; this proves what that
+   * spells. Expecting `instanceFor` here instead would re-type the body of
+   * `networkTagFor` on the other side of the equals sign and could not fail —
+   * the trap the `clickstack` guard below already names.
+   */
+  assert.equal(networkTagFor({ app: 'boxlite-app', stage: 'dev2', role: 'api' }), 'boxlite-app-dev2-api')
+  assert.equal(networkTagFor({ app: 'boxlite-app', stage: 'dev2', role: 'runner' }), 'boxlite-app-dev2-runner')
 })
 
 /** The script as a host gets it, with three secret versions already resolved. */
