@@ -180,6 +180,20 @@ marks should come off. What strict cannot do is tell that cause from a later
 break inside `tunnelable_box` itself — both read as "expected failure" — so a
 green run on those cases proves only that they still fail, not why.
 
+`test_cli_run_foreground_streams_command_output` carries the same mark for a
+different reason, and unlike the tunnel cases it is conditional. `boxlite run
+<image> <cmd>` without `-d` is create → WS `/boxes/{id}/attach` → `POST
+/start`, and on a cloud stage that upgrade comes back a bare 503 whose body
+(`upstream connect error or disconnect/reset before headers`) is an envelope
+the API never writes — so it is the load balancing in front of the API that
+refuses, though which hop is not established. Every other CLI case detaches,
+so nothing else touched that socket and the failure was invisible to a green
+suite. A local stack has no load balancer in front of `boxlite-api` on `:3000`
+(its `:3001` proxy serves box previews, not API ingress), so the mark applies
+only when the stage host is remote; what a local stack does with the attached
+form has not been tested. The create lands before the 503, so the case names
+its box and removes it by name in `finally` — the id is never printed.
+
 ### Boxes must not outlive their run
 
 `auto_remove=True` is a no-op over REST and the API defaults `auto_delete` to

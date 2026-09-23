@@ -88,6 +88,10 @@ def bound_box_lifetime(options) -> None:
     Boxes created by the polyglot drivers (`apps/e2e/sdks/`) and the CLI pass
     through neither, and `apps/e2e/sweep.py` will not reclaim them either: it
     only touches this prefix, and CI never passes its `--any-name` opt-out.
+    The exception is a CLI case that opts in by hand, passing `--name` from
+    `e2e_box_name()` and the two windows as flags —
+    `test_cli_entry.py::test_cli_run_foreground_streams_command_output` does,
+    because its box outlives the command that created it.
     The drivers the cloud legs run — Node and the CLI — remove their own box,
     so there the gap is a run killed mid-driver. The Go and C drivers have
     `os.Exit`/`DIE` paths that skip their cleanup entirely; both legs
