@@ -192,9 +192,9 @@ export const publishClickStack = ({
   /*
    * The traffic that arrives by address instead of by identity.
    *
-   * `clickhouse.ts`'s rule admits the collector and the API by network tag,
-   * which is exact and covers every caller inside this network. Neither kind of
-   * packet here carries one: a health probe originates in Google's own
+   * `clickhouse.ts`'s rule admits the collector and the API by the range they
+   * egress from, which covers every caller inside this network. Neither kind of
+   * packet here comes from it: a health probe originates in Google's own
    * infrastructure, and a consumer's connection has been translated into the
    * NAT range above, losing whatever the consumer carried on the way in.
    * Without this rule the backend never turns healthy and the console connects

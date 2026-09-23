@@ -209,7 +209,7 @@ Written down rather than smoothed over:
 
 | Module | AWS | GCP |
 |---|---|---|
-| network | VPC, EC2 NAT, security groups | VPC, Cloud NAT, firewall rules keyed on service accounts (on network tags where a Cloud Run service reaches a VM), Private Service Access |
+| network | VPC, EC2 NAT, security groups | VPC, Cloud NAT, firewall rules keyed on service accounts (on the Cloud Run egress subnet's IP range where a Cloud Run service reaches a VM), Private Service Access |
 | database | RDS, password copied into Secrets Manager | Cloud SQL private IP, password generated into Secret Manager |
 | cache | ElastiCache | Memorystore |
 | storage | S3, grant scoped by ARN prefix | Cloud Storage, project role bounded by a CEL condition |

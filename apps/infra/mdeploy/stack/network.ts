@@ -62,40 +62,25 @@ export type Placement =
   | {
       cloud: 'gcp'
       exposure: Exposure
-      /** The subnetwork a Cloud Run service egresses through, or a VM sits in. */
+      /**
+       * The subnetwork this role's own resources sit in: a VM, or the internal
+       * address a load balancer answers on. Where its clients are.
+       */
       subnetwork: $util.Output<string>
+      /**
+       * The subnetwork a Cloud Run service's packets leave through, which is a
+       * different question from `subnetwork` and has to stay one.
+       *
+       * A rule admitting a Cloud Run workload to a VM can only name the range
+       * its packets come from, and a range is exactly as narrow as the subnet
+       * behind it — so the serverless roles egress from a subnet holding nothing
+       * else. Reading `subnetwork` here instead would move every resource that
+       * field places, the API's internal address included, into that subnet and
+       * widen the rule to whatever followed. See `CLOUDRUN_EGRESS_CIDR`.
+       */
+      egressSubnetwork: $util.Output<string>
       /** The identity IAM grants attach to, and that Cloud Run admits invokers by. */
       serviceAccount: $util.Output<string>
-      /**
-       * The name a firewall rule matches this workload's packets by.
-       *
-       * Not the service account, and the difference is the whole reason this
-       * field exists. A Cloud Run service reaches the network through direct
-       * VPC egress, and Google does not attribute those packets to the
-       * service's identity: `sourceServiceAccounts` never matches one, so a
-       * rule keyed that way admits nothing and the deny at 65534 takes the
-       * packet instead — a connect timeout against a host that is plainly
-       * running. A network tag is the one label that does reach serverless
-       * traffic, so every rule that admits a Cloud Run workload *to* a VM is
-       * keyed on this, and every such workload carries it.
-       *
-       * That direction and no other. `InternalFirewall` still names the control
-       * plane and the collector by account on both of its ends, and
-       * `RunnerToServicesFirewall` names them as its targets; this field says
-       * nothing about either, and neither is what the 504 was.
-       *
-       * What that costs, and it applies to every rule keyed this way rather
-       * than to any one of them: an ingress rule with a source tag is not
-       * applied the moment it is written. Measured on the dev stage on
-       * 2026-09-20 — a deny on the same tag was added and removed, and the
-       * runner's rule then admitted nothing for forty minutes. Waiting did not
-       * end it; rewriting the rule did, and it served four minutes later. So a
-       * rule here that reads correctly and is not serving is repaired by
-       * writing it again, and a rollback is not an instant operation. That is
-       * the runner's rule measured; ClickHouse's is keyed the same way and
-       * nothing here claims anything about the rules that are not.
-       */
-      networkTag: string
     }
 
 /**

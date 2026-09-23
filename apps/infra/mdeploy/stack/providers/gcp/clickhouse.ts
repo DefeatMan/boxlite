@@ -23,7 +23,7 @@
 import { publishClickStack } from './clickstack.ts'
 import { renderClickHouseSchema } from '../../clickhouse-host.ts'
 import type { ClickHouse, ClickHouseProvider, ClickHouseRequest } from '../../clickhouse.ts'
-import type { NetworkBinding, WorkloadRole } from '../../network.ts'
+import type { NetworkBinding } from '../../network.ts'
 import { identityFor, instanceFor } from 'naming'
 
 /**
@@ -48,25 +48,6 @@ export const MACHINE = { small: 'n4-standard-2', medium: 'n4-standard-4' } as co
 export const DISK_TYPE = 'hyperdisk-balanced'
 
 const HTTP_PORT = 8123
-
-/**
- * Every role that speaks to this database, as the firewall has to name them.
- *
- * Two, and the second one is easy to lose: the collector writes and the API
- * reads back. The rule admits exactly what it lists, so a caller left out is
- * *dropped* rather than refused — the reader waits out a connect timeout
- * against a database that is plainly running, ClickHouse logs nothing because
- * nothing arrived, and the deny at 65534 is the only trace.
- *
- * Read as network tags rather than as accounts — see `callerTags` for why a
- * Cloud Run caller cannot be admitted by its identity. Each caller's password
- * is granted where that caller is built, not from here.
- *
- * Declared here, beside the rule that consumes it, rather than spelled out at
- * the composition root: that is where it was one account with a comment saying
- * two, which is a widening or a narrowing nothing type-checks.
- */
-export const CLICKHOUSE_CALLERS: readonly WorkloadRole[] = ['otel-collector', 'api']
 
 /** Ubuntu's own image family, the same release the runner hosts use. */
 const IMAGE = 'ubuntu-os-cloud/ubuntu-2404-lts-amd64'
@@ -235,7 +216,7 @@ export const gcpClickHouseProvider =
     region,
     zone,
     appShort,
-    callerTags,
+    callerRanges,
     clickStackConsumerProject,
     clickStackConsumerAccount,
     managed,
@@ -257,14 +238,16 @@ export const gcpClickHouseProvider =
     /** The app abbreviated: what the host's own identity is named from. */
     appShort: string
     /**
-     * The callers as the firewall can see them: by network tag, one per caller.
+     * The callers as the firewall can see them: the ranges they egress from.
      *
-     * See `CLICKHOUSE_CALLERS`. Not a service account, and not the identity the
-     * host runs as: both callers are Cloud Run services, and Google attributes
-     * a direct-egress packet to no account at all, so a rule keyed on one
-     * admits neither. See `Placement.networkTag`.
+     * The collector writes and the API reads, and both are Cloud Run services,
+     * so neither label a rule could prefer reaches them — Google attributes a
+     * direct-egress packet to no account, and lists a network tag in an ingress
+     * rule among what direct VPC egress does not support. One range covers both
+     * because both egress from the subnet that holds nothing else; see
+     * `CLOUDRUN_EGRESS_CIDR`, which is what keeps this as narrow as an identity.
      */
-    callerTags: string[]
+    callerRanges: string[]
     /**
      * The project whose endpoints may reach this ClickHouse over Private
      * Service Connect. See `publishClickStack`, which owns the publication.
@@ -377,12 +360,7 @@ export const gcpClickHouseProvider =
         }),
     )
 
-    /*
-     * What this host is called, which is also the tag the rule below admits its
-     * callers to. One string for both, for the same reason `networkTagFor`
-     * spells a tag with `instanceFor` in `network.ts`: a rule and the thing it
-     * names cannot drift apart when one function writes both.
-     */
+    /** What the instance and the rule that guards it are both named. */
     const hostName = instanceFor({ app: $app.name, stage: $app.stage, artifact: 'clickhouse' })
 
     const instance = new gcp.compute.Instance(
@@ -402,9 +380,6 @@ export const gcpClickHouseProvider =
           },
         ],
         serviceAccount: { email: host.email, scopes: ['cloud-platform'] },
-        // What the rule below admits its callers *to*. A target service account
-        // cannot be paired with the tag sources that rule needs.
-        tags: [hostName],
         metadataStartupScript: startupScript,
         // Telemetry storage is not a machine to be replaced casually, and a
         // newer image on an unrelated deploy would take the history with it.
@@ -420,19 +395,18 @@ export const gcpClickHouseProvider =
       direction: 'INGRESS',
       allows: [{ protocol: 'tcp', ports: [String(HTTP_PORT)] }],
       /*
-       * Whoever the caller is, by tag — the collector writes and the API reads,
-       * and nothing else in the network has a reason to reach this. Both of
-       * them, from one list: see `CLICKHOUSE_CALLERS` for what naming only the
-       * writer here costs.
+       * Whoever the caller is, by the range they arrive from — the collector
+       * writes and the API reads, and nothing else in the network has a reason
+       * to reach this. One range names both: see `callerRanges`, and
+       * `CLOUDRUN_EGRESS_CIDR` for why that range is not the workload subnet.
        *
-       * By tag rather than by account because both callers are Cloud Run
-       * services, whose direct-egress packets arrive attributed to no identity:
-       * a rule keyed on `sourceServiceAccounts` admits neither of them, and the
-       * symptom is the connect timeout described in `Placement.networkTag`
-       * rather than a refusal anyone can see.
+       * By range rather than by account or tag because neither reaches a Cloud
+       * Run caller: both are unsupported as the source of an ingress rule for
+       * direct VPC egress, and an identity here drops the packet rather than
+       * refusing it — see `CLOUDRUN_EGRESS_CIDR` for the measurement.
        */
-      sourceTags: callerTags,
-      targetTags: [hostName],
+      sourceRanges: callerRanges,
+      targetServiceAccounts: [host.email],
     })
 
     /*

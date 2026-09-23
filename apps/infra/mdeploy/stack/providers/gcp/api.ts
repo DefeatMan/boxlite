@@ -339,14 +339,15 @@ export const gcpApiProvider =
            */
           timeout: '3600s',
           /*
-           * The tag is what gets this service to a runner. Its packets leave
-           * with no service account attached, so the rule that admits it is
-           * keyed on this name — see `Placement.networkTag`. Drop it and every
-           * `/v1/boxes/*` route times out against a healthy host.
+           * The subnet is what gets this service to a runner. Its packets leave
+           * with no service account and no label a rule can match, so the rule
+           * that admits them names the range they come from — see
+           * `CLOUDRUN_EGRESS_CIDR`. Egress anywhere else and every `/v1/boxes/*`
+           * route times out against a healthy host.
            */
           vpcAccess: {
             egress: 'PRIVATE_RANGES_ONLY',
-            networkInterfaces: [{ subnetwork: placement.subnetwork, tags: [placement.networkTag] }],
+            networkInterfaces: [{ subnetwork: placement.egressSubnetwork }],
           },
           containers: [
             {
@@ -712,9 +713,12 @@ export const gcpApiProvider =
       ],
     })
     /*
-     * The address, out of the one subnet this network has — which is also where
-     * every client of it sits. Reserved rather than left ephemeral for the same
-     * reason the public one is: it is what a DNS record points at.
+     * The address, out of the subnet this role's own resources sit in — which is
+     * also where every client of it sits, the runners included. Deliberately not
+     * `egressSubnetwork`: that one is the range a firewall rule names as a
+     * source, and an address placed there moves the runners' target and widens
+     * the rule. Reserved rather than left ephemeral for the same reason the
+     * public one is: it is what a DNS record points at.
      */
     const internalAddress = new gcp.compute.Address('ApiInternalAddress', {
       name: instanceFor({ app: $app.name, stage: $app.stage, artifact: 'api-internal' }),

@@ -35,9 +35,9 @@ import {
   GKE_POD_CIDR,
   GKE_SERVICE_CIDR,
   MANAGED_PROXY_CIDR,
+  CLOUDRUN_EGRESS_CIDR,
   PSC_NAT_CIDR,
   SUBNET_CIDR,
-  networkTagFor,
 } from '../stack/providers/gcp/network.ts'
 import { BOOT_DISK_TYPE, MACHINE as RUNNER_MACHINE } from '../stack/providers/gcp/runners.ts'
 import { apiPrefixRouteRules } from '../stack/providers/gcp/api.ts'
@@ -655,7 +655,7 @@ test('the collector is invocable from the network, and the ingress is the whole 
   assert.equal(/GOOGLE_ID_TOKEN/.test(sourceOf('runners') + sourceOf('edge')), false)
 })
 
-test('the telemetry database admits every caller that speaks to it, not just the writer', () => {
+test('the telemetry database admits both of its callers, because both egress from one range', () => {
   /*
    * The collector writes and the API reads, and a caller left out of the rule is
    * *dropped* rather than refused: the reader gets a connect timeout against a
@@ -665,95 +665,127 @@ test('the telemetry database admits every caller that speaks to it, not just the
    * both, and no stage caught it because the one GCP stage keeps
    * `CLICKHOUSE_MODE=disabled`.
    *
-   * Each caller is read once, as a network tag — see the test below for why the
-   * rule cannot key on the account. Reading the account as well is what this
-   * used to do, and it reached nothing: the list went into a binding field no
-   * consumer ever had.
-   *
-   * The roles are recorded as the bundle asks the network for them, so this
-   * fails when the wiring stops asking rather than when a string moves.
+   * What closes that hole is the subnet rather than a list. Both callers are
+   * Cloud Run services and both egress from `CLOUDRUN_EGRESS_CIDR`, so one range
+   * names both and there is no list left to hand over half of. The property that
+   * has to hold moves with it: a role recorded as `cloud-run` is placed in that
+   * subnet and admitted, and a role that becomes a Cloud Run service without
+   * being recorded there would egress from the workload subnet and be dropped.
    */
-  const admitted: string[] = []
-  const granted: string[] = []
+  /*
+   * Both callers read the egress subnet, and only on the interface their packets
+   * leave through.
+   *
+   * `egressSubnetwork` is a second field rather than a different value for
+   * `subnetwork` because that one also places the API's internal address — the
+   * address the runners call the API on. Answering both questions with one field
+   * moved that address into the range this rule names as a source, replaced it,
+   * and widened the rule to whatever landed there next. A deploy is what found
+   * it: the apply replaced `ApiInternalAddress` and `ApiInternalForwardingRule`.
+   */
+  assert.match(sourceOf('api'), /networkInterfaces: \[\{ subnetwork: placement\.egressSubnetwork \}\]/)
+  assert.match(sourceOf('collector'), /networkInterfaces: \[\{ subnetwork: placement\.egressSubnetwork \}\]/)
+  // And nothing else reads it, so the address stays beside its clients.
+  for (const module of ['api', 'collector', 'runners', 'clickhouse', 'edge']) {
+    const reads = (sourceOf(module).match(/placement\.egressSubnetwork/g) ?? []).length
+    assert.equal(reads, module === 'api' || module === 'collector' ? 1 : 0, `${module} reads egressSubnetwork ${reads}x`)
+  }
+
+  /*
+   * And the chain between the two ends holds.
+   *
+   * The rule names a constant, the subnet is built from that same constant, and
+   * the placement hands out that subnet — three links, and the assertions above
+   * only pin the outer two. Repointing `egressSubnetwork` at the workload subnet
+   * leaves every one of them green and restores the 504 this exists to prevent,
+   * which is what the old `tagFor` assertions caught by spelling both ends with
+   * one function.
+   */
+  const networkModule = sourceOf('network')
+  assert.match(networkModule, /ipCidrRange: CLOUDRUN_EGRESS_CIDR/)
+  assert.match(networkModule, /egressSubnetwork: cloudRunEgress\.id/)
+  // And the range handed to the rule is that subnet's, not the workload one's.
+  assert.match(sourceOf('index'), /callerRanges: \[CLOUDRUN_EGRESS_CIDR\]/)
+
+  /*
+   * And building the module asks the network for no caller at all.
+   *
+   * This is what the old bug cannot survive: the caller list used to be read
+   * role by role off the placement, which is how the composition root came to
+   * hand over the collector alone while the comment beside it said both. A range
+   * the network module owns leaves nothing per-caller to look up, so anything
+   * read here again would be a list growing back.
+   */
+  const consulted: string[] = []
   const network = {
     binding: { cloud: 'gcp', network: 'net', subnetwork: 'subnet' },
     placementFor: (role: string) => ({
       cloud: 'gcp',
       get serviceAccount() {
-        granted.push(role)
+        consulted.push(`${role}:serviceAccount`)
         return `${role}@example.iam.gserviceaccount.com`
       },
-      get networkTag() {
-        admitted.push(role)
-        return `boxlite-app-dev2-${role}`
+      get subnetwork() {
+        consulted.push(`${role}:subnetwork`)
+        return 'subnet'
+      },
+      // Instrumented because it is the field this change added: a caller list
+      // rebuilt from it would otherwise read an untracked property and leave the
+      // assertion below green while the list grew back.
+      get egressSubnetwork() {
+        consulted.push(`${role}:egressSubnetwork`)
+        return 'egress-subnet'
       },
     }),
     ready: [],
   } as any
   gcpBundle().clickhouse({ network })
-  assert.deepEqual([...admitted].sort(), ['api', 'otel-collector'])
-  // And no account is asked for on the way: each caller's password is granted
-  // where that caller is built, never from a list handed to this module.
-  assert.deepEqual(granted, [])
-  // And the rule is keyed on the whole list it was handed rather than one of it.
-  assert.match(sourceOf('clickhouse'), /sourceTags: callerTags/)
+  assert.deepEqual(consulted, [])
 })
 
-test('a Cloud Run service reaches a VM by tag, because its packets arrive with no identity', () => {
+test('a Cloud Run service reaches a VM by source range, because tags do not reach an ingress rule', () => {
   /*
-   * The 504 this pins. `sourceServiceAccounts` matches traffic from VM
-   * instances; a Cloud Run service reaching the network through direct VPC
-   * egress is attributed to no account at all, so a rule keyed that way admits
-   * nothing and the deny at 65534 takes the SYN. The control plane's
-   * `/v1/boxes/*` routes — exec, files, metrics — then time out after a full
-   * TCP connect against a runner that is healthy, answering the GKE proxy on
-   * the same port, and logging nothing because nothing reached it.
+   * The 504 this pins, and the trap that replaced it.
    *
-   * Google's own constraint is what makes this four lines in three files rather
-   * than one: a source tag cannot be paired with a target service account, so
-   * naming the caller by tag forces naming the host by tag too. Read as source
-   * because both ends are Pulumi resources — what has to hold is that the two
-   * carry the same name, and one function spells it.
-   */
-  const network = sourceOf('network')
-  assert.match(network, /sourceTags: \[tagFor\('api'\)\]/)
-  assert.match(network, /targetTags: \[tagFor\('runner'\)\]/)
-  assert.match(network, /networkTag: tagFor\(role\)/)
-  // The caller carries it out, on the interface the packets leave through.
-  assert.match(sourceOf('api'), /networkInterfaces: \[\{ subnetwork: placement\.subnetwork, tags: \[placement\.networkTag\] \}\]/)
-  assert.match(
-    sourceOf('collector'),
-    /networkInterfaces: \[\{ subnetwork: placement\.subnetwork, tags: \[placement\.networkTag\] \}\]/,
-  )
-  // And each host answers to it.
-  assert.match(sourceOf('runners'), /tags: \[placement\.networkTag\]/)
-  assert.match(sourceOf('clickhouse'), /tags: \[hostName\]/)
-  /*
-   * And neither rule names an account on either end.
+   * `sourceServiceAccounts` matches traffic from VM instances; a Cloud Run
+   * service reaching the network through direct VPC egress is attributed to no
+   * account at all, so a rule keyed that way admits nothing and the deny at
+   * 65534 takes the SYN. The control plane's `/v1/boxes/*` routes — exec, files,
+   * metrics — then time out after a full TCP connect against a runner that is
+   * healthy, answering the GKE proxy on the same port, and logging nothing.
    *
-   * Scoped to the rule rather than to the file, and asserting the absence of
-   * the property rather than of the literal this change happened to delete: the
-   * literal form passes for any spelling that brings identity back, and three
-   * of the five rules in `gcp/network.ts` still name an account — the one
-   * directly above this and the two below it — so a file-wide form could not be
-   * written at all. Both ends,
-   * because Google refuses a source tag paired with a target service account —
-   * the constraint that made this four lines in three files.
+   * A source tag does not fix that: Google lists "network tags or service
+   * identity in ingress firewall rules" together among the things direct VPC
+   * egress does not support, so a tag swaps one unmatched selector for another.
+   * Measured on dev on 2026-09-23 by changing only this rule's source — identity
+   * alone gave 504 after a 127.5s connect timeout, and adding the range the API
+   * egresses from gave 201 in 0.52s. The supported source is that range.
+   *
+   * With the source a range the target may be an account again — Google refuses
+   * only a source *tag* paired with a target service account — so both rules
+   * name their host the way the other three rules in `gcp/network.ts` do.
    */
-  assert.equal(/ServiceAccounts/.test(firewallBlock(network, 'RunnerFirewall')), false)
-  assert.equal(/ServiceAccounts/.test(firewallBlock(sourceOf('clickhouse'), 'ClickHouseFirewall')), false)
+  const runner = firewallBlock(sourceOf('network'), 'RunnerFirewall')
+  assert.match(runner, /sourceRanges: \[CLOUDRUN_EGRESS_CIDR\]/)
+  assert.match(runner, /targetServiceAccounts: \[accounts\.runner\.email\]/)
+
+  const clickhouse = firewallBlock(sourceOf('clickhouse'), 'ClickHouseFirewall')
+  assert.match(clickhouse, /sourceRanges: callerRanges/)
+  assert.match(clickhouse, /targetServiceAccounts: \[host\.email\]/)
+
+  // Neither rule keeps a tag on either end.
+  assert.equal(/Tags/.test(runner), false)
+  assert.equal(/Tags/.test(clickhouse), false)
 
   /*
-   * The one part of this that runs rather than reads, and it is asserted
-   * against a literal on purpose.
-   *
-   * The source above proves both ends call `tagFor`; this proves what that
-   * spells. Expecting `instanceFor` here instead would re-type the body of
-   * `networkTagFor` on the other side of the equals sign and could not fail —
-   * the trap the `clickstack` guard below already names.
+   * And nothing still carries one for these rules to key on: the two Cloud Run
+   * interfaces stamped it, the two hosts answered to it, and the placement
+   * spelled it. A tag left behind after this is a selector nothing reads, which
+   * is how the unsupported one survived a review in the first place.
    */
-  assert.equal(networkTagFor({ app: 'boxlite-app', stage: 'dev2', role: 'api' }), 'boxlite-app-dev2-api')
-  assert.equal(networkTagFor({ app: 'boxlite-app', stage: 'dev2', role: 'runner' }), 'boxlite-app-dev2-runner')
+  for (const module of ['api', 'collector', 'runners', 'clickhouse', 'network']) {
+    assert.equal(/networkTag/.test(sourceOf(module)), false, `${module} still carries a network tag`)
+  }
 })
 
 /** The script as a host gets it, with three secret versions already resolved. */
@@ -1421,7 +1453,7 @@ test('the fixed GKE and proxy ranges neither overlap nor collide with Private Se
    * allocator. Moving either constant out of that `/16`, or letting the two
    * subnets overlap, breaks the argument silently and the deploy months later.
    */
-  const cidrs = [SUBNET_CIDR, MANAGED_PROXY_CIDR, PSC_NAT_CIDR, GKE_POD_CIDR, GKE_SERVICE_CIDR]
+  const cidrs = [SUBNET_CIDR, CLOUDRUN_EGRESS_CIDR, MANAGED_PROXY_CIDR, PSC_NAT_CIDR, GKE_POD_CIDR, GKE_SERVICE_CIDR]
   for (const [index, leftCidr] of cidrs.entries()) {
     for (const rightCidr of cidrs.slice(index + 1)) {
       const left = rangeOf(leftCidr)
@@ -1467,11 +1499,11 @@ test('the ClickStack publication is named what the console looks for', () => {
   assert.match(source, /enableProxyProtocol: false/)
 })
 
-test('the publication admits the two kinds of traffic that carry no network tag', () => {
+test('the publication admits the two kinds of traffic that come from outside its neighbour range', () => {
   /*
-   * `clickhouse.ts`'s rule keys on network tags, which is exact and covers
-   * every caller inside this network. Neither packet here carries one: a health
-   * probe originates in Google's own infrastructure, and a consumer's
+   * `clickhouse.ts`'s rule keys on the range its callers egress from, which
+   * covers every caller inside this network. Neither packet here comes from it:
+   * a health probe originates in Google's own infrastructure, and a consumer's
    * connection has been translated into the NAT range on the way in. Without
    * both ranges the backend never turns healthy and the console reaches
    * nothing — with every resource created and the deploy green.
