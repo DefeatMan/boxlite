@@ -665,15 +665,16 @@ test('the telemetry database admits every caller that speaks to it, not just the
    * both, and no stage caught it because the one GCP stage keeps
    * `CLICKHOUSE_MODE=disabled`.
    *
-   * Both callers are read twice, and that is the point: an account for the
-   * secret grant, a network tag for the rule. Neither substitutes for the other
-   * — see the test below for why the rule cannot use the account.
+   * Each caller is read once, as a network tag — see the test below for why the
+   * rule cannot key on the account. Reading the account as well is what this
+   * used to do, and it reached nothing: the list went into a binding field no
+   * consumer ever had.
    *
    * The roles are recorded as the bundle asks the network for them, so this
    * fails when the wiring stops asking rather than when a string moves.
    */
-  const granted: string[] = []
   const admitted: string[] = []
+  const granted: string[] = []
   const network = {
     binding: { cloud: 'gcp', network: 'net', subnetwork: 'subnet' },
     placementFor: (role: string) => ({
@@ -690,8 +691,10 @@ test('the telemetry database admits every caller that speaks to it, not just the
     ready: [],
   } as any
   gcpBundle().clickhouse({ network })
-  assert.deepEqual([...granted].sort(), ['api', 'otel-collector'])
   assert.deepEqual([...admitted].sort(), ['api', 'otel-collector'])
+  // And no account is asked for on the way: each caller's password is granted
+  // where that caller is built, never from a list handed to this module.
+  assert.deepEqual(granted, [])
   // And the rule is keyed on the whole list it was handed rather than one of it.
   assert.match(sourceOf('clickhouse'), /sourceTags: callerTags/)
 })
@@ -1464,9 +1467,9 @@ test('the ClickStack publication is named what the console looks for', () => {
   assert.match(source, /enableProxyProtocol: false/)
 })
 
-test('the publication admits the two kinds of traffic that carry no service account', () => {
+test('the publication admits the two kinds of traffic that carry no network tag', () => {
   /*
-   * `clickhouse.ts`'s rule keys on service accounts, which is exact and covers
+   * `clickhouse.ts`'s rule keys on network tags, which is exact and covers
    * every caller inside this network. Neither packet here carries one: a health
    * probe originates in Google's own infrastructure, and a consumer's
    * connection has been translated into the NAT range on the way in. Without

@@ -53,10 +53,14 @@ const HTTP_PORT = 8123
  * Every role that speaks to this database, as the firewall has to name them.
  *
  * Two, and the second one is easy to lose: the collector writes and the API
- * reads back. A rule keyed on service accounts admits exactly what it lists, so
- * a caller left out is *dropped* rather than refused — the reader waits out a
- * connect timeout against a database that is plainly running, ClickHouse logs
- * nothing because nothing arrived, and the deny at 65534 is the only trace.
+ * reads back. The rule admits exactly what it lists, so a caller left out is
+ * *dropped* rather than refused — the reader waits out a connect timeout
+ * against a database that is plainly running, ClickHouse logs nothing because
+ * nothing arrived, and the deny at 65534 is the only trace.
+ *
+ * Read as network tags rather than as accounts — see `callerTags` for why a
+ * Cloud Run caller cannot be admitted by its identity. Each caller's password
+ * is granted where that caller is built, not from here.
  *
  * Declared here, beside the rule that consumes it, rather than spelled out at
  * the composition root: that is where it was one account with a comment saying
@@ -231,7 +235,6 @@ export const gcpClickHouseProvider =
     region,
     zone,
     appShort,
-    callers,
     callerTags,
     clickStackConsumerProject,
     clickStackConsumerAccount,
@@ -254,17 +257,12 @@ export const gcpClickHouseProvider =
     /** The app abbreviated: what the host's own identity is named from. */
     appShort: string
     /**
-     * The identities admitted to the HTTP port, one entry per caller. See
-     * `CLICKHOUSE_CALLERS`: this is not the identity the host runs as, which is
-     * the account created below and never handed in.
-     */
-    callers: $util.Output<string>[]
-    /**
-     * The same callers as the firewall sees them: by network tag.
+     * The callers as the firewall can see them: by network tag, one per caller.
      *
-     * Both of them are Cloud Run services, and Google attributes a direct-egress
-     * packet to no service account — so `callers` above grants them the
-     * password and admits them to nothing. See `Placement.networkTag`.
+     * See `CLICKHOUSE_CALLERS`. Not a service account, and not the identity the
+     * host runs as: both callers are Cloud Run services, and Google attributes
+     * a direct-egress packet to no account at all, so a rule keyed on one
+     * admits neither. See `Placement.networkTag`.
      */
     callerTags: string[]
     /**
@@ -309,9 +307,6 @@ export const gcpClickHouseProvider =
           passwordRef: $util.output(managed.readerSecretArn),
           credentialVersion: $util.output(managed.readerSecretArn),
         },
-        // A managed endpoint admits whoever holds its credential; there is no
-        // rule of ours to name anybody in, as on the AWS side.
-        binding: { cloud: 'gcp', clientGrants: [] },
         id: $util.output(managed.url),
         ready: [],
       }
@@ -478,7 +473,6 @@ export const gcpClickHouseProvider =
         passwordRef: reader.version.name,
         credentialVersion: reader.version.name,
       },
-      binding: { cloud: 'gcp', clientGrants: callers },
       id: instance.id,
       ready: [instance, firewall],
     }

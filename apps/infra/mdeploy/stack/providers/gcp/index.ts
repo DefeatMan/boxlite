@@ -143,13 +143,11 @@ export const gcpStackProviders = ({
         region,
         zone,
         appShort,
-        // The collector writes and the API reads; both carry an account, and
-        // the firewall admits those two and nothing else. The roles come from
-        // the module that owns the rule, so this cannot hand over one identity
-        // while that comment claims two — which is exactly what it used to do.
-        callers: CLICKHOUSE_CALLERS.map((role) => placement(network, role).serviceAccount),
-        // The same two, as the firewall can actually see them. Both are Cloud
-        // Run services and neither arrives with its account attached.
+        // The collector writes and the API reads, and the rule admits those two
+        // and nothing else. By tag because both are Cloud Run services and
+        // neither arrives with its account attached. The roles come from the
+        // module that owns the rule, so this cannot hand over one while that
+        // comment claims two — which it used to do.
         callerTags: CLICKHOUSE_CALLERS.map((role) => placement(network, role).networkTag),
         // The one project allowed to connect an endpoint. Today the console is
         // deployed into this same project, so the producer's own id is the
