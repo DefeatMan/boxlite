@@ -78,6 +78,8 @@ If the automatic dispatch failed and you need to recover by hand, open
 Or dispatch the same recovery with the GitHub CLI:
 
 ```bash
+TAG=v0.10.3
+
 gh workflow run mbuild-release.yml \
   --repo boxlite-ai/boxlite \
   --ref main \
@@ -108,6 +110,8 @@ Approve the `prod` Environment. `mdeploy-all` then:
 Or start it with the GitHub CLI:
 
 ```bash
+TAG=v0.10.3
+
 gh workflow run mdeploy-all.yml \
   --repo boxlite-ai/boxlite \
   --ref main \
