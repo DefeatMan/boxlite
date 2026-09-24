@@ -1013,6 +1013,28 @@ test('every Cloud SQL size names its edition beside its tier', () => {
   }
 })
 
+test('each database size still names the tier its stages were sized against', () => {
+  /*
+   * A size is a name a stage declares, and the name lives outside this
+   * repository — in each stage's GitHub Environment. So a respelt tier here is
+   * not a compile error anywhere: the stage keeps declaring what it declared,
+   * and the next apply moves its database. The edition check above passes any
+   * spelling that pairs correctly, which is every spelling.
+   *
+   * `standard` was added rather than `small` being redefined, precisely so no
+   * existing declaration changed meaning. Pinning the pairs is what keeps that
+   * true.
+   */
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(DATABASE_MACHINE).map(([size, machine]) => [size, machine.tier])),
+    {
+      small: 'db-f1-micro',
+      standard: 'db-g1-small',
+      medium: 'db-custom-2-7680',
+    },
+  )
+})
+
 test('the instance is told to log connections, so a silent Postgres means something', () => {
   /*
    * Cloud SQL terminates TLS at the instance front end, so a failed handshake
