@@ -69,6 +69,8 @@ boxlite-runner-vX.Y.Z-linux-amd64.tar.gz.sha256
 或使用 GitHub CLI 调度同一恢复流程：
 
 ```bash
+TAG=v0.10.3
+
 gh workflow run mbuild-release.yml \
   --repo boxlite-ai/boxlite \
   --ref main \
@@ -98,6 +100,8 @@ gh workflow run mbuild-release.yml \
 也可以用 GitHub CLI 触发：
 
 ```bash
+TAG=v0.10.3
+
 gh workflow run mdeploy-all.yml \
   --repo boxlite-ai/boxlite \
   --ref main \
