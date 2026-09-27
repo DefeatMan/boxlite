@@ -19,15 +19,23 @@ pub struct KvmVm {
     fd: VmFd,
     slots: Mutex<MemorySlots>,
     run_size: usize,
+    kick_signal: i32,
 }
 
 impl KvmVm {
     /// Opens `/dev/kvm`, verifies the required API, and creates the empty VM.
     pub fn new() -> Result<Self> {
-        Self::create().map_err(Error::CreateVm)
+        Self::with_kick_signal(libc::SIGRTMIN() + 1)
     }
 
-    fn create() -> io::Result<Self> {
+    /// Selects an application-reserved realtime signal for vCPU workers.
+    /// It must retain its default disposition and be unblocked before creation.
+    pub fn with_kick_signal(signal: i32) -> Result<Self> {
+        super::kick::validate_signal(signal).map_err(Error::CreateVm)?;
+        Self::create(signal).map_err(Error::CreateVm)
+    }
+
+    fn create(kick_signal: i32) -> io::Result<Self> {
         let kvm = Kvm::new().map_err(|error| {
             let source = io::Error::from_raw_os_error(error.errno());
             if matches!(source.raw_os_error(), Some(libc::ENOENT | libc::ENODEV)) {
@@ -79,6 +87,7 @@ impl KvmVm {
             fd,
             slots: Mutex::new(MemorySlots::new(kvm.get_nr_memslots(), page_size as usize)),
             run_size: kvm.get_vcpu_mmap_size().map_err(io::Error::from)?,
+            kick_signal,
         })
     }
 
@@ -86,11 +95,9 @@ impl KvmVm {
     pub fn create_vcpu(&self, id: u32) -> Result<KvmVcpu> {
         self.fd
             .create_vcpu(u64::from(id))
-            .map(|fd| KvmVcpu::new(fd, id, self.run_size))
-            .map_err(|source| Error::CreateVcpu {
-                id,
-                source: source.into(),
-            })
+            .map_err(io::Error::from)
+            .and_then(|fd| KvmVcpu::new(fd, id, self.run_size, self.kick_signal))
+            .map_err(|source| Error::CreateVcpu { id, source })
     }
 
     /// Registers caller-owned RAM at a guest physical address.
@@ -243,6 +250,9 @@ mod tests {
         vcpu.complete_pending_io().unwrap();
         assert_eq!(vcpu.fd.get_regs().unwrap().rip, 0x1006);
         assert_eq!(vcpu.fd.get_kvm_run().immediate_exit, 0);
+        crate::VcpuHandle::kick(&vcpu.handle()).unwrap();
+        assert!(matches!(vcpu.run().unwrap(), crate::VcpuExit::Interrupted));
+        assert_eq!(vcpu.fd.get_regs().unwrap().rip, 0x1006);
         // Stop this user of the backing page before removing its guest mapping.
         drop(vcpu);
         vm.unmap_memory(&ram.region()).unwrap();
