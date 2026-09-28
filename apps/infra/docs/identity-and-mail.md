@@ -123,6 +123,41 @@ API deploy. The API then rejects old unverified `auth0|...` access tokens across
 HTTP, Socket.IO, and the WebSocket proxy. It does not revoke refresh tokens or
 retroactively gate independently validating Commerce/Analytics services.
 
+## Account linking at login
+
+A social login has to reach the same BoxLite account as the password sign-up
+that owns the address (POL-555). The API reads the settings below; leave
+`OIDC_ACCOUNT_LINK_ENABLED` unset and the flow stays off, so no other setting
+here is required.
+
+**No deployed stack can turn this on yet.** The API container environment in
+[`stack/api.ts`](../stack/api.ts) is an explicit allowlist and forwards no
+`OIDC_ACCOUNT_LINK_*` key, and the two secrets have no SST secret entry. That
+plumbing is a later slice of
+[#1725](https://github.com/boxlite-ai/boxlite/issues/1725); until it lands the
+settings are reachable only where the environment is set directly.
+
+| Setting | What it is |
+| --- | --- |
+| `OIDC_ACCOUNT_LINK_ENABLED` | `true` turns the flow on, and every setting below then has to be present at boot |
+| `OIDC_ACCOUNT_LINK_CLIENT_ID`, `..._CLIENT_SECRET` | A confidential Auth0 application, never the dashboard SPA client — exchanging the second authorization code needs a secret a browser must not hold |
+| `OIDC_ACCOUNT_LINK_REDIRECT_SECRET` | Shared with the Post-Login Action, which signs its session token with it. It is the only proof a request reached the link endpoint mid-login from this tenant |
+| `OIDC_ACCOUNT_LINK_DB_CONNECTION` | The database connection the second sign-in is pinned to, so social buttons cannot satisfy it |
+| `OIDC_ACCOUNT_LINK_REDIRECT_URI` | The callback, registered verbatim on that application. Auth0 matches it exactly, so it is configured rather than derived from the stack domain |
+| `OIDC_ACCOUNT_LINK_AUTHORIZE_URL` | The provider's authorize endpoint, taken verbatim |
+
+The authorize endpoint is configured rather than derived from the issuer
+because no issuer determines it. This repository already runs issuers that
+disagree: [`infra-local/api.env`](../../infra-local/api.env) points at Dex
+under `/dex`, and
+[`deployment/environment.test.ts`](../deployment/environment.test.ts) pins an
+Okta issuer at `/oauth2/default`. Point the setting at the name the browser
+can reach, not the in-cluster address the API validates tokens against.
+
+Both this and the callback are sent to the tenant whole and compared there
+character by character, so neither is normalised — a trailing slash you
+registered is kept.
+
 ## Outbound mail
 
 Use the [GCP SMTP procedure](gcp/identity-and-mail.md#application-mail) or

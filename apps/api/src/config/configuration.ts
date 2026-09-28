@@ -40,19 +40,19 @@ export const USAGE_EXPORT_VISIBILITY_TIMEOUT_MS = 60_000
 /**
  * An absolute http(s) URL with no query or fragment, or a hard failure.
  *
- * The caller appends its own path to whatever comes back, so `…/api?x=1` would
- * produce `…/api?x=1/internal/usage-events`, which reaches nothing. Such a
+ * Most callers append their own path to whatever comes back, so `…/api?x=1`
+ * would produce `…/api?x=1/internal/usage-events`, which reaches nothing. Such a
  * value is rejected rather than stripped, because stripping it would deliver
  * somewhere other than the configured destination. Rejecting it is also what
- * keeps the trailing-slash trim below honest: on a raw string that trim would
- * otherwise eat a slash inside a query value.
+ * keeps `requiredHttpUrl`'s trailing-slash trim honest: on a raw string that
+ * trim would otherwise eat a slash inside a query value.
  *
  * The delimiters are looked for in the raw string rather than in `parsed.search`
  * and `parsed.hash`, which are both empty for a bare `?` or `#`. Asking the
  * parsed value would answer "no query" while the delimiter sits in the string
  * this returns, and `…/api?` would go out as `…/api?/internal/usage-events`.
  *
- * Only the trailing slash is normalized. Returning `origin + pathname` instead
+ * The accepted string is returned as given. Returning `origin + pathname`
  * would look equivalent and quietly drop userinfo, drop an explicit port and
  * lowercase the host — and axios builds Basic auth from userinfo and then
  * deletes the Authorization header, so dropping it would change which
@@ -62,7 +62,7 @@ export const USAGE_EXPORT_VISIBILITY_TIMEOUT_MS = 60_000
  * can carry credentials in its userinfo, and a boot log is the wrong place to
  * put them. The variable name is enough to find it.
  */
-function requiredHttpUrl(value: string, name: string): string {
+function checkedHttpUrl(value: string, name: string): string {
   let parsed: URL
   try {
     parsed = new URL(value)
@@ -75,7 +75,12 @@ function requiredHttpUrl(value: string, name: string): string {
   if (value.includes('?') || value.includes('#')) {
     throw new Error(`${name} must not carry a query or fragment`)
   }
-  return value.replace(/\/+$/, '')
+  return value
+}
+
+/** A base URL the API appends paths to, so a trailing slash would double up. */
+function requiredHttpUrl(value: string, name: string): string {
+  return checkedHttpUrl(value, name).replace(/\/+$/, '')
 }
 
 /**
@@ -307,6 +312,70 @@ function oidcManagementApiConfig(env: NodeJS.ProcessEnv = process.env) {
   }
 }
 
+/**
+ * What the login-time account link needs to send a user through a second
+ * sign-in against the database connection (POL-555).
+ *
+ * The shared secret is the only thing that proves a request to the link
+ * endpoint came from this tenant mid-login: the Post-Login Action signs its
+ * session token with it, so a wrong or absent secret must stop the process at
+ * boot rather than turn the endpoint into an open redirect at runtime.
+ *
+ * The client is deliberately not the dashboard SPA client. Exchanging the
+ * second authorization code needs a client secret, which a public browser
+ * client must never hold.
+ *
+ * The callback is configured rather than derived from the stack domain: Auth0
+ * matches `redirect_uri` exactly against the client's registered list, so a
+ * value this process guessed would fail at the tenant, one login at a time,
+ * instead of here.
+ *
+ * The authorize endpoint is configured for the same reason, and because no
+ * issuer determines it. This repository already runs issuers that disagree:
+ * `apps/infra-local/api.env` points at Dex under `/dex`, and
+ * `apps/infra/deployment/environment.test.ts` pins an Okta issuer at
+ * `/oauth2/default` — neither puts `/authorize` where an Auth0 tenant does.
+ * The neighbouring `oidcManagementApiConfig` refuses the same guess whenever
+ * the issuer carries a path.
+ */
+function oidcAccountLinkConfig(env: NodeJS.ProcessEnv = process.env) {
+  const enabled = env.OIDC_ACCOUNT_LINK_ENABLED === 'true'
+  const settings = {
+    enabled,
+    clientId: env.OIDC_ACCOUNT_LINK_CLIENT_ID,
+    clientSecret: env.OIDC_ACCOUNT_LINK_CLIENT_SECRET,
+    redirectSecret: env.OIDC_ACCOUNT_LINK_REDIRECT_SECRET,
+    databaseConnection: env.OIDC_ACCOUNT_LINK_DB_CONNECTION,
+    redirectUri: env.OIDC_ACCOUNT_LINK_REDIRECT_URI,
+    authorizeUrl: env.OIDC_ACCOUNT_LINK_AUTHORIZE_URL,
+  }
+
+  if (!enabled) {
+    return settings
+  }
+
+  const required = (key: string): string => {
+    const value = env[key]?.trim()
+    if (!value) {
+      throw new Error(`${key} is required when OIDC_ACCOUNT_LINK_ENABLED is true`)
+    }
+    return value
+  }
+
+  return {
+    enabled,
+    clientId: required('OIDC_ACCOUNT_LINK_CLIENT_ID'),
+    clientSecret: required('OIDC_ACCOUNT_LINK_CLIENT_SECRET'),
+    redirectSecret: required('OIDC_ACCOUNT_LINK_REDIRECT_SECRET'),
+    databaseConnection: required('OIDC_ACCOUNT_LINK_DB_CONNECTION'),
+    // Not requiredHttpUrl: both are sent to the tenant as whole URLs and
+    // compared there character by character, so normalising a trailing slash
+    // away here would turn a correctly registered value into a rejected one.
+    redirectUri: checkedHttpUrl(required('OIDC_ACCOUNT_LINK_REDIRECT_URI'), 'OIDC_ACCOUNT_LINK_REDIRECT_URI'),
+    authorizeUrl: checkedHttpUrl(required('OIDC_ACCOUNT_LINK_AUTHORIZE_URL'), 'OIDC_ACCOUNT_LINK_AUTHORIZE_URL'),
+  }
+}
+
 // The object-store key namespace migration archives land in by default, inside
 // whichever bucket each runner is configured with.
 const DEFAULT_MIGRATION_ARCHIVE_PREFIX = 'box-migrations/'
@@ -404,6 +473,7 @@ const configuration = {
     endSessionEndpoint: process.env.OIDC_END_SESSION_ENDPOINT,
     postLogoutRedirectAllowlist: process.env.OIDC_POST_LOGOUT_REDIRECT_ALLOWLIST,
     managementApi: oidcManagementApiConfig(),
+    accountLink: oidcAccountLinkConfig(),
   },
   smtp: {
     host: process.env.SMTP_HOST,
