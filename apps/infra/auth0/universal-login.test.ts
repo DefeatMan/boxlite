@@ -3,9 +3,9 @@
 
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import test from 'node:test'
 
@@ -323,8 +323,8 @@ test('the checked-in source binds dev to the reviewed stack, issuer, tenant, and
   assert.deepEqual([...copy.keys()].sort(), ['login', 'login-id', 'signup', 'signup-id'])
   // Identifier First serves login-id/signup-id, so both variants of each screen carry the same copy.
   for (const [prompt, title, description] of [
-    ['login-id', 'Welcome back', 'The cloud platform your agents run on'],
-    ['login', 'Welcome back', 'The cloud platform your agents run on'],
+    ['login-id', 'Start building on BoxLite', '$100 in free credits with your new account.'],
+    ['login', 'Start building on BoxLite', '$100 in free credits with your new account.'],
     ['signup-id', 'Welcome to BoxLite', 'Boxes your agents build in, and ship from.'],
     ['signup', 'Welcome to BoxLite', 'Boxes your agents build in, and ship from.'],
   ] as const) {
@@ -505,4 +505,22 @@ test('the Auth0 adapter treats only an explicit 404 as an absent resource', asyn
     },
   })
   await assert.rejects(() => unauthorized.getDefaultTheme(TARGET), /unauthorized/)
+})
+
+test('the Auth0 adapter closes the CLI stdin, so a write never waits on it', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'boxlite-auth0-stdin-'))
+  const previousPath = process.env.PATH
+  // `auth0 api` reads a piped request body from stdin before it sends; this
+  // stand-in drains stdin the same way, so it answers only once stdin ends.
+  writeFileSync(join(directory, 'auth0'), "#!/bin/sh\ncat >/dev/null\nprintf '{}'\n")
+  chmodSync(join(directory, 'auth0'), 0o755)
+  process.env.PATH = `${directory}${delimiter}${previousPath ?? ''}`
+
+  try {
+    await new Auth0ManagementCli().putPromptText(TARGET, 'login', 'en', PROMPTS[0].text, AbortSignal.timeout(5_000))
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH
+    else process.env.PATH = previousPath
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
