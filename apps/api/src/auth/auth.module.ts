@@ -18,6 +18,7 @@ import { OidcMetadataService } from '../config/oidc-metadata.service'
 import { FailedAuthTrackerService } from './failed-auth-tracker.service'
 import { RegionModule } from '../region/region.module'
 import { LogoutController } from './logout.controller'
+import { AccountLinkController } from './account-link.controller'
 @Module({
   imports: [
     PassportModule.register({
@@ -31,7 +32,7 @@ import { LogoutController } from './logout.controller'
     BoxModule,
     RegionModule,
   ],
-  controllers: [LogoutController],
+  controllers: [LogoutController, AccountLinkController],
   providers: [
     ApiKeyStrategy,
     {

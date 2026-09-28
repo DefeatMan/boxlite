@@ -158,6 +158,20 @@ Both this and the callback are sent to the tenant whole and compared there
 character by character, so neither is normalised — a trailing slash you
 registered is kept.
 
+### `GET /api/auth/link/start`
+
+Where the Post-Login Action sends the browser when it interrupts a social
+login. It verifies the Action's session token against
+`OIDC_ACCOUNT_LINK_REDIRECT_SECRET`, then redirects to the authorize endpoint
+with `prompt=login` and `connection` pinned, so the tenant asks for the
+password of the account that owns the address rather than replaying the
+session cookie the social login just set.
+
+The endpoint answers 404 while `OIDC_ACCOUNT_LINK_ENABLED` is unset, and 400
+for a request whose session token is missing, expired, or signed with anything
+else — the token is the tenant's, not the user's, so the reason goes to the log
+rather than the response.
+
 ## Outbound mail
 
 Use the [GCP SMTP procedure](gcp/identity-and-mail.md#application-mail) or
