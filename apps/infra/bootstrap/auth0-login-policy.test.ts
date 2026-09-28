@@ -111,10 +111,7 @@ test('assertDatabaseConnectionCompatible rejects configurations that cannot safe
     () => assertDatabaseConnectionCompatible({ ...base, options: { customScripts: { login: 'return cb()' } } }, []),
     /custom database/,
   )
-  assert.throws(
-    () => assertDatabaseConnectionCompatible(base, []),
-    /activate Auth0's New Attributes Configuration/,
-  )
+  assert.throws(() => assertDatabaseConnectionCompatible(base, []), /activate Auth0's New Attributes Configuration/)
   assert.throws(
     () =>
       assertDatabaseConnectionCompatible(
@@ -278,7 +275,7 @@ test('hydrateEmailVerificationTemplate wires exact resource ids and leaves no pl
 test('hydrateLoginPolicyAction embeds exact non-secret resource identifiers safely', () => {
   const hydrated = hydrateLoginPolicyAction(
     'const client = __BOXLITE_CLIENT_ID_JSON__; const connection = __BOXLITE_DB_CONNECTION_JSON__; const form = __EMAIL_VERIFICATION_FORM_ID_JSON__;',
-    { clientId: 'spa_"quoted', connectionName: 'boxlite-users', formId: 'ap_verify' },
+    { clientId: 'spa_"quoted', connectionName: 'boxlite-users', formId: 'ap_verify', accountLinkApiOrigin: '' },
   )
 
   assert.match(hydrated, /"spa_\\"quoted"/)
@@ -302,9 +299,45 @@ test('parseAuth0LoginPolicyOptions defaults to preview and requires exact tenant
       connectionName: 'boxlite-users',
       apply: false,
       allowTestEmailProvider: false,
+      accountLink: undefined,
     },
   )
   assert.throws(() => parseAuth0LoginPolicyOptions(['--tenant', 'tenant.us.auth0.com']), /--client-id is required/)
+})
+
+const LINK_SECRET = 'x'.repeat(32)
+const BASE_ARGS = ['--tenant', 'tenant.us.auth0.com', '--client-id', 'spa_123', '--connection', 'boxlite-users']
+const LINK_ARGS = ['--account-link-api-origin', 'https://api.dev.example.com']
+
+test('parseAuth0LoginPolicyOptions reads the account link secret from the environment, never argv', () => {
+  const options = parseAuth0LoginPolicyOptions([...BASE_ARGS, ...LINK_ARGS], { AUTH0_ACCOUNT_LINK_SECRET: LINK_SECRET })
+
+  assert.deepEqual(options.accountLink, { apiOrigin: 'https://api.dev.example.com', secret: LINK_SECRET })
+})
+
+test('parseAuth0LoginPolicyOptions refuses a weakly keyed or path-carrying account link', () => {
+  assert.throws(
+    () => parseAuth0LoginPolicyOptions([...BASE_ARGS, ...LINK_ARGS], { AUTH0_ACCOUNT_LINK_SECRET: 'short' }),
+    /at least 32 characters/,
+  )
+  assert.throws(() => parseAuth0LoginPolicyOptions([...BASE_ARGS, ...LINK_ARGS], {}), /AUTH0_ACCOUNT_LINK_SECRET/)
+  assert.throws(
+    () =>
+      parseAuth0LoginPolicyOptions([...BASE_ARGS, '--account-link-api-origin', 'https://api.dev.example.com/api'], {
+        AUTH0_ACCOUNT_LINK_SECRET: LINK_SECRET,
+      }),
+    /bare origin/,
+  )
+})
+
+test('parseAuth0LoginPolicyOptions allows plain http only toward the local machine', () => {
+  const local = (origin: string) =>
+    parseAuth0LoginPolicyOptions([...BASE_ARGS, '--account-link-api-origin', origin], {
+      AUTH0_ACCOUNT_LINK_SECRET: LINK_SECRET,
+    })
+
+  assert.equal(local('http://localhost:3001').accountLink?.apiOrigin, 'http://localhost:3001')
+  assert.throws(() => local('http://api.dev.example.com'), /https, or http on localhost/)
 })
 
 test('Auth0CliManagementClient sends sensitive bodies over stdin, never process argv', () => {
@@ -641,9 +674,10 @@ test('database connection setup retries Identifier First propagation without add
     assert.equal(connectionPayload?.options.authentication_methods.email_otp, undefined)
     assert.deepEqual(
       calls
-        .filter((call) =>
-          (call.method === 'patch' && call.path === 'prompts') ||
-          (call.method === 'post' && call.path === 'connections'),
+        .filter(
+          (call) =>
+            (call.method === 'patch' && call.path === 'prompts') ||
+            (call.method === 'post' && call.path === 'connections'),
         )
         .map((call) => `${call.method} ${call.path}`),
       ['patch prompts', 'post connections', 'post connections'],
@@ -653,11 +687,19 @@ test('database connection setup retries Identifier First propagation without add
   }
 })
 
-test('Auth0LoginPolicyConfigurator applies, binds last, reads back, and journals without credentials', () => {
+function secretNames(secrets: Array<{ name: string }> | undefined) {
+  return (secrets ?? []).map(({ name }) => ({ name }))
+}
+
+/**
+ * An in-memory tenant answering the Management API calls the configurator
+ * makes, with the email-verification resources already journal-owned.
+ */
+function fakeTenant(options: { propagationFailures?: number } = {}) {
   const journalDirectory = mkdtempSync(join(tmpdir(), 'boxlite-auth0-policy-'))
   const template = JSON.parse(readFileSync(new URL('./auth0/email-verification-form.json', import.meta.url), 'utf8'))
   const calls: Array<{ method: string; path: string; data?: Record<string, any> }> = []
-  let propagationFailures = 1
+  let propagationFailures = options.propagationFailures ?? 1
   const state: Record<string, any> = {
     client: { client_id: 'spa_123', name: 'boxlite-dashboard', app_type: 'spa' },
     connection: {
@@ -773,8 +815,13 @@ test('Auth0LoginPolicyConfigurator applies, binds last, reads back, and journals
         Object.assign(state.connection, options.data)
       }
       if (method === 'patch' && path === 'connections/con_123/clients') {
-        const update = options.data?.find((candidate: any) => candidate.client_id === 'spa_123')
-        state.clientConnectionEnabled = update?.status === true
+        for (const update of (options.data ?? []) as Record<string, any>[]) {
+          if (update.client_id === 'spa_123') state.clientConnectionEnabled = update.status === true
+        }
+      }
+      if (method === 'patch' && path === 'clients/spa_123') {
+        Object.assign(state.client, options.data)
+        return state.client
       }
       if (method === 'patch' && path === 'prompts') state.prompt = { ...state.prompt, ...options.data }
       if (method === 'patch' && path === 'client-grants/cgr_123') Object.assign(state.grant, options.data)
@@ -791,13 +838,18 @@ test('Auth0LoginPolicyConfigurator applies, binds last, reads back, and journals
         state.action = {
           id: 'act_policy',
           ...options.data,
-          secrets: [],
+          secrets: secretNames((options.data as Record<string, any>)?.secrets),
           all_changes_deployed: false,
         }
         return state.action
       }
       if (method === 'patch' && path === 'actions/actions/act_policy') {
-        Object.assign(state.action, options.data)
+        // Like Auth0, a patch without `secrets` leaves the Action's secrets alone.
+        const data = options.data as Record<string, any>
+        Object.assign(state.action, data, {
+          secrets: 'secrets' in data ? secretNames(data.secrets) : state.action.secrets,
+          all_changes_deployed: false,
+        })
         return state.action
       }
       if (method === 'post' && path === 'actions/actions/act_policy/deploy') {
@@ -806,7 +858,7 @@ test('Auth0LoginPolicyConfigurator applies, binds last, reads back, and journals
           code: state.action.code,
           runtime: state.action.runtime,
           deployed: true,
-          secrets: [],
+          secrets: state.action.secrets,
         }
         return {}
       }
@@ -820,6 +872,12 @@ test('Auth0LoginPolicyConfigurator applies, binds last, reads back, and journals
       return {}
     },
   }
+
+  return { journalDirectory, template, calls, state, client }
+}
+
+test('Auth0LoginPolicyConfigurator applies, binds last, reads back, and journals without credentials', () => {
+  const { journalDirectory, template, calls, state, client } = fakeTenant()
 
   try {
     const configurator = new Auth0LoginPolicyConfigurator(
@@ -843,12 +901,8 @@ test('Auth0LoginPolicyConfigurator applies, binds last, reads back, and journals
       (call) => call.path === 'actions/triggers/post-login/bindings' && call.method === 'patch',
     )
     const promptCall = calls.findIndex((call) => call.path === 'prompts' && call.method === 'patch')
-    const connectionCall = calls.findIndex(
-      (call) => call.path === 'connections/con_123' && call.method === 'patch',
-    )
-    const grantCall = calls.findIndex(
-      (call) => call.path === 'client-grants/cgr_123' && call.method === 'patch',
-    )
+    const connectionCall = calls.findIndex((call) => call.path === 'connections/con_123' && call.method === 'patch')
+    const grantCall = calls.findIndex((call) => call.path === 'client-grants/cgr_123' && call.method === 'patch')
     const connectionBindingCall = calls.find(
       (call) => call.path === 'connections/con_123/clients' && call.method === 'patch',
     )
@@ -878,11 +932,9 @@ test('Auth0LoginPolicyConfigurator applies, binds last, reads back, and journals
 
     const reapplyStart = calls.length
     const reapplied = configurator.apply()
-    const reapplyPrerequisiteWrites = calls.slice(reapplyStart).filter(
-      (call) =>
-        call.method === 'patch' &&
-        (call.path === 'prompts' || call.path === 'connections/con_123'),
-    )
+    const reapplyPrerequisiteWrites = calls
+      .slice(reapplyStart)
+      .filter((call) => call.method === 'patch' && (call.path === 'prompts' || call.path === 'connections/con_123'))
 
     assert.equal(reapplied.mode, 'applied')
     assert.deepEqual(reapplyPrerequisiteWrites, [])
@@ -906,6 +958,7 @@ function loadAction(): { onExecutePostLogin: ActionHandler; onContinuePostLogin:
     clientId: 'spa_123',
     connectionName: 'boxlite-users',
     formId: 'ap_verify',
+    accountLinkApiOrigin: '',
   })
   const exports: Record<string, ActionHandler> = {}
   runInNewContext(source, { exports })
@@ -1007,4 +1060,137 @@ test('login policy continuation trusts only the exact verification form', async 
   assert.equal(success.claims.email_verified, true)
   assert.match(wrongForm.denied[0], /Email verification failed/)
   assert.deepEqual(wrongForm.claims, {})
+})
+
+const ACCOUNT_LINK = { apiOrigin: 'https://api.dev.example.com', secret: 'y'.repeat(32) }
+const POLICY_SOURCE = readFileSync(new URL('./auth0/login-policy.js', import.meta.url), 'utf8')
+
+function linkConfigurator(tenant: ReturnType<typeof fakeTenant>, accountLink = ACCOUNT_LINK) {
+  return new Auth0LoginPolicyConfigurator(
+    {
+      tenant: 'tenant.us.auth0.com',
+      clientId: 'spa_123',
+      connectionName: 'boxlite-users',
+      apply: true,
+      allowTestEmailProvider: false,
+      accountLink,
+    },
+    tenant.client,
+    {
+      actionCode: POLICY_SOURCE,
+      emailVerificationTemplate: tenant.template,
+      journalDirectory: tenant.journalDirectory,
+    },
+  )
+}
+
+/** A deployed Action this tool wrote for spa_123 from an older login-policy.js. */
+function earlierManagedAction(): Record<string, any> {
+  const code = `${POLICY_SOURCE.split('\n').slice(0, 5).join('\n')}\nconst BOXLITE_CLIENT_ID = "spa_123"\n// older body\n`
+  return {
+    id: 'act_policy',
+    name: 'boxlite-login-policy',
+    supported_triggers: [{ id: 'post-login', version: 'v3' }],
+    runtime: 'node22',
+    code,
+    secrets: [],
+    all_changes_deployed: true,
+    deployed_version: { code, runtime: 'node22', deployed: true, secrets: [] },
+  }
+}
+
+test('account link apply registers the API callback on the SPA client and keys the Action, journaling no secret', () => {
+  const tenant = fakeTenant()
+  tenant.state.client.callbacks = ['https://dev.example.com']
+  try {
+    const result = linkConfigurator(tenant).apply()
+
+    assert.equal(result.mode, 'applied')
+    assert.deepEqual(tenant.state.client.callbacks, [
+      'https://dev.example.com',
+      'https://api.dev.example.com/api/auth/link/callback',
+    ])
+    assert.deepEqual(tenant.state.action.secrets, [{ name: 'ACCOUNT_LINK_SECRET' }])
+    assert.match(tenant.state.action.code, /const ACCOUNT_LINK_API_ORIGIN = "https:\/\/api\.dev\.example\.com"/)
+    const createAction = tenant.calls.find((call) => call.method === 'post' && call.path === 'actions/actions')
+    assert.deepEqual(createAction?.data?.secrets, [{ name: 'ACCOUNT_LINK_SECRET', value: ACCOUNT_LINK.secret }])
+    assert.equal(readFileSync(result.journal as string, 'utf8').includes(ACCOUNT_LINK.secret), false)
+
+    Auth0LoginPolicyConfigurator.rollback(result.journal as string, () => tenant.client)
+
+    assert.deepEqual(tenant.state.client.callbacks, ['https://dev.example.com'])
+  } finally {
+    rmSync(tenant.journalDirectory, { recursive: true, force: true })
+  }
+})
+
+test('account link apply upgrades an earlier managed Action, and rollback redeploys the code it replaced', () => {
+  const tenant = fakeTenant()
+  const earlier = earlierManagedAction()
+  tenant.state.action = structuredClone(earlier)
+  tenant.state.bindings = [{ action: { id: 'act_policy' }, display_name: 'boxlite-login-policy' }]
+  try {
+    const result = linkConfigurator(tenant).apply()
+
+    assert.equal(result.mode, 'applied')
+    assert.equal(tenant.state.action.deployed_version.code.includes('ACCOUNT_LINK_API_ORIGIN'), true)
+    assert.deepEqual(tenant.state.action.deployed_version.secrets, [{ name: 'ACCOUNT_LINK_SECRET' }])
+
+    Auth0LoginPolicyConfigurator.rollback(result.journal as string, () => tenant.client)
+
+    // The key the apply added stays: the earlier code never reads it.
+    assert.equal(tenant.state.action.deployed_version.code, earlier.code)
+    assert.deepEqual(tenant.state.action.secrets, [{ name: 'ACCOUNT_LINK_SECRET' }])
+  } finally {
+    rmSync(tenant.journalDirectory, { recursive: true, force: true })
+  }
+})
+
+test('account link apply still refuses an Action someone edited outside this tool', () => {
+  const tenant = fakeTenant()
+  const edited = earlierManagedAction()
+  edited.code = edited.deployed_version.code =
+    '// pasted in the dashboard\nexports.onExecutePostLogin = async () => {}\n'
+  tenant.state.action = edited
+  try {
+    assert.throws(() => linkConfigurator(tenant).apply(), /unmanaged contents/)
+    assert.equal(tenant.state.action.code, edited.code)
+  } finally {
+    rmSync(tenant.journalDirectory, { recursive: true, force: true })
+  }
+})
+
+test('account link apply rewrites the Action key on every run, so a rotated secret reaches the tenant', () => {
+  const tenant = fakeTenant()
+  try {
+    linkConfigurator(tenant).apply()
+    const rotated = { ...ACCOUNT_LINK, secret: 'z'.repeat(32) }
+    tenant.calls.length = 0
+
+    linkConfigurator(tenant, rotated).apply()
+
+    const patch = tenant.calls.find((call) => call.method === 'patch' && call.path === 'actions/actions/act_policy')
+    assert.deepEqual(patch?.data?.secrets, [{ name: 'ACCOUNT_LINK_SECRET', value: rotated.secret }])
+  } finally {
+    rmSync(tenant.journalDirectory, { recursive: true, force: true })
+  }
+})
+
+test('account link rollback restores the replaced code but leaves the key it cannot read back', () => {
+  const tenant = fakeTenant()
+  const earlier = earlierManagedAction()
+  earlier.secrets = [{ name: 'ACCOUNT_LINK_SECRET' }]
+  earlier.deployed_version.secrets = [{ name: 'ACCOUNT_LINK_SECRET' }]
+  tenant.state.action = structuredClone(earlier)
+  tenant.state.bindings = [{ action: { id: 'act_policy' }, display_name: 'boxlite-login-policy' }]
+  try {
+    const result = linkConfigurator(tenant).apply()
+
+    Auth0LoginPolicyConfigurator.rollback(result.journal as string, () => tenant.client)
+
+    assert.equal(tenant.state.action.deployed_version.code, earlier.code)
+    assert.deepEqual(tenant.state.action.secrets, [{ name: 'ACCOUNT_LINK_SECRET' }])
+  } finally {
+    rmSync(tenant.journalDirectory, { recursive: true, force: true })
+  }
 })

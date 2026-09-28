@@ -14,6 +14,8 @@ const BROWSER_PROTOCOLS = new Set(['oidc-basic-profile', 'oidc-hybrid-profile', 
 const BOXLITE_CLIENT_ID = __BOXLITE_CLIENT_ID_JSON__
 const BOXLITE_DB_CONNECTION = __BOXLITE_DB_CONNECTION_JSON__
 const EMAIL_VERIFICATION_FORM_ID = __EMAIL_VERIFICATION_FORM_ID_JSON__
+// Where the BoxLite API is served. Empty turns the account link off.
+const ACCOUNT_LINK_API_ORIGIN = __ACCOUNT_LINK_API_ORIGIN_JSON__
 
 function isManagedDatabaseLogin(event) {
   return (
