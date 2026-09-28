@@ -56,6 +56,7 @@ describe('OIDC account link configuration', () => {
       enabled: true,
       redirectSecret: SECRET,
       clientId: 'dashboard-spa',
+      issuer: 'https://auth.dev.boxlite.ai/',
       authorizeUrl: 'https://auth.dev.boxlite.ai/authorize',
       tokenUrl: 'https://auth.dev.boxlite.ai/oauth/token',
       continueUrl: 'https://auth.dev.boxlite.ai/continue',

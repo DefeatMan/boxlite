@@ -8,7 +8,7 @@ import { ApiExcludeController } from '@nestjs/swagger'
 import { Response } from 'express'
 import { AnonymousRateLimitGuard } from '../common/guards/anonymous-rate-limit.guard'
 import { TypedConfigService } from '../config/typed-config.service'
-import { AccountLinkService, AccountLinkSession } from './account-link.service'
+import { AccountLinkService, AccountLinkSession, AccountLinkState } from './account-link.service'
 
 /**
  * The second `/authorize` the user is sent through.
@@ -103,6 +103,41 @@ export class AccountLinkController {
         signUp: !(await this.accountLink.hasDatabaseAccount(session)),
       }),
     )
+  }
+
+  /**
+   * Where the tenant sends the browser once the second sign-in ends.
+   *
+   * Whatever happened there, the browser goes back to the Auth0 transaction,
+   * because only the Action can finish or refuse it. The single exception is a
+   * state this service did not mint: then there is no transaction to return to.
+   */
+  @Get('callback')
+  @UseGuards(AnonymousRateLimitGuard)
+  async callback(
+    @Query('state') stateToken: string | undefined,
+    @Query('code') code: string | undefined,
+    @Query('error') error: string | undefined,
+    @Res() res: Response,
+  ): Promise<void> {
+    this.requireEnabled()
+
+    let state: AccountLinkState
+    try {
+      state = await this.accountLink.readState(stateToken ?? '')
+    } catch (reason) {
+      this.logger.warn(`Rejected account link callback state: ${errorMessage(reason)}`)
+      throw new BadRequestException('Invalid account link state')
+    }
+
+    const result =
+      error || !code
+        ? // The tenant reports a cancelled or refused sign-in as `error`; the
+          // user already saw why on its page.
+          ({ outcome: 'cancelled' } as const)
+        : await this.accountLink.complete(state, code)
+
+    res.redirect(302, await this.accountLink.continueUrl(state, result))
   }
 
   private requireEnabled(): void {

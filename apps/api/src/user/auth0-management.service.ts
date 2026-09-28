@@ -61,6 +61,16 @@ export class Auth0ManagementService {
     return `${this.configService.getOrThrow('oidc.managementApi.baseUrl')}/${path}`
   }
 
+  /** One tenant user as Auth0 holds it now, not as a token issued earlier saw it. */
+  async getUser(userId: string): Promise<Auth0User> {
+    const token = await this.accessToken()
+    const response = await axios.get<Auth0User>(this.url('users', userId), {
+      headers: { Authorization: `Bearer ${token}` },
+      maxRedirects: 0,
+    })
+    return response.data
+  }
+
   /**
    * Every tenant user holding this address, across connections.
    *
@@ -75,5 +85,28 @@ export class Auth0ManagementService {
       maxRedirects: 0,
     })
     return response.data
+  }
+
+  /**
+   * Fold `secondaryUserId`'s identity into `primaryUserId`.
+   *
+   * After this call Auth0 keeps one user: logging in through the secondary
+   * identity reaches the primary's record, and the secondary user id stops
+   * existing at the tenant.
+   */
+  async linkIdentity(primaryUserId: string, secondaryUserId: string): Promise<void> {
+    const separator = secondaryUserId.indexOf('|')
+    if (separator <= 0 || separator === secondaryUserId.length - 1) {
+      throw new Error(`not an Auth0 user id: ${secondaryUserId}`)
+    }
+    const token = await this.accessToken()
+    await axios.post(
+      this.url('users', primaryUserId, 'identities'),
+      {
+        provider: secondaryUserId.slice(0, separator),
+        user_id: secondaryUserId.slice(separator + 1),
+      },
+      { headers: { Authorization: `Bearer ${token}` }, maxRedirects: 0 },
+    )
   }
 }

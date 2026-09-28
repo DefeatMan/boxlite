@@ -333,6 +333,7 @@ function oidcAccountLinkConfig(env: NodeJS.ProcessEnv = process.env) {
     enabled: false,
     redirectSecret: undefined as string | undefined,
     clientId: undefined as string | undefined,
+    issuer: undefined as string | undefined,
     authorizeUrl: undefined as string | undefined,
     tokenUrl: undefined as string | undefined,
     continueUrl: undefined as string | undefined,
@@ -368,6 +369,8 @@ function oidcAccountLinkConfig(env: NodeJS.ProcessEnv = process.env) {
     enabled: true,
     redirectSecret,
     clientId,
+    // Auth0 names itself with the trailing slash in the `iss` of every token.
+    issuer: `${issuer.origin}/`,
     authorizeUrl: `${issuer.origin}/authorize`,
     tokenUrl: `${issuer.origin}/oauth/token`,
     continueUrl: `${issuer.origin}/continue`,

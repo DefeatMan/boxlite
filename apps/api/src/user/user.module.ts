@@ -10,11 +10,12 @@ import { UserService } from './user.service'
 import { TypeOrmModule } from '@nestjs/typeorm'
 import { User } from './user.entity'
 import { Auth0ManagementService } from './auth0-management.service'
+import { LinkedIdentityService } from './linked-identity.service'
 
 @Module({
   imports: [TypeOrmModule.forFeature([User])],
   controllers: [UserController],
-  providers: [UserService, Auth0ManagementService],
-  exports: [UserService, Auth0ManagementService],
+  providers: [UserService, Auth0ManagementService, LinkedIdentityService],
+  exports: [UserService, Auth0ManagementService, LinkedIdentityService],
 })
 export class UserModule {}
