@@ -953,12 +953,18 @@ test('Auth0LoginPolicyConfigurator applies, binds last, reads back, and journals
 
 type ActionHandler = (event: any, api: any) => Promise<void>
 
-function loadAction(): { onExecutePostLogin: ActionHandler; onContinuePostLogin: ActionHandler } {
+function loadAction(
+  accountLinkApiOrigin = '',
+  formId = 'ap_verify',
+): {
+  onExecutePostLogin: ActionHandler
+  onContinuePostLogin: ActionHandler
+} {
   const source = hydrateLoginPolicyAction(readFileSync(new URL('./auth0/login-policy.js', import.meta.url), 'utf8'), {
     clientId: 'spa_123',
     connectionName: 'boxlite-users',
-    formId: 'ap_verify',
-    accountLinkApiOrigin: '',
+    formId,
+    accountLinkApiOrigin,
   })
   const exports: Record<string, ActionHandler> = {}
   runInNewContext(source, { exports })
@@ -981,20 +987,58 @@ function managedEvent(overrides: Record<string, any> = {}) {
   }
 }
 
-function actionApi() {
+// The Action runs in its own vm context, so its object literals carry that
+// context's prototypes; a JSON round-trip compares them by value alone.
+const plain = <T>(value: T): T => JSON.parse(JSON.stringify(value))
+
+function actionApi(linkOutcome: (() => Record<string, unknown>) | null = null) {
   const claims: Record<string, unknown> = {}
   const rendered: string[] = []
   const denied: string[] = []
+  const redirects: { url: string; query: Record<string, string> }[] = []
+  const encoded: Record<string, any>[] = []
+  const validated: Record<string, any>[] = []
+  const primaryUsers: string[] = []
   return {
     claims,
     rendered,
     denied,
+    redirects,
+    encoded,
+    validated,
+    primaryUsers,
     api: {
       access: { deny: (reason: string) => denied.push(reason) },
       accessToken: { setCustomClaim: (name: string, value: unknown) => (claims[name] = value) },
       prompt: { render: (id: string) => rendered.push(id) },
+      redirect: {
+        encodeToken: (options: Record<string, any>) => {
+          encoded.push(plain(options))
+          return 'encoded-session-token'
+        },
+        sendUserTo: (url: string, options: { query: Record<string, string> }) =>
+          redirects.push(plain({ url, query: options.query })),
+        validateToken: (options: Record<string, any>) => {
+          validated.push(plain(options))
+          if (!linkOutcome) throw new Error('invalid token')
+          return linkOutcome()
+        },
+      },
+      authentication: { setPrimaryUser: (userId: string) => primaryUsers.push(userId) },
     },
   }
+}
+
+const API_ORIGIN = 'https://api.dev.example.com'
+const START_URL = `${API_ORIGIN}/api/auth/link/start`
+
+function socialEvent(overrides: Record<string, any> = {}) {
+  return managedEvent({
+    connection: { name: 'google-oauth2', strategy: 'google-oauth2' },
+    secrets: { ACCOUNT_LINK_SECRET: 'link-secret' },
+    user: { user_id: 'google-oauth2|103', email: 'person@example.com', email_verified: true, name: 'Person' },
+    ...overrides,
+  })
 }
 
 test('login policy copies claims for verified managed database users', async () => {
@@ -1060,6 +1104,155 @@ test('login policy continuation trusts only the exact verification form', async 
   assert.equal(success.claims.email_verified, true)
   assert.match(wrongForm.denied[0], /Email verification failed/)
   assert.deepEqual(wrongForm.claims, {})
+})
+
+test('account link sends an unlinked, verified social login to the BoxLite API before any token', async () => {
+  const { onExecutePostLogin } = loadAction(API_ORIGIN)
+  const capture = actionApi()
+
+  await onExecutePostLogin(socialEvent(), capture.api)
+
+  assert.deepEqual(capture.redirects, [{ url: START_URL, query: { session_token: 'encoded-session-token' } }])
+  assert.equal(capture.encoded[0].secret, 'link-secret')
+  // The API takes the connection and its own callback from here, so both are
+  // the values this configurator deployed rather than settings of their own.
+  assert.deepEqual(capture.encoded[0].payload, {
+    email: 'person@example.com',
+    connection: 'boxlite-users',
+    callback: `${API_ORIGIN}/api/auth/link/callback`,
+  })
+  assert.deepEqual(capture.claims, {})
+  assert.deepEqual(capture.denied, [])
+})
+
+test('account link proves an address the provider did not verify before linking it', async () => {
+  const { onExecutePostLogin, onContinuePostLogin } = loadAction(API_ORIGIN)
+  const github = { connection: { name: 'github', strategy: 'github' } }
+  const unverified = { user: { user_id: 'github|7', email: 'person@example.com', email_verified: false } }
+  const first = actionApi()
+  const afterForm = actionApi()
+
+  await onExecutePostLogin(socialEvent({ ...github, ...unverified }), first.api)
+  await onContinuePostLogin(
+    socialEvent({ ...github, ...unverified, prompt: { id: 'ap_verify', fields: {} } }),
+    afterForm.api,
+  )
+
+  assert.deepEqual(first.rendered, ['ap_verify'])
+  assert.deepEqual(first.redirects, [])
+  assert.deepEqual(afterForm.redirects, [{ url: START_URL, query: { session_token: 'encoded-session-token' } }])
+})
+
+test('account link makes the password account the token subject once the API reports a link', async () => {
+  const { onContinuePostLogin } = loadAction(API_ORIGIN)
+  const capture = actionApi(() => ({ outcome: 'linked', primary_user_id: 'auth0|primary' }))
+
+  await onContinuePostLogin(socialEvent({ request: { query: { link_token: 'signed' } } }), capture.api)
+
+  assert.deepEqual(capture.validated, [{ secret: 'link-secret', tokenParameterName: 'link_token' }])
+  assert.deepEqual(capture.primaryUsers, ['auth0|primary'])
+  assert.equal(capture.claims.email_verified, true)
+  assert.deepEqual(capture.denied, [])
+})
+
+for (const outcome of ['mismatch', 'cancelled', 'failed']) {
+  test(`account link refuses the login when the API reports ${outcome}`, async () => {
+    const { onContinuePostLogin } = loadAction(API_ORIGIN)
+    const capture = actionApi(() => ({ outcome }))
+
+    await onContinuePostLogin(socialEvent({ request: { query: { link_token: 'signed' } } }), capture.api)
+
+    assert.deepEqual(capture.primaryUsers, [])
+    assert.equal(capture.denied.length, 1)
+    assert.deepEqual(capture.claims, {})
+  })
+}
+
+test('account link refuses a continuation whose token does not verify', async () => {
+  const { onContinuePostLogin } = loadAction(API_ORIGIN)
+  const capture = actionApi(null)
+
+  await onContinuePostLogin(socialEvent({ request: { query: { link_token: 'forged' } } }), capture.api)
+
+  assert.deepEqual(capture.primaryUsers, [])
+  assert.match(capture.denied[0], /could not be verified/)
+})
+
+test('account link leaves a social login that already reaches a password account alone', async () => {
+  const { onExecutePostLogin } = loadAction(API_ORIGIN)
+  const capture = actionApi()
+
+  await onExecutePostLogin(
+    socialEvent({ user: { user_id: 'auth0|primary', email: 'person@example.com', email_verified: true } }),
+    capture.api,
+  )
+
+  assert.deepEqual(capture.redirects, [])
+  assert.equal(capture.claims.email_verified, true)
+})
+
+test('account link refuses an unlinked social login it cannot redirect', async () => {
+  const { onExecutePostLogin } = loadAction(API_ORIGIN)
+  const capture = actionApi()
+
+  await onExecutePostLogin(socialEvent({ transaction: { protocol: 'oauth2-refresh-token' } }), capture.api)
+
+  assert.deepEqual(capture.redirects, [])
+  assert.match(capture.denied[0], /Sign in through a browser/)
+})
+
+test('account link lets the BoxLite API’s second sign-in through: it is already the password account', async () => {
+  // The API runs it through the dashboard's own client, pinned to the database
+  // connection, so it arrives as the auth0| user the link is about to target.
+  const { onExecutePostLogin } = loadAction(API_ORIGIN)
+  const capture = actionApi()
+
+  await onExecutePostLogin(
+    managedEvent({ user: { user_id: 'auth0|primary', email: 'person@example.com', email_verified: true } }),
+    capture.api,
+  )
+
+  assert.deepEqual(capture.redirects, [])
+  assert.deepEqual(capture.denied, [])
+  assert.equal(capture.claims.email_verified, true)
+})
+
+test('account link refuses a social login that carries no email address to link', async () => {
+  const { onExecutePostLogin } = loadAction(API_ORIGIN)
+  const capture = actionApi()
+
+  await onExecutePostLogin(
+    socialEvent({ user: { user_id: 'github|7', email_verified: false, name: 'Person' } }),
+    capture.api,
+  )
+
+  assert.deepEqual(capture.redirects, [])
+  assert.match(capture.denied[0], /no email address/)
+})
+
+test('account link refuses an unverified address when no email Form is configured to prove it', async () => {
+  const { onExecutePostLogin } = loadAction(API_ORIGIN, '')
+  const capture = actionApi()
+
+  await onExecutePostLogin(
+    socialEvent({ user: { user_id: 'github|7', email: 'person@example.com', email_verified: false } }),
+    capture.api,
+  )
+
+  assert.deepEqual(capture.rendered, [])
+  assert.deepEqual(capture.redirects, [])
+  assert.match(capture.denied[0], /Email verification is unavailable/)
+})
+
+test('account link refuses a continuation that is neither the API’s answer nor the email Form', async () => {
+  const { onContinuePostLogin } = loadAction(API_ORIGIN)
+  const capture = actionApi()
+
+  await onContinuePostLogin(socialEvent({ request: { query: {} }, prompt: { id: 'some-other-form' } }), capture.api)
+
+  assert.deepEqual(capture.redirects, [])
+  assert.deepEqual(capture.primaryUsers, [])
+  assert.match(capture.denied[0], /Account linking failed/)
 })
 
 const ACCOUNT_LINK = { apiOrigin: 'https://api.dev.example.com', secret: 'y'.repeat(32) }
