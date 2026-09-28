@@ -141,7 +141,9 @@ npm run auth0:universal-login -- apply --stage dev
 
 The command verifies live stack identity, media types and public CORS before writes. Its target
 catalog is separate from the mstage declaration; update/review the intended tenant and origins before
-using it for a new stage. It manages theme, tenant image and prompt text; widget geometry remains
+using it for a new stage. Each target names its `apiOrigin`, where the identity check reads
+`/api/config`: prod serves the API at `api.boxlite.ai`, not under its dashboard host, so the origin
+cannot be derived from `stackOrigin`. It manages theme, tenant image and prompt text; widget geometry remains
 Auth0-managed. [ASSETS.md](../auth0/branding/ASSETS.md) records hashes, licenses and update steps.
 
 Prompt text lives in `auth0/branding/prompts/<language>/<prompt>.json`, one Auth0 prompt per file;
