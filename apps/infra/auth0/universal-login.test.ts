@@ -27,6 +27,7 @@ import {
 const TARGET = {
   stage: 'dev',
   stackOrigin: 'https://dev.example.com',
+  apiOrigin: 'https://api.dev.example.com',
   publicOidcIssuer: 'https://auth.dev.example.com/',
   auth0TenantDomain: 'tenant.us.auth0.com',
 }
@@ -273,6 +274,7 @@ test('the file source discovers one complete prompt document per language and pr
       JSON.stringify({
         dev: {
           stackOrigin: TARGET.stackOrigin,
+          apiOrigin: TARGET.apiOrigin,
           publicOidcIssuer: TARGET.publicOidcIssuer,
           auth0TenantDomain: TARGET.auth0TenantDomain,
         },
@@ -312,6 +314,7 @@ test('the checked-in source binds dev to the reviewed stack, issuer, tenant, and
   assert.deepEqual(source.target, {
     stage: 'dev',
     stackOrigin: 'https://dev.boxlite.ai',
+    apiOrigin: 'https://api.dev.boxlite.ai',
     publicOidcIssuer: 'https://auth.dev.boxlite.ai/',
     auth0TenantDomain: 'dev-j60pjpmu6neaeaga.us.auth0.com',
   })
@@ -333,6 +336,20 @@ test('the checked-in source binds dev to the reviewed stack, issuer, tenant, and
   assert.equal(source.tenant.picture_url, 'https://dev.boxlite.ai/auth0/boxlite-black-12c2c991.png')
   assert.equal('_comment' in source.theme, false)
   assert.equal('_comment' in source.tenant, false)
+})
+
+test('the checked-in prod target checks stack identity on the prod API host', async () => {
+  const { target } = await new FileBrandingSource().load('prod')
+  const calls: string[] = []
+  const verifier = new HttpBrandingVerifier({
+    fetch: async (input) => {
+      calls.push(String(input))
+      return Response.json({ dashboardUrl: target.stackOrigin, oidc: { issuer: target.publicOidcIssuer } })
+    },
+  })
+
+  assert.deepEqual(await verifier.verify(target, []), ['stack identity', 'OIDC issuer'])
+  assert.deepEqual(calls, ['https://api.boxlite.ai/api/config'])
 })
 
 test('the dashboard ships only the documented content-addressed Auth0 assets', () => {
