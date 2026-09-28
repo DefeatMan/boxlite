@@ -15,6 +15,6 @@ import { Auth0ManagementService } from './auth0-management.service'
   imports: [TypeOrmModule.forFeature([User])],
   controllers: [UserController],
   providers: [UserService, Auth0ManagementService],
-  exports: [UserService],
+  exports: [UserService, Auth0ManagementService],
 })
 export class UserModule {}
