@@ -37,10 +37,15 @@ gh release create "$TAG" \
   --generate-notes
 ```
 
-Pushing the tag alone does not start the Runtime, SDK or application image release builds; the
-GitHub Release's `published` event does. Once the Release is published, `Publish Release Images`
-dispatches `mbuild-release` from `main`, which publishes the application images for this tag to
-`dev`.
+Pushing the tag alone starts no release build; publishing the Release does:
+
+- Its `published` event starts `Build Runtime`, `Build C SDK`, `Build Node.js`, `Build Wheels` and
+  `Publish Release Images`.
+- A successful `Build C SDK` run for the Release then starts `Build Go SDK` and
+  `Build Runner Binary`, which attaches the Runner files below.
+
+`Publish Release Images` dispatches `mbuild-release` from `main`, which publishes the application
+images for this tag to `dev`.
 
 Wait for the release workflows to finish, and check that the Release has at least these assets:
 
@@ -130,8 +135,8 @@ commit, image tags and deployment results in the workflow summary match this rel
 - **No GitHub Release**: only the tag was pushed. Publish a Release with the same name, then retry.
 - **No mbuild-release run appeared**: check `Publish Release Images` first. Fix that run and
   retry, or dispatch `mbuild-release` from `main` by hand as in step 2.
-- **Missing Runner artifact**: wait for or fix `Build Runner Binary` until both the tarball and its
-  `.sha256` are attached to the Release.
+- **Missing Runner artifact**: `Build Runner Binary` attaches the tarball and its `.sha256`, but
+  only after `Build C SDK` succeeds. Wait for or fix whichever of the two has not succeeded.
 - **Invalid tag, or tag not on main**: use a stable `vX.Y.Z` tag whose commit is on `main`.
 - **Image already published or promoted**: do not move or reuse the release tag. Check the earlier
   workflow runs and the registry state before deciding whether to continue with `mdeploy-all`.
