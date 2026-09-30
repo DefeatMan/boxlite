@@ -120,7 +120,7 @@ export class BoxliteBoxController {
     const createBoxDto = createBoxToCreateBox(dto)
     const maxCreatedBoxes = await this.commerceBoxLimitService.resolveMaxCreatedBoxes(organization.id)
 
-    let box = await this.boxService.create(createBoxDto, organization, { maxCreatedBoxes })
+    let box = await this.boxService.create(createBoxDto, organization, { maxCreatedBoxes, actorKind: 'user' })
     if (box.state !== BoxState.STARTED) {
       box = await this.boxStateWaiter.waitForStarted(box.id, organization.id, 30)
     }
@@ -181,7 +181,7 @@ export class BoxliteBoxController {
     targetIdFromRequest: (req) => req.params.boxId,
   })
   async removeBox(@AuthContext() authContext: OrganizationAuthContext, @Param('boxId') boxId: string) {
-    await this.boxService.destroy(boxId, authContext.organizationId)
+    await this.boxService.destroy(boxId, authContext.organizationId, 'user')
   }
 
   @Post(':boxId/start')
@@ -231,7 +231,7 @@ export class BoxliteBoxController {
     @AuthContext() authContext: OrganizationAuthContext,
     @Param('boxId') boxId: string,
   ): Promise<BoxResponseDto> {
-    const box = await this.boxService.stop(boxId, authContext.organizationId)
+    const box = await this.boxService.stop(boxId, authContext.organizationId, 'user')
     const dto = await this.boxService.toBoxDto(box)
     return boxToBoxResponse(dto)
   }

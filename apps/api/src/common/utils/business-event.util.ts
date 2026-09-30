@@ -6,7 +6,7 @@
 import { Logger } from '@nestjs/common'
 import { getServiceType } from './app-mode'
 
-export type BusinessEventName = 'user.registration' | 'box.create' | 'box.stop' | 'box.delete'
+export type BusinessEventName = 'user.registration' | 'user.login' | 'box.create' | 'box.stop' | 'box.delete'
 
 export type BusinessEventActorKind = 'user' | 'admin' | 'auto_stop' | 'auto_delete' | 'org_suspension' | 'warm_pool'
 
