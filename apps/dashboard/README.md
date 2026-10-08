@@ -90,3 +90,8 @@ and invalidation after successful changes. Page tests cover confirmation and
 failed submissions; API client tests check that removal refusals retain their
 message through the shared interceptor. Keep these boundaries covered when
 changing registry logins, alongside password cleanup on dialog close.
+
+## Every invitee joins as an owner
+
+An organization has no finer roles yet, so inviting asks only for an email
+address: a role picker would offer choices the product does not have.
