@@ -14,8 +14,8 @@ The inventory is implementation-grounded:
   prefix applied in [`main.ts`](./api/src/main.ts).
 - Hosted BoxLite-compatible routes come from the controllers in
   [`boxlite-rest`](./api/src/boxlite-rest/). They are excluded from the product
-  OpenAPI document because their portable contract lives in
-  [`openapi/box.openapi.yaml`](../openapi/box.openapi.yaml).
+  OpenAPI document because their contracts live in [`openapi/box.openapi.yaml`](../openapi/box.openapi.yaml)
+  and, for cloud-only members, [`openapi/tenant.openapi.yaml`](../openapi/tenant.openapi.yaml).
 - The registry proxy's runner credential lookup is an internal service route.
   It is excluded from the Cloud OpenAPI document and generated customer clients;
   the proxy owns its request and response handling.
@@ -506,6 +506,19 @@ whose resolved proxy reference has lost its credential is also rejected before
 it is saved. Once a dependent box commits, deletion returns 409 with its ID.
 The dependency check reads candidate credentials once for the organization and
 registry host, then matches each box in memory using the longest repository prefix.
+
+</details>
+
+<details>
+<summary><b>Members</b> · 2 routes</summary>
+
+Contract: [`openapi/tenant.openapi.yaml`](../openapi/tenant.openapi.yaml), cloud-only and meant for the CLI
+and SDKs, which do not call it yet. Reads need membership; writes need the owner role.
+
+| Method   | Path                                                   | What it does                                                        |
+| -------- | ------------------------------------------------------ | ------------------------------------------------------------------- |
+| `GET`    | `/api/v1[/{prefix}]/members`                           | Lists the organization's members.                                   |
+| `DELETE` | `/api/v1[/{prefix}]/members/{user_id}`                 | Removes a member and revokes their API keys in the organization.    |
 
 </details>
 
