@@ -195,3 +195,8 @@ failed submissions, and API client tests check that removal refusals retain
 their message through the shared interceptor. Panel tests cover the masked
 secret and its cleanup on close, prefix completion, the `?connect=` link,
 duplicates, and refusals named by box.
+
+## Every invitee joins as an owner
+
+An organization has no finer roles yet, so inviting asks only for an email
+address: a role picker would offer choices the product does not have.
