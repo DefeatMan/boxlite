@@ -159,7 +159,14 @@ describe('default organization membership semantics', () => {
 
   it('creates accepted invitation memberships as non-default memberships', async () => {
     const { entityManager } = createEntityManager()
-    const service = new OrganizationUserService({} as never, {} as never, {} as never, {} as never, {} as never)
+    const service = new OrganizationUserService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    )
 
     await expect(
       service.handleOrganizationInvitationAcceptedEvent(
@@ -191,11 +198,15 @@ describe('default organization membership semantics', () => {
         remove: jest.fn(),
       },
     }
+    const dataSource = {
+      transaction: async (work: (em: unknown) => unknown) => work(organizationUserRepository.manager),
+    }
     const service = new OrganizationUserService(
       organizationUserRepository as never,
       {} as never,
       {} as never,
       {} as never,
+      dataSource as never,
       {} as never,
     )
 
