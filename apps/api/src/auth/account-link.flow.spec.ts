@@ -38,16 +38,29 @@ const PASSWORD = 'correct horse'
 
 type Handler = (event: any, api: any) => Promise<void>
 type Call = { url: string; method: string; headers: Record<string, string>; body: any }
-type Account = { user_id: string; email_verified: boolean; identities: Array<Record<string, string>> }
+type Account = {
+  user_id: string
+  email_verified: boolean
+  identities: Array<Record<string, string>>
+  multifactor?: string[]
+}
 
 function identity(userId: string) {
   const [provider, id] = userId.split('|')
   return { provider, user_id: id, connection: provider === 'auth0' ? 'boxlite-users' : provider }
 }
 
-/** An Auth0 user holding the address; `linked` names the sign-ins already linked to it. */
-function account(userId: string, { verified = true, linked = [] as string[] } = {}): Account {
-  return { user_id: userId, email_verified: verified, identities: [userId, ...linked].map(identity) }
+/**
+ * An Auth0 user holding the address; `linked` names the sign-ins already linked to it, and `mfa`
+ * enrols it in a factor, which Auth0 lists in the user's `multifactor`.
+ */
+function account(userId: string, { verified = true, linked = [] as string[], mfa = false } = {}): Account {
+  return {
+    user_id: userId,
+    email_verified: verified,
+    identities: [userId, ...linked].map(identity),
+    ...(mfa ? { multifactor: ['guardian'] } : {}),
+  }
 }
 
 function idToken(claims: Record<string, unknown>) {
@@ -279,6 +292,31 @@ describe('login-time account link, Action and API together', () => {
       )
     })
 
+    it('folds into the password account with no page when Google serves the address', async () => {
+      const { action, calls, adopt } = tenant()
+      const step = transaction()
+
+      await action.onExecutePostLogin(gmail(), step.api)
+
+      expect(step.seen).toEqual({ renders: [], denied: [], primary: [PASSWORD_USER], redirects: [] })
+      expect(adopt.mock.calls).toEqual([[PASSWORD_USER, GOOGLE_USER]])
+      expect(links(calls)).toEqual([{ into: PASSWORD_USER, provider: 'google-oauth2', user_id: '103' }])
+      expect(calls.some((call) => call.body?.grant_type?.endsWith('password-realm'))).toBe(false)
+    })
+
+    it('goes on unlinked, on a Gmail address or not, when the password account has MFA', async () => {
+      for (const login of [gmail, google]) {
+        const { action, calls, adopt } = tenant({ accounts: [account(PASSWORD_USER, { mfa: true })] })
+        const step = transaction()
+
+        await action.onExecutePostLogin(login(), step.api)
+
+        expect(step.seen).toEqual({ renders: [], denied: [], primary: [], redirects: [] })
+        expect(adopt).not.toHaveBeenCalled()
+        expect(links(calls)).toEqual([])
+      }
+    })
+
     it('folds into a GitHub account with no page when Google serves the address', async () => {
       const { action, calls, adopt } = tenant({ accounts: [account(GITHUB_USER)] })
       const step = transaction()
@@ -318,8 +356,9 @@ describe('login-time account link, Action and API together', () => {
       const { action, calls, adopt } = tenant({ accounts: [account(PASSWORD_USER), account(GITHUB_USER)] })
       const step = transaction()
 
-      await action.onContinuePostLogin(gmail({ prompt: { id: 'ap_link', fields: { password: PASSWORD } } }), step.api)
+      await action.onExecutePostLogin(gmail(), step.api)
 
+      expect(step.seen.renders).toEqual([])
       expect(adopt.mock.calls).toEqual([
         [PASSWORD_USER, GOOGLE_USER],
         [PASSWORD_USER, GITHUB_USER],
