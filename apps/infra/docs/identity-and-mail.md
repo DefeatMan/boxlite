@@ -205,8 +205,9 @@ harmless.
 The Action depends on three things outside its code:
 
 - **The link Form**: a Password field with the id `password`, which the Action
-  rather than the Form requires. The Action renders it with the vars `email`,
-  `lead` and `error`.
+  rather than the Form requires, defined in
+  `bootstrap/auth0/account-link-form.json`. The Action renders it with the vars
+  `email`, `lead` and `error`.
 - **The link client**: a confidential client allowed the password-realm grant,
   with Trust Token Endpoint IP Header on so Auth0 honours
   `auth0-forwarded-for`, and granted `read:users` (the lookup) and
@@ -240,8 +241,14 @@ printf %s "$AUTH0_ACCOUNT_LINK_SECRET" |
   npm run mstage env set -- OIDC_ACCOUNT_LINK_SECRET --stage <stage>
 ```
 
-The link Form is not provisioned yet, so its id stays empty and the link is
-off.
+The same apply creates the link Form as `BoxLite account link`, journals it
+so `--rollback` deletes it, and refuses a same-named Form edited outside this
+tool. With the origin, the Form's id and the secrets in the Action, the link
+is on. An apply without `--account-link-api-origin` refuses an Action that
+runs the link rather than leaving every later login unlinked; pass
+`--disable-account-link` to rewrite its code with the link off. Its secrets,
+the link client and the Form stay in place, and a later apply with the origin
+turns the link back on.
 
 ### What the link moves
 

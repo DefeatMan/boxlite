@@ -588,4 +588,18 @@ describe('login-time account link, Action and API together', () => {
       expect(links(calls)).toEqual([])
     })
   })
+
+  describe('the link page', () => {
+    it('renders every var the link Form reads', async () => {
+      const { action } = tenant()
+      const step = transaction()
+      const form = readFileSync(join(__dirname, '../../../infra/bootstrap/auth0/account-link-form.json'), 'utf8')
+
+      await action.onExecutePostLogin(google(), step.api)
+
+      const read = [...form.matchAll(/\{\{vars\.(\w+)\}\}/g)].map((match) => match[1])
+      expect(read).toEqual(expect.arrayContaining(['email', 'lead']))
+      expect(Object.keys(step.seen.renders[0].vars)).toEqual(expect.arrayContaining(read))
+    })
+  })
 })
