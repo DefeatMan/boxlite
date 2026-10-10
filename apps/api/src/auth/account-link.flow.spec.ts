@@ -254,7 +254,7 @@ describe('login-time account link, Action and API together', () => {
       const first = transaction()
       await action.onExecutePostLogin(google(), first.api)
       expect(first.seen.renders).toEqual([
-        { id: 'ap_link', vars: expect.objectContaining({ lead: expect.stringMatching(/Enter its password/) }) },
+        { id: 'ap_link', vars: expect.objectContaining({ title: 'Link your Google sign-in', mode: 'password' }) },
       ])
 
       const second = transaction()
@@ -309,7 +309,7 @@ describe('login-time account link, Action and API together', () => {
       await action.onExecutePostLogin(google(), step.api)
 
       expect(step.seen.renders).toEqual([
-        { id: 'ap_link', vars: expect.objectContaining({ lead: expect.stringMatching(/a code/) }) },
+        { id: 'ap_link', vars: expect.objectContaining({ mode: 'code', lead: expect.stringMatching(/a code/) }) },
       ])
       expect(adopt).not.toHaveBeenCalled()
     })
@@ -346,7 +346,7 @@ describe('login-time account link, Action and API together', () => {
       const page = transaction()
       await action.onExecutePostLogin(event, page.api)
       expect(page.seen.renders).toEqual([
-        { id: 'ap_link', vars: expect.objectContaining({ lead: expect.stringMatching(/a code/) }) },
+        { id: 'ap_link', vars: expect.objectContaining({ title: 'Link your GitHub sign-in', mode: 'code' }) },
       ])
 
       const code = await enterCode(action, event)
@@ -390,7 +390,10 @@ describe('login-time account link, Action and API together', () => {
       const page = transaction()
       await action.onExecutePostLogin(event, page.api)
       expect(page.seen.renders).toEqual([
-        { id: 'ap_link', vars: expect.objectContaining({ lead: expect.stringMatching(/a code/) }) },
+        {
+          id: 'ap_link',
+          vars: expect.objectContaining({ title: 'Link your email and password sign-in', mode: 'code' }),
+        },
       ])
 
       const code = await enterCode(action, event)
@@ -442,7 +445,7 @@ describe('login-time account link, Action and API together', () => {
       expect(step.seen.renders).toEqual([
         {
           id: 'ap_link',
-          vars: expect.objectContaining({ error: expect.stringMatching(/not right/) }),
+          vars: expect.objectContaining({ mode: 'password', error: expect.stringMatching(/not right/) }),
         },
       ])
       expect(adopt).not.toHaveBeenCalled()
@@ -483,9 +486,7 @@ describe('login-time account link, Action and API together', () => {
 
       const second = transaction()
       await action.onContinuePostLogin({ ...unverified, prompt: { id: 'ap_verify', fields: {} } }, second.api)
-      expect(second.seen.renders).toEqual([
-        { id: 'ap_link', vars: expect.objectContaining({ lead: expect.stringMatching(/Enter its password/) }) },
-      ])
+      expect(second.seen.renders).toEqual([{ id: 'ap_link', vars: expect.objectContaining({ mode: 'password' }) }])
     })
 
     it('ends the login when the password account demands MFA', async () => {
@@ -675,8 +676,17 @@ describe('login-time account link, Action and API together', () => {
       await action.onExecutePostLogin(google(), step.api)
 
       const read = [...form.matchAll(/\{\{vars\.(\w+)\}\}/g)].map((match) => match[1])
-      expect(read).toEqual(expect.arrayContaining(['email', 'lead']))
+      expect(read).toEqual(expect.arrayContaining(['address', 'mode']))
       expect(Object.keys(step.seen.renders[0].vars)).toEqual(expect.arrayContaining(read))
+    })
+
+    it('names the provider in its title', async () => {
+      const { action } = tenant()
+      const step = transaction()
+
+      await action.onExecutePostLogin(login(GITHUB_USER), step.api)
+
+      expect(step.seen.renders[0].vars.title).toBe('Link your GitHub sign-in')
     })
   })
 })

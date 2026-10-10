@@ -189,16 +189,24 @@ function endLogin(event, api) {
   api.redirect.sendUserTo(logout.toString())
 }
 
+const PROVIDER_LABELS = { auth0: 'email and password', github: 'GitHub', 'google-oauth2': 'Google' }
+
 /** The link page, asking for the account's password, or to continue to a code. */
 function renderLinkForm(event, api, { mode, error = '' }) {
+  const provider = PROVIDER_LABELS[event.connection?.strategy] ?? event.connection?.name ?? 'social'
   api.prompt.render(ACCOUNT_LINK_FORM_ID, {
     vars: {
-      email: event.user.email,
+      title: `Link your ${provider} sign-in`,
       lead:
         mode === 'password'
           ? 'An account already uses this email. Enter its password to link them.'
           : 'An account already uses this email. Continue to get a code at this address, then enter it to link them.',
       error,
+      // `mode` lets the address field hide the password in code mode, and the
+      // address shows greyed out. Both reach the field as params; Forms gives
+      // a custom field no prefilled value.
+      mode,
+      address: event.user.email,
     },
   })
 }

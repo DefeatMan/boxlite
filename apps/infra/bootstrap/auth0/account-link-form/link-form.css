@@ -1,0 +1,35 @@
+/*
+ * The account link Form's own pieces: the greyed read-only address and the
+ * Action's error line.
+ */
+.bl-link-account {
+  box-sizing: border-box;
+  width: 100%;
+  height: 52px;
+  padding: 0 16px;
+  border: 1px solid #2a2f3a;
+  border-radius: 1px;
+  background: #232833;
+  color: #8c919c;
+  font: inherit;
+  cursor: not-allowed;
+}
+
+/* The error line: the Action's message for a wrong or refused password. */
+.af-componentId-error p {
+  margin: 0;
+}
+
+.af-componentId-error strong {
+  color: #e05548;
+  font-weight: 400;
+}
+
+.af-componentId-error:has(strong:empty) {
+  display: none;
+}
+
+/* Code mode asks for no password; the address field marks the page. */
+.bl-link-code .af-componentId-password {
+  display: none !important;
+}

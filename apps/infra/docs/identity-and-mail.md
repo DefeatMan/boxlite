@@ -176,10 +176,10 @@ The flow:
    first, as an unverified password account's does.
 2. With no other account holding the address, the login goes on: it is the
    account.
-3. When one of them holds a password, the link page shows the address and asks
-   for that password, which the Action checks with the password-realm grant
-   through the link client, forwarding the browser's address in
-   `auth0-forwarded-for`.
+3. When one of them holds a password, the link page shows the address in a
+   greyed-out field and asks for that password, which the Action checks with
+   the password-realm grant through the link client, forwarding the browser's
+   address in `auth0-forwarded-for`.
 4. When only social accounts hold it, the mailbox is the proof. Google on a
    Gmail address, and a password sign-up's first login, whose address Universal
    Login verified moments ago, have proven it already. Otherwise the link page
@@ -218,10 +218,18 @@ own reset.
 
 The Action depends on three things outside its code:
 
-- **The link Form**: a Password field with the id `password`, which the Action
-  rather than the Form requires, defined in
-  `bootstrap/auth0/account-link-form.json`. The Action renders it with the vars
-  `email`, `lead` and `error`.
+- **The link Form**: defined in `bootstrap/auth0/account-link-form.json`, with
+  a Password field `password`, which the Action rather than the Form requires,
+  and a custom field whose code sits in `bootstrap/auth0/account-link-form/`:
+  `account`, the greyed-out address, which also adds the page's styles and
+  hides the password field in code mode; `bootstrap/account-link-form.ts`
+  reads its code and the styles into the Form. The Action renders the Form
+  with the vars `title`, `lead`, `error`, `mode` (`password` or `code`) and
+  `address`. Forms gives a custom field no prefilled value, so the field takes
+  `{{vars.address}}` and `{{vars.mode}}` as params, which Forms resolves and
+  hands to its `update()`. Forms runs custom fields only on a custom domain
+  and shows an error elsewhere; both stages log in on one, the
+  `publicOidcIssuer` of `auth0/targets.json`.
 - **The link client**: a confidential client allowed the password-realm grant,
   with Trust Token Endpoint IP Header on so Auth0 honours
   `auth0-forwarded-for`, and granted `read:users` (the lookup) and
@@ -268,6 +276,10 @@ runs the link rather than leaving every later login unlinked; pass
 `--disable-account-link` to rewrite its code with the link off. Its secrets,
 the link client and the Form stay in place, and a later apply with the origin
 turns the link back on.
+
+A same-named Form whose contents differ, edited outside this tool or defined
+anew, is rewritten only under `--replace-link-form`, which journals the old
+contents for `--rollback`; that is how a changed definition reaches a tenant.
 
 ### What the link moves
 

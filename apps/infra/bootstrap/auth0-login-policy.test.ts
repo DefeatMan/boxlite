@@ -327,6 +327,7 @@ test('parseAuth0LoginPolicyOptions defaults to preview and requires exact tenant
       apply: false,
       allowTestEmailProvider: false,
       replaceAction: false,
+      replaceLinkForm: false,
       accountLinkApiOrigin: undefined,
       accountLinkSecret: undefined,
       disableAccountLink: false,
@@ -342,6 +343,18 @@ test('parseAuth0LoginPolicyOptions defaults to preview and requires exact tenant
       'boxlite-users',
       '--replace-action',
     ]).replaceAction,
+    true,
+  )
+  assert.equal(
+    parseAuth0LoginPolicyOptions([
+      '--tenant',
+      'tenant.us.auth0.com',
+      '--client-id',
+      'spa_123',
+      '--connection',
+      'boxlite-users',
+      '--replace-link-form',
+    ]).replaceLinkForm,
     true,
   )
   assert.throws(() => parseAuth0LoginPolicyOptions(['--tenant', 'tenant.us.auth0.com']), /--client-id is required/)
@@ -909,6 +922,10 @@ function fakeTenant() {
         Object.assign(flow, options.data)
         return flow
       }
+      if (method === 'patch' && path === 'forms/ap_link') {
+        Object.assign(state.linkForm, options.data)
+        return state.linkForm
+      }
       if (method === 'patch' && path === 'forms/ap_verify') {
         Object.assign(state.form, options.data)
         return state.form
@@ -1317,7 +1334,11 @@ test('login policy apply leaves an Action with an undeployed draft alone, and a 
 
 const LINK_FORM = JSON.parse(readFileSync(new URL('./auth0/account-link-form.json', import.meta.url), 'utf8'))
 
-function linkConfigurator(tenant: ReturnType<typeof fakeTenant>, accountLinkSecret = LINK_KEY) {
+function linkConfigurator(
+  tenant: ReturnType<typeof fakeTenant>,
+  accountLinkSecret = LINK_KEY,
+  replaceLinkForm = false,
+) {
   return new Auth0LoginPolicyConfigurator(
     {
       tenant: 'tenant.us.auth0.com',
@@ -1327,6 +1348,7 @@ function linkConfigurator(tenant: ReturnType<typeof fakeTenant>, accountLinkSecr
       allowTestEmailProvider: false,
       accountLinkApiOrigin: 'https://api.example.com',
       accountLinkSecret,
+      replaceLinkForm,
     },
     tenant.client,
     {
@@ -1476,8 +1498,25 @@ test('login policy apply refuses a link Form edited outside this tool', () => {
 
     assert.throws(
       () => linkConfigurator(tenant).preview(),
-      /'BoxLite account link' already exists with unmanaged contents/,
+      /'BoxLite account link' already exists with other contents; pass --replace-link-form/,
     )
+  } finally {
+    rmSync(tenant.journalDirectory, { recursive: true, force: true })
+  }
+})
+
+test('login policy apply rewrites a differing link Form under --replace-link-form, and rollback restores it', () => {
+  const tenant = fakeTenant()
+  try {
+    linkConfigurator(tenant).apply()
+    tenant.state.linkForm.nodes[0].config.components.splice(2, 1)
+    const edited = structuredClone(tenant.state.linkForm.nodes)
+
+    const result = linkConfigurator(tenant, LINK_KEY, true).apply()
+    assert.deepEqual(tenant.state.linkForm.nodes, LINK_FORM.nodes)
+
+    Auth0LoginPolicyConfigurator.rollback(result.journal as string, () => tenant.client)
+    assert.deepEqual(tenant.state.linkForm.nodes, edited)
   } finally {
     rmSync(tenant.journalDirectory, { recursive: true, force: true })
   }
