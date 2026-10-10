@@ -7,6 +7,8 @@ import { runInNewContext } from 'node:vm'
 
 import { loadAccountLinkForm } from './account-link-form.js'
 
+const DEV_TENANT = 'dev-j60pjpmu6neaeaga.us.auth0.com'
+
 function customCode(form: any, id: string): string {
   const component = form.nodes
     .flatMap((node: any) => node.config?.components ?? [])
@@ -23,6 +25,9 @@ function page({ stored = new Map<string, string>(), navigation = 'navigate' } = 
   const submits: number[] = []
   const head: any[] = []
   const rootClasses = new Set<string>()
+  // The page's heading once Forms has rendered it, and what went in above it.
+  const heading = { shown: false, above: [] as any[] }
+  const byId = (id: string) => [...head, ...heading.above].find((item) => item.id === id) ?? null
   const element = (tagName: string): any => {
     const node: any = {
       tagName,
@@ -41,8 +46,11 @@ function page({ stored = new Map<string, string>(), navigation = 'navigate' } = 
       classList: { toggle: (name: string, on: boolean) => (on ? rootClasses.add(name) : rootClasses.delete(name)) },
     },
     head: { appendChild: (item: any) => head.push(item) },
-    getElementById: () => null,
-    querySelector: () => null,
+    getElementById: byId,
+    querySelector: (selector: string) =>
+      selector === '.af-componentId-intro' && heading.shown
+        ? { before: (item: any) => heading.above.push(item) }
+        : null,
   }
   const window = {
     performance: { getEntriesByType: () => [{ type: navigation }] },
@@ -51,7 +59,7 @@ function page({ stored = new Map<string, string>(), navigation = 'navigate' } = 
       setItem: (key: string, value: string) => stored.set(key, value),
     },
   }
-  return { document, window, head, submits, stored, rootClasses }
+  return { document, window, head, heading, submits, stored, rootClasses }
 }
 
 /**
@@ -88,15 +96,65 @@ function field(code: string, name: string, browser: ReturnType<typeof page>, par
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 5))
 
-test('the link Form carries its styles in the address field', () => {
-  const form = loadAccountLinkForm()
+test('the link Form carries the login page font, logo and styles for a configured tenant', () => {
+  const form = loadAccountLinkForm(DEV_TENANT)
   for (const id of ['account', 'cancel']) assert.doesNotMatch(customCode(form, id), /__[A-Z_]+_JSON__/)
 
-  assert.match(customCode(form, 'account'), /\.bl-link-cancel \{/)
+  const account = customCode(form, 'account')
+  assert.match(account, /const fontUrl = "https:\/\/dev\.boxlite\.ai\/auth0\/[^"]+\.woff2"/)
+  assert.match(account, /const logoUrl = "https:\/\/dev\.boxlite\.ai\/auth0\/[^"]+\.png"/)
+  assert.match(account, /\.bl-link-cancel \{/)
+})
+
+test('a tenant no stage names keeps Auth0 defaults instead of another stage assets', () => {
+  const account = customCode(loadAccountLinkForm('unknown.us.auth0.com'), 'account')
+
+  assert.match(account, /const fontUrl = null/)
+  assert.match(account, /const logoUrl = null/)
+})
+
+test('the address field defines the theme font as ulp-font, and none without one', () => {
+  const dressed = page()
+  field(customCode(loadAccountLinkForm(DEV_TENANT), 'account'), 'linkAccountField', dressed, {}).handler.init()
+  assert.match(
+    dressed.head[0].textContent,
+    /^@font-face \{ font-family: 'ulp-font'; src: url\('https:\/\/dev\.boxlite\.ai\/auth0\/[^']+\.woff2'\) format\('woff2'\); \}/,
+  )
+
+  const plain = page()
+  field(
+    customCode(loadAccountLinkForm('unknown.us.auth0.com'), 'account'),
+    'linkAccountField',
+    plain,
+    {},
+  ).handler.init()
+  assert.doesNotMatch(plain.head[0].textContent, /@font-face/)
+})
+
+test('the address field puts the logo above the heading once, even when the heading renders late', async () => {
+  const code = customCode(loadAccountLinkForm(DEV_TENANT), 'account')
+
+  const early = page()
+  early.heading.shown = true
+  const first = field(code, 'linkAccountField', early, {})
+  first.handler.init()
+  await settle()
+  first.resolveParams()
+  assert.equal(early.heading.above.length, 1)
+  assert.match(early.heading.above[0].src, /^https:\/\/dev\.boxlite\.ai\/auth0\/[^/]+\.png$/)
+
+  const late = page()
+  const second = field(code, 'linkAccountField', late, {})
+  second.handler.init()
+  await settle()
+  assert.equal(late.heading.above.length, 0)
+  late.heading.shown = true
+  second.resolveParams()
+  assert.equal(late.heading.above.length, 1)
 })
 
 test('the link Form passes the address, mode and render id to its custom fields as params', () => {
-  const form = loadAccountLinkForm()
+  const form = loadAccountLinkForm(DEV_TENANT)
   const params = (id: string) =>
     form.nodes.flatMap((node: any) => node.config?.components ?? []).find((entry: any) => entry.id === id).config.params
 
@@ -106,7 +164,7 @@ test('the link Form passes the address, mode and render id to its custom fields 
 
 test('the address field shows the address once Forms resolves its params', async () => {
   const browser = page()
-  const account = field(customCode(loadAccountLinkForm(), 'account'), 'linkAccountField', browser, {
+  const account = field(customCode(loadAccountLinkForm(DEV_TENANT), 'account'), 'linkAccountField', browser, {
     address: 'ada@example.com',
   })
 
@@ -120,7 +178,7 @@ test('the address field shows the address once Forms resolves its params', async
 })
 
 test('the address field hides the password field in code mode only', () => {
-  const code = customCode(loadAccountLinkForm(), 'account')
+  const code = customCode(loadAccountLinkForm(DEV_TENANT), 'account')
   const shown = (mode: string) => {
     const browser = page()
     const account = field(code, 'linkAccountField', browser, { address: 'ada@example.com', mode })
@@ -135,7 +193,7 @@ test('the address field hides the password field in code mode only', () => {
 })
 
 test('the address field leaves an unresolved template out', () => {
-  const account = field(customCode(loadAccountLinkForm(), 'account'), 'linkAccountField', page(), {
+  const account = field(customCode(loadAccountLinkForm(DEV_TENANT), 'account'), 'linkAccountField', page(), {
     address: '{{vars.address}}',
   })
 
@@ -147,7 +205,7 @@ test('the address field leaves an unresolved template out', () => {
 
 test('Cancel answers cancel and moves the Form forward', async () => {
   const browser = page()
-  const cancel = field(customCode(loadAccountLinkForm(), 'cancel'), 'linkCancelField', browser, {
+  const cancel = field(customCode(loadAccountLinkForm(DEV_TENANT), 'cancel'), 'linkCancelField', browser, {
     render: 'render-1',
   })
 
@@ -164,7 +222,7 @@ test('Cancel answers cancel and moves the Form forward', async () => {
 })
 
 test('a second load of one render, or a reload, cancels by itself', async () => {
-  const code = customCode(loadAccountLinkForm(), 'cancel')
+  const code = customCode(loadAccountLinkForm(DEV_TENANT), 'cancel')
   const stored = new Map<string, string>()
 
   const load = async (browser: ReturnType<typeof page>, render: string) => {
