@@ -13,10 +13,12 @@
  * any token is issued, without leaving Auth0. The person proves that
  * account is theirs: its password, checked with the password-realm grant, or,
  * when only social accounts hold the address, the code the email Form mails.
- * Google on a Gmail address and a fresh password sign-up have proven the
- * mailbox already. The BoxLite API moves the folded user's data, and the
- * Management API links the identities. With no API origin or link Form
- * configured the step is off, and every login keeps its own identity.
+ * Google on a Gmail address needs neither, since Google serves that mailbox,
+ * and a fresh password sign-up has proven its mailbox already. A password
+ * account with MFA is never linked: no proof here checks a second factor. The
+ * BoxLite API moves the folded user's data, and the Management API links the
+ * identities. With no API origin or link Form configured the step is off, and
+ * every login keeps its own identity.
  */
 
 const BROWSER_PROTOCOLS = new Set(['oidc-basic-profile', 'oidc-hybrid-profile', 'oidc-implicit-profile'])
@@ -128,6 +130,13 @@ async function otherAccounts(event, api) {
 
 function holdsPassword(user) {
   return (user.identities ?? []).some((identity) => identity.connection === BOXLITE_DB_CONNECTION)
+}
+
+// A password account enrolled in MFA, which Auth0 lists in `multifactor`.
+// Neither its password grant nor a Gmail sign-in checks the second factor, so
+// it is never linked.
+function passwordWithMfa(user) {
+  return holdsPassword(user) && (user.multifactor ?? []).length > 0
 }
 
 // Password, then Google, then GitHub: an account ranks as its best sign-in.
@@ -335,12 +344,15 @@ async function planLink(event, api, { mailboxProven = false, entry = false } = {
     setIdentityClaims(event, api, emailVerified)
     return
   }
-  if (accounts.length === 0) {
+  if (accounts.length === 0 || accounts.some(passwordWithMfa)) {
     setIdentityClaims(event, api, emailVerified)
     return
   }
   const password = accounts.some(holdsPassword)
-  if (!password && (mailboxProven || provesMailbox(event))) {
+  // A login that proves its mailbox by itself folds every account holding the
+  // address, a password one too. A code from the email Form folds social
+  // accounts only; a password account asks for its password.
+  if (provesMailbox(event) || (mailboxProven && !password)) {
     await fold(event, api, accounts)
     return
   }
@@ -415,8 +427,9 @@ async function answerLinkForm(event, api) {
     return
   }
   if (!(await provePassword(event, api, passwordAccount, password))) return
-  // The password proves its own account; social ones need the mailbox too.
-  await fold(event, api, provesMailbox(event) ? accounts : [passwordAccount])
+  // The password proves its own account; social ones join at their own next
+  // login. (A login that proves its mailbox never reaches this page.)
+  await fold(event, api, [passwordAccount])
 }
 
 /** True once the account's password checks out; otherwise the page or a denial has answered. */

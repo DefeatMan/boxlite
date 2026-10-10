@@ -175,11 +175,15 @@ The flow:
 1. An address the provider has not verified goes through the email Form's code
    first, as an unverified password account's does.
 2. With no other account holding the address, the login goes on: it is the
-   account.
-3. When one of them holds a password, the link page shows the address in a
-   greyed-out field and asks for that password, which the Action checks with
-   the password-realm grant through the link client, forwarding the browser's
-   address in `auth0-forwarded-for`.
+   account. So it does when a password account with MFA, one whose
+   `multifactor` list is not empty, holds the address: neither proof below
+   checks a second factor, so that account is never linked.
+3. When one of them holds a password, Google on a Gmail address goes straight
+   on, since Google serves that mailbox and whoever holds it could reset the
+   password anyway. Any other login meets the link page, which shows the
+   address in a greyed-out field and asks for that password; the Action checks
+   it with the password-realm grant through the link client, forwarding the
+   browser's address in `auth0-forwarded-for`.
 4. When only social accounts hold it, the mailbox is the proof. Google on a
    Gmail address, and a password sign-up's first login, whose address Universal
    Login verified moments ago, have proven it already. Otherwise the link page
@@ -188,9 +192,9 @@ The flow:
    folds, then links them through the Management API, and makes the account
    that stays the token's subject.
 
-A password proves its own account; social accounts apart from it join in the
-same login only when the mailbox is proven too, and otherwise at their own next
-login. The account that stays is one that already joins several sign-ins;
+A password proves its own account, and social accounts apart from it join at
+their own next login; a Gmail sign-in proves the mailbox, so it folds them all
+at once. The account that stays is one that already joins several sign-ins;
 otherwise the highest-ranked, password before Google before GitHub, where this
 login counts only when BoxLite already knows its user. A login BoxLite has
 never seen therefore joins an existing account and makes no organization of
