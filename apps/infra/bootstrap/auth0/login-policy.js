@@ -151,6 +151,44 @@ function provesMailbox(event) {
   return isManagedDatabaseLogin(event) && event.stats?.logins_count === 1
 }
 
+// A link page shows only right after the sign-in. A login that reuses an
+// older one from its Auth0 session is the app opened again around a link page
+// left unanswered. (api.cache cannot mark that session: it is not shared
+// between executions reliably.)
+const FRESH_SIGN_IN_MS = 15 * 1000
+
+function signedInJustNow(event) {
+  const times = (event.authentication?.methods ?? [])
+    .map((method) => Date.parse(method.timestamp))
+    .filter((time) => !Number.isNaN(time))
+  // No record of the sign-in says nothing about its age; showing the page is
+  // the safe answer.
+  if (times.length === 0) return true
+  return Date.now() - Math.max(...times) < FRESH_SIGN_IN_MS
+}
+
+/**
+ * Ends this login and the Auth0 session it opened, then sends the person to
+ * the app, which starts at the login page again. A denial would keep the
+ * session, so the app's next login would come straight back to the link page.
+ */
+function endLogin(event, api) {
+  const hostname = event.request?.hostname
+  const redirectUri = event.transaction?.redirect_uri
+  if (!hostname || !redirectUri) {
+    api.access.deny('Account linking was cancelled')
+    return
+  }
+  const logout = new URL(`https://${hostname}/v2/logout`)
+  logout.searchParams.set('client_id', event.client.client_id)
+  // Auth0 returns only to an Allowed Logout URL: the client allows the
+  // dashboard's https origin, not the CLI's loopback callback. Without a
+  // returnTo, Auth0 goes to the client's first Allowed Logout URL instead.
+  const redirect = new URL(redirectUri)
+  if (redirect.protocol === 'https:') logout.searchParams.set('returnTo', redirect.origin)
+  api.redirect.sendUserTo(logout.toString())
+}
+
 /** The link page, asking for the account's password, or to continue to a code. */
 function renderLinkForm(event, api, { mode, error = '' }) {
   api.prompt.render(ACCOUNT_LINK_FORM_ID, {
@@ -275,7 +313,7 @@ async function fold(event, api, accounts) {
  * proven, or shows the link page that asks for the proof. `mailboxProven` is
  * set right after the email Form has checked a code.
  */
-async function planLink(event, api, { mailboxProven = false } = {}) {
+async function planLink(event, api, { mailboxProven = false, entry = false } = {}) {
   const emailVerified = mailboxProven || event.user.email_verified === true
   let accounts
   try {
@@ -294,6 +332,13 @@ async function planLink(event, api, { mailboxProven = false } = {}) {
   const password = accounts.some(holdsPassword)
   if (!password && (mailboxProven || provesMailbox(event))) {
     await fold(event, api, accounts)
+    return
+  }
+  // A link page reached by reusing an earlier sign-in from the session is the
+  // app opened again around one left unanswered, so it starts over at the
+  // login page instead.
+  if (entry && !signedInJustNow(event)) {
+    endLogin(event, api)
     return
   }
   renderLinkForm(event, api, { mode: password ? 'password' : 'code' })
@@ -315,7 +360,7 @@ async function startAccountLink(event, api) {
     api.prompt.render(EMAIL_VERIFICATION_FORM_ID)
     return
   }
-  await planLink(event, api)
+  await planLink(event, api, { entry: true })
 }
 
 /** The link page came back: with a password, or to get a code. */

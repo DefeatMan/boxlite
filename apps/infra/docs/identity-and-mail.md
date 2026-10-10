@@ -202,6 +202,20 @@ tries; Auth0's brute-force protection still counts each attempt.
 with a message, and the next login starts over; moving the data again is
 harmless.
 
+A login that would show the page from a sign-in older than 15 seconds in its
+Auth0 session, which is how the app opened again beside an open page arrives,
+links nothing and ends at the login page; `event.authentication.methods` dates
+the sign-in. (The Action's `api.cache` cannot mark the session instead: it is
+not shared between executions reliably.) The Action ends it through
+`/v2/logout` on the login's own domain, returning to the origin of an https
+redirect URI, the dashboard's, which the client allows as a logout URL; a
+denial would keep the Auth0 session, and the app's next login would come
+straight back to the page. The CLI's loopback callback is not an allowed logout
+URL, so its logout carries no `returnTo`, and Auth0 returns to the client's
+first Allowed Logout URL. The dashboard then finds no session and sends the
+person back to the login page, where someone who forgot the password uses its
+own reset.
+
 The Action depends on three things outside its code:
 
 - **The link Form**: a Password field with the id `password`, which the Action
