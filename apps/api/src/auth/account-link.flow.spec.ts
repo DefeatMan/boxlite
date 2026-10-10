@@ -589,6 +589,83 @@ describe('login-time account link, Action and API together', () => {
     })
   })
 
+  describe('reopening', () => {
+    it('ends a login that would reopen the link page from an earlier sign-in, as the app opened again does', async () => {
+      const { action } = tenant()
+      const step = transaction()
+      const earlier = new Date(Date.now() - 5 * 60 * 1000).toISOString()
+
+      await action.onExecutePostLogin(
+        google({ authentication: { methods: [{ name: 'federated', timestamp: earlier }] } }),
+        step.api,
+      )
+
+      // A denial would keep the Auth0 session, and the app's next login would
+      // come straight back to the link page.
+      expect(step.seen.denied).toEqual([])
+      expect(step.seen.renders).toEqual([])
+      expect(step.seen.redirects).toEqual([
+        'https://auth.example.com/v2/logout?client_id=spa_123&returnTo=https%3A%2F%2Fapp.example.com',
+      ])
+    })
+
+    it('lets an earlier sign-in through when there is no page to show', async () => {
+      const { action } = tenant({ accounts: [] })
+      const step = transaction()
+      const earlier = new Date(Date.now() - 5 * 60 * 1000).toISOString()
+
+      await action.onExecutePostLogin(
+        google({ authentication: { methods: [{ name: 'federated', timestamp: earlier }] } }),
+        step.api,
+      )
+
+      expect(step.seen).toEqual({ renders: [], denied: [], primary: [], redirects: [] })
+    })
+
+    it('sends a CLI login to the logout page without a return address it cannot use', async () => {
+      const { action } = tenant()
+      const step = transaction()
+      const earlier = new Date(Date.now() - 5 * 60 * 1000).toISOString()
+
+      await action.onExecutePostLogin(
+        google({
+          authentication: { methods: [{ name: 'federated', timestamp: earlier }] },
+          transaction: { protocol: 'oidc-basic-profile', redirect_uri: 'http://127.0.0.1:5555/callback' },
+        }),
+        step.api,
+      )
+
+      // Auth0 then returns to the client's first Allowed Logout URL.
+      expect(step.seen.redirects).toEqual(['https://auth.example.com/v2/logout?client_id=spa_123'])
+    })
+
+    it('denies a login it cannot send to the logout page', async () => {
+      const { action } = tenant()
+      const step = transaction()
+      const earlier = new Date(Date.now() - 5 * 60 * 1000).toISOString()
+
+      await action.onExecutePostLogin(
+        google({
+          authentication: { methods: [{ name: 'federated', timestamp: earlier }] },
+          transaction: { protocol: 'oidc-basic-profile' },
+        }),
+        step.api,
+      )
+
+      expect(step.seen.redirects).toEqual([])
+      expect(step.seen.denied).toEqual([expect.stringMatching(/cancelled/)])
+    })
+
+    it('shows the page when Auth0 records no sign-in to date', async () => {
+      const { action } = tenant()
+      const step = transaction()
+
+      await action.onExecutePostLogin(google({ authentication: { methods: [] } }), step.api)
+
+      expect(step.seen.renders.map((render) => render.id)).toEqual(['ap_link'])
+    })
+  })
+
   describe('the link page', () => {
     it('renders every var the link Form reads', async () => {
       const { action } = tenant()
