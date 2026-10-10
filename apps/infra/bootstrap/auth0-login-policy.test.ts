@@ -847,6 +847,7 @@ function fakeTenant() {
         state.action.deployed_version = {
           code: state.action.code,
           runtime: state.action.runtime,
+          supported_triggers: state.action.supported_triggers,
           deployed: true,
           secrets: [],
         }
@@ -1208,6 +1209,8 @@ test('login policy apply leaves an Action with an undeployed draft alone, and a 
   const drafted = earlierManagedAction()
   const ran = drafted.code
   drafted.code = stampedCode('// a draft nobody deployed')
+  // The draft moved to a newer trigger version too; the tenant still runs v2.
+  drafted.deployed_version.supported_triggers = [{ id: 'post-login', version: 'v2' }]
   drafted.all_changes_deployed = false
   const tenant = tenantWithAction(drafted)
   try {
@@ -1216,6 +1219,7 @@ test('login policy apply leaves an Action with an undeployed draft alone, and a 
     const result = upgradeConfigurator(tenant, true).apply()
     Auth0LoginPolicyConfigurator.rollback(result.journal as string, () => tenant.client)
     assert.equal(tenant.state.action.deployed_version.code, ran)
+    assert.deepEqual(tenant.state.action.deployed_version.supported_triggers, [{ id: 'post-login', version: 'v2' }])
   } finally {
     rmSync(tenant.journalDirectory, { recursive: true, force: true })
   }

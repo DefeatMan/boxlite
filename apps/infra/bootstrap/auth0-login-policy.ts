@@ -1093,7 +1093,7 @@ export class Auth0LoginPolicyConfigurator {
       'login policy action',
       'actions/actions',
       id,
-      { code: ran.code, runtime: ran.runtime, supported_triggers: existing.supported_triggers },
+      { code: ran.code, runtime: ran.runtime, supported_triggers: ran.supported_triggers },
       true,
     )
     const updated = requireObject(
