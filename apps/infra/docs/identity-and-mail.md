@@ -198,37 +198,45 @@ its own. The design, POL-735, lists every case.
 
 A wrong password shows the page again with the reason, as often as the person
 tries; Auth0's brute-force protection still counts each attempt.
-`mfa_required`, a blocked account, or an API or tenant error ends the login
-with a message, and the next login starts over; moving the data again is
-harmless.
 
-A login that would show the page from a sign-in older than 15 seconds in its
-Auth0 session, which is how the app opened again beside an open page arrives,
-links nothing and ends at the login page; `event.authentication.methods` dates
-the sign-in. (The Action's `api.cache` cannot mark the session instead: it is
-not shared between executions reliably.) The Action ends it through
-`/v2/logout` on the login's own domain, returning to the origin of an https
-redirect URI, the dashboard's, which the client allows as a logout URL; a
-denial would keep the Auth0 session, and the app's next login would come
-straight back to the page. The CLI's loopback callback is not an allowed logout
-URL, so its logout carries no `returnTo`, and Auth0 returns to the client's
-first Allowed Logout URL. The dashboard then finds no session and sends the
-person back to the login page, where someone who forgot the password uses its
-own reset.
+Cancel, or loading the same render of the page a second time (a refresh, or
+its address opened in another tab), links nothing. A user BoxLite already knows
+goes on unlinked, and its next login asks again. A new one would get a second
+account, so its login ends at the login page instead, and so does a login that
+would show the page from a sign-in older than 15 seconds in its Auth0 session,
+which is how the app opened again beside an open page arrives;
+`event.authentication.methods` dates the sign-in. (The Action's `api.cache`
+cannot mark the session instead: it is not shared between executions reliably.)
+The Action ends these logins through `/v2/logout` on the login's own domain,
+returning to the origin of an https redirect URI, the dashboard's, which the
+client allows as a logout URL; a denial would keep the Auth0 session, and the
+app's next login would come straight back to the page. The CLI's loopback
+callback is not an allowed logout URL, so its logout carries no `returnTo`, and
+Auth0 returns to the client's first Allowed Logout URL. The dashboard then
+finds no session and sends the person back to the login page, where someone who
+forgot the password uses its own reset. `mfa_required`, a blocked account, or
+an API or tenant error ends the login with a message, and the next login starts
+over; moving the data again is harmless.
 
 The Action depends on three things outside its code:
 
 - **The link Form**: defined in `bootstrap/auth0/account-link-form.json`, with
   a Password field `password`, which the Action rather than the Form requires,
-  and a custom field whose code sits in `bootstrap/auth0/account-link-form/`:
-  `account`, the greyed-out address, which also adds the page's styles and
-  hides the password field in code mode; `bootstrap/account-link-form.ts`
-  reads its code and the styles into the Form. The Action renders the Form
-  with the vars `title`, `lead`, `error`, `mode` (`password` or `code`) and
-  `address`. Forms gives a custom field no prefilled value, so the field takes
-  `{{vars.address}}` and `{{vars.mode}}` as params, which Forms resolves and
-  hands to its `update()`. Forms runs custom fields only on a custom domain
-  and shows an error elsewhere; both stages log in on one, the
+  so Continue never stops for it, and two custom fields whose code sits in
+  `bootstrap/auth0/account-link-form/`. `account` is the greyed-out address,
+  adds the page's styles and hides the password field in code mode;
+  `bootstrap/account-link-form.ts` reads both fields' code and the styles into
+  the Form. `cancel` is the line under Continue. The Action renders the Form
+  with the vars `title`, `lead`, `error`, `mode` (`password` or `code`),
+  `address` and `render`, a fresh id per render. Forms gives a custom field no
+  prefilled value, so the two fields take `{{vars.address}}`, `{{vars.mode}}`
+  and `{{vars.render}}` as params, which Forms resolves and hands to their
+  `update()`. The cancel field answers `cancel` and moves the Form forward
+  through `context.form.goForward()`, as Continue does, when clicked, on a
+  reload, or when the browser's local storage shows its id loaded before; a
+  Jump button would skip the step without collecting any field, that answer
+  included. Forms runs custom fields only on a custom
+  domain and shows an error elsewhere; both stages log in on one, the
   `publicOidcIssuer` of `auth0/targets.json`.
 - **The link client**: a confidential client allowed the password-realm grant,
   with Trust Token Endpoint IP Header on so Auth0 honours

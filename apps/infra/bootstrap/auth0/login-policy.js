@@ -202,11 +202,13 @@ function renderLinkForm(event, api, { mode, error = '' }) {
           ? 'An account already uses this email. Enter its password to link them.'
           : 'An account already uses this email. Continue to get a code at this address, then enter it to link them.',
       error,
-      // `mode` lets the address field hide the password in code mode, and the
-      // address shows greyed out. Both reach the field as params; Forms gives
-      // a custom field no prefilled value.
+      // `mode` lets the address field hide the password in code mode. The
+      // address is shown greyed out, and a fresh id per render lets the cancel
+      // field read a second load of one id as a refresh. All three reach the
+      // custom fields as params; Forms gives a custom field no prefilled value.
       mode,
       address: event.user.email,
+      render: require('crypto').randomUUID(),
     },
   })
 }
@@ -371,9 +373,26 @@ async function startAccountLink(event, api) {
   await planLink(event, api, { entry: true })
 }
 
-/** The link page came back: with a password, or to get a code. */
+/**
+ * Cancel, or a second load of the page. A user BoxLite already knows goes on
+ * unlinked and is asked again at its next login; a new one would make a
+ * second account, so its login and session end at the login page instead.
+ */
+async function cancelLink(event, api) {
+  if (await boxliteKnows(event, event.user.user_id)) {
+    setIdentityClaims(event, api)
+    return
+  }
+  endLogin(event, api)
+}
+
+/** The link page came back: cancelled, with a password, or to get a code. */
 async function answerLinkForm(event, api) {
   const fields = event.prompt?.fields ?? {}
+  if (fields.cancel === 'cancel') {
+    await cancelLink(event, api)
+    return
+  }
   const accounts = await otherAccounts(event, api)
   const passwordAccount = accounts.find(holdsPassword)
   if (!passwordAccount) {

@@ -1,6 +1,6 @@
 /*
- * The account link Form's own pieces: the greyed read-only address and the
- * Action's error line.
+ * The account link Form's own pieces: the greyed read-only address, the
+ * Action's error line and the cancel line.
  */
 .bl-link-account {
   box-sizing: border-box;
@@ -27,6 +27,25 @@
 
 .af-componentId-error:has(strong:empty) {
   display: none;
+}
+
+.bl-link-cancel {
+  margin: 0;
+  font-size: 13px;
+}
+
+.bl-link-cancel button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #00b0f0;
+  font: inherit;
+  cursor: pointer;
+}
+
+.bl-link-cancel button:hover,
+.bl-link-cancel button:focus-visible {
+  text-decoration: underline;
 }
 
 /* Code mode asks for no password; the address field marks the page. */
