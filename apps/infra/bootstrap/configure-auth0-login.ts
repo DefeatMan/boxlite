@@ -11,6 +11,7 @@ import {
   missingLoginPolicyScopes,
   parseAuth0LoginPolicyOptions,
 } from './auth0-login-policy.js'
+import { loadAccountLinkForm } from './account-link-form.js'
 
 const bootstrapRoot = dirname(fileURLToPath(import.meta.url))
 
@@ -20,7 +21,7 @@ function sources() {
     emailVerificationTemplate: JSON.parse(
       readFileSync(join(bootstrapRoot, 'auth0', 'email-verification-form.json'), 'utf8'),
     ),
-    accountLinkForm: JSON.parse(readFileSync(join(bootstrapRoot, 'auth0', 'account-link-form.json'), 'utf8')),
+    accountLinkForm: loadAccountLinkForm(),
     journalDirectory: join(bootstrapRoot, '..', '.sst', 'auth0-backups'),
   }
 }

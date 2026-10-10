@@ -129,6 +129,8 @@ export interface Auth0LoginPolicyOptions {
   allowTestEmailProvider: boolean
   /** Overwrite a login policy Action this tool cannot show it generated. */
   replaceAction?: boolean
+  /** Rewrite an account link Form whose contents differ from the definition. */
+  replaceLinkForm?: boolean
   /**
    * Where the BoxLite API is served, for the account link that merges a
    * person's logins into one account: the Action asks it to move a social
@@ -165,6 +167,7 @@ export function parseAuth0LoginPolicyOptions(
       apply: { type: 'boolean', default: false },
       'allow-test-email-provider': { type: 'boolean', default: false },
       'replace-action': { type: 'boolean', default: false },
+      'replace-link-form': { type: 'boolean', default: false },
       'account-link-api-origin': { type: 'string' },
       'disable-account-link': { type: 'boolean', default: false },
     },
@@ -185,6 +188,7 @@ export function parseAuth0LoginPolicyOptions(
     apply: values.apply ?? false,
     allowTestEmailProvider: values['allow-test-email-provider'] ?? false,
     replaceAction: values['replace-action'] ?? false,
+    replaceLinkForm: values['replace-link-form'] ?? false,
     ...accountLinkOptions(values['account-link-api-origin'], environment[ACCOUNT_LINK_SECRET_ENV]),
     disableAccountLink: values['disable-account-link'] ?? false,
   }
@@ -928,7 +932,9 @@ export class Auth0LoginPolicyConfigurator {
   private assertStateAdoptable(state: PolicyState): void {
     if (state.managementClient) this.assertManagementClientCompatible(state.managementClient)
     if (this.options.accountLinkApiOrigin && state.linkClient) this.assertLinkClientCompatible(state.linkClient)
-    if (this.options.accountLinkApiOrigin && state.linkForm) this.assertLinkFormMatches(state.linkForm)
+    if (this.options.accountLinkApiOrigin && state.linkForm && !this.options.replaceLinkForm) {
+      this.assertLinkFormMatches(state.linkForm)
+    }
     if (
       state.action &&
       runsAccountLink(state.action) &&
@@ -1292,11 +1298,21 @@ export class Auth0LoginPolicyConfigurator {
     ]
   }
 
-  /** The Form the Action asks for the password on, created once and journaled. */
+  /**
+   * The Form the Action asks for the password on, created once and journaled.
+   * One whose contents differ is rewritten only under `--replace-link-form`,
+   * with its previous contents journaled so a rollback restores them.
+   */
   private ensureLinkForm(existing: JsonObject | null): JsonObject {
     if (existing) {
-      this.assertLinkFormMatches(existing)
-      return existing
+      if (this.linkFormMatches(existing)) return existing
+      if (!this.options.replaceLinkForm) this.assertLinkFormMatches(existing)
+      const id = requireResourceId('account link form', existing)
+      this.recordAdopted('account link form', 'forms', id, formSnapshot(existing))
+      return requireObject(
+        'account link form',
+        this.client.request('patch', `forms/${id}`, { data: formSnapshot(this.linkFormDefinition()) }),
+      )
     }
     const created = requireObject(
       'account link form',
@@ -1308,9 +1324,15 @@ export class Auth0LoginPolicyConfigurator {
 
   // Contained rather than equal: Auth0 may add defaults to a component it
   // reads back, which the verification Form's read-back check allows too.
+  private linkFormMatches(form: JsonObject): boolean {
+    return containsJson(formSnapshot(form), formSnapshot(this.linkFormDefinition()))
+  }
+
   private assertLinkFormMatches(form: JsonObject): void {
-    if (!containsJson(formSnapshot(form), formSnapshot(this.linkFormDefinition()))) {
-      throw new Error(`Auth0 Form '${RESOURCE_NAMES.linkForm}' already exists with unmanaged contents`)
+    if (!this.linkFormMatches(form)) {
+      throw new Error(
+        `Auth0 Form '${RESOURCE_NAMES.linkForm}' already exists with other contents; pass --replace-link-form to rewrite it`,
+      )
     }
   }
 
@@ -1464,7 +1486,9 @@ export class Auth0LoginPolicyConfigurator {
     }
     if (this.options.accountLinkApiOrigin) {
       if (!state.linkForm) throw new Error('Auth0 read-back is missing the account link Form')
-      this.assertLinkFormMatches(state.linkForm)
+      if (!this.linkFormMatches(state.linkForm)) {
+        throw new Error('Auth0 account link Form read-back does not match the managed definition')
+      }
     }
     assertManagedActionMatches(
       state.action,
