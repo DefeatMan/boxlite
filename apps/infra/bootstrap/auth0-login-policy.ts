@@ -20,6 +20,7 @@ const RESOURCE_NAMES = {
   managementClient: 'boxlite-forms-email-verification',
   vaultConnection: 'BoxLite Forms Auth0 Management API',
   linkClient: 'boxlite-account-link',
+  linkForm: 'BoxLite account link',
 } as const
 const LEGACY_ACTION_NAME = 'boxlite-custom-claims'
 // The last line of every Action this tool generates: a hash of the code above
@@ -131,7 +132,8 @@ export interface Auth0LoginPolicyOptions {
   /**
    * Where the BoxLite API is served, for the account link that merges a
    * person's logins into one account: the Action asks it to move a social
-   * user's data. Unset, no link client is created and the link stays off.
+   * user's data. Unset, no link client or Form is created, and an Action
+   * that runs the link is refused unless `disableAccountLink` turns it off.
    */
   accountLinkApiOrigin?: string
   /**
@@ -141,6 +143,12 @@ export interface Auth0LoginPolicyOptions {
    * history.
    */
   accountLinkSecret?: string
+  /**
+   * Turn the account link off on a tenant whose Action runs it. Without this,
+   * an apply lacking `--account-link-api-origin` refuses such an Action rather
+   * than silently leaving every later login unlinked.
+   */
+  disableAccountLink?: boolean
 }
 
 export function parseAuth0LoginPolicyOptions(
@@ -158,8 +166,12 @@ export function parseAuth0LoginPolicyOptions(
       'allow-test-email-provider': { type: 'boolean', default: false },
       'replace-action': { type: 'boolean', default: false },
       'account-link-api-origin': { type: 'string' },
+      'disable-account-link': { type: 'boolean', default: false },
     },
   })
+  if (values['disable-account-link'] && values['account-link-api-origin'] !== undefined) {
+    throw new Error('--disable-account-link and --account-link-api-origin cannot be combined')
+  }
 
   const tenant = requireExactValue('--tenant', values.tenant)
   const clientId = requireExactValue('--client-id', values['client-id'])
@@ -174,6 +186,7 @@ export function parseAuth0LoginPolicyOptions(
     allowTestEmailProvider: values['allow-test-email-provider'] ?? false,
     replaceAction: values['replace-action'] ?? false,
     ...accountLinkOptions(values['account-link-api-origin'], environment[ACCOUNT_LINK_SECRET_ENV]),
+    disableAccountLink: values['disable-account-link'] ?? false,
   }
 }
 
@@ -518,6 +531,8 @@ export class Auth0CliManagementClient implements Auth0ManagementClient {
 interface Auth0LoginPolicySources {
   actionCode: string
   emailVerificationTemplate: JsonObject
+  /** The link Form's definition; required once an API origin is given. */
+  accountLinkForm?: JsonObject
   journalDirectory: string
 }
 
@@ -535,6 +550,7 @@ interface PolicyState {
   linkClient: JsonObject | null
   linkClientGrant: JsonObject | null
   linkClientConnections: JsonObject[]
+  linkForm: JsonObject | null
   vaultConnection: JsonObject | null
   generateFlow: JsonObject | null
   verifyFlow: JsonObject | null
@@ -612,6 +628,7 @@ export class Auth0LoginPolicyConfigurator {
         action: resourceStatus(state.action),
         actionBound: state.bindings.some((binding) => binding.action?.id === state.action?.id),
         accountLinkClient: this.options.accountLinkApiOrigin ? resourceStatus(state.linkClient) : 'not-configured',
+        accountLinkForm: this.options.accountLinkApiOrigin ? resourceStatus(state.linkForm) : 'not-configured',
       },
       readyToApply: emailReadiness.readyToApply,
     }
@@ -654,17 +671,20 @@ export class Auth0LoginPolicyConfigurator {
       const form = this.ensureForm(hydratedTemplate.form, state.form)
 
       this.enableConnectionForClient(connection, state.clientConnections, this.options.clientId)
-      let linkSecrets: JsonObject[] | undefined
+      let actionSecrets: JsonObject[] | undefined
+      let linkFormId: string | undefined
       if (this.options.accountLinkApiOrigin) {
         const linkClient = this.ensureLinkClient(state.linkClient)
         this.ensureClientGrant(linkClient, state.linkClientGrant, LINK_CLIENT_SCOPES, 'account link client grant')
         this.enableConnectionForClient(connection, state.linkClientConnections, requireClientId(linkClient))
-        linkSecrets = this.accountLinkSecrets(linkClient)
+        linkFormId = requireResourceId('account link form', this.ensureLinkForm(state.linkForm))
+        actionSecrets = this.accountLinkSecrets(linkClient)
       }
       const { action, changed } = this.ensureAction(
         requireResourceId('verification form', form),
         state.action,
-        linkSecrets,
+        actionSecrets,
+        linkFormId,
       )
       if (changed) this.deployAction(action)
       this.bindAction(action, state.bindings)
@@ -793,6 +813,11 @@ export class Auth0LoginPolicyConfigurator {
       linkClient,
       linkClientGrant: managementGrantOf(linkClient),
       linkClientConnections: linkClient ? this.readClientConnections(requireClientId(linkClient)) : [],
+      linkForm: this.readResourceDetail(
+        'account link form',
+        'forms',
+        uniqueNamed(forms, RESOURCE_NAMES.linkForm, 'account link form'),
+      ),
       vaultConnection: this.readResourceDetail(
         'vault connection',
         'flows/vault/connections',
@@ -903,6 +928,17 @@ export class Auth0LoginPolicyConfigurator {
   private assertStateAdoptable(state: PolicyState): void {
     if (state.managementClient) this.assertManagementClientCompatible(state.managementClient)
     if (this.options.accountLinkApiOrigin && state.linkClient) this.assertLinkClientCompatible(state.linkClient)
+    if (this.options.accountLinkApiOrigin && state.linkForm) this.assertLinkFormMatches(state.linkForm)
+    if (
+      state.action &&
+      runsAccountLink(state.action) &&
+      !this.options.accountLinkApiOrigin &&
+      !this.options.disableAccountLink
+    ) {
+      throw new Error(
+        `Auth0 Action '${RESOURCE_NAMES.action}' runs the account link; pass --account-link-api-origin to keep the link, or --disable-account-link to turn it off`,
+      )
+    }
     if (state.vaultConnection) {
       if (!state.managementClient) {
         throw new Error(`Auth0 vault connection '${RESOURCE_NAMES.vaultConnection}' has no managed M2M client`)
@@ -948,7 +984,7 @@ export class Auth0LoginPolicyConfigurator {
       if (!this.isManagedAction(state.action) && !this.options.replaceAction) {
         assertManagedActionMatches(
           state.action,
-          this.actionPayload(requireResourceId('verification form', state.form)),
+          this.actionPayload(requireResourceId('verification form', state.form), this.appliedLinkFormId(state)),
           true,
         )
       }
@@ -1208,8 +1244,9 @@ export class Auth0LoginPolicyConfigurator {
     formId: string,
     existing: JsonObject | null,
     secrets?: JsonObject[],
+    linkFormId?: string,
   ): { action: JsonObject; changed: boolean } {
-    const payload = this.actionPayload(formId)
+    const payload = this.actionPayload(formId, linkFormId)
     if (!existing) {
       const created = requireObject(
         'login policy action',
@@ -1255,6 +1292,40 @@ export class Auth0LoginPolicyConfigurator {
     ]
   }
 
+  /** The Form the Action asks for the password on, created once and journaled. */
+  private ensureLinkForm(existing: JsonObject | null): JsonObject {
+    if (existing) {
+      this.assertLinkFormMatches(existing)
+      return existing
+    }
+    const created = requireObject(
+      'account link form',
+      this.client.request('post', 'forms', { data: formSnapshot(this.linkFormDefinition()) }),
+    )
+    this.recordCreated('account link form', 'forms', requireResourceId('account link form', created))
+    return created
+  }
+
+  // Contained rather than equal: Auth0 may add defaults to a component it
+  // reads back, which the verification Form's read-back check allows too.
+  private assertLinkFormMatches(form: JsonObject): void {
+    if (!containsJson(formSnapshot(form), formSnapshot(this.linkFormDefinition()))) {
+      throw new Error(`Auth0 Form '${RESOURCE_NAMES.linkForm}' already exists with unmanaged contents`)
+    }
+  }
+
+  private linkFormDefinition(): JsonObject {
+    if (!this.sources.accountLinkForm) throw new Error('the account link Form definition was not loaded')
+    return this.sources.accountLinkForm
+  }
+
+  /** The link Form id the Action should name: only while the link is configured. */
+  private appliedLinkFormId(state: PolicyState): string | undefined {
+    return this.options.accountLinkApiOrigin && state.linkForm
+      ? requireResourceId('account link form', state.linkForm)
+      : undefined
+  }
+
   /** A client's secret: from the detail already read, else asked of the tenant. */
   private clientSecret(client: JsonObject, kind: string): string {
     const clientId = requireClientId(client)
@@ -1294,7 +1365,7 @@ export class Auth0LoginPolicyConfigurator {
     )
   }
 
-  private actionPayload(formId: string): JsonObject {
+  private actionPayload(formId: string, linkFormId?: string): JsonObject {
     return {
       name: RESOURCE_NAMES.action,
       supported_triggers: [{ id: 'post-login', version: 'v3' }],
@@ -1302,8 +1373,9 @@ export class Auth0LoginPolicyConfigurator {
         clientId: this.options.clientId,
         connectionName: this.options.connectionName,
         formId,
-        // No link Form yet, so the account link stays off even with an origin.
+        // Both set turn the account link on; either missing leaves it off.
         accountLinkApiOrigin: this.options.accountLinkApiOrigin,
+        accountLinkFormId: linkFormId,
         tenant: this.options.tenant,
       }),
       runtime: 'node22',
@@ -1390,9 +1462,13 @@ export class Auth0LoginPolicyConfigurator {
     if (!containsJson(formSnapshot(state.form), formSnapshot(hydratedTemplate.form))) {
       throw new Error('Auth0 verification Form read-back does not match the managed graph')
     }
+    if (this.options.accountLinkApiOrigin) {
+      if (!state.linkForm) throw new Error('Auth0 read-back is missing the account link Form')
+      this.assertLinkFormMatches(state.linkForm)
+    }
     assertManagedActionMatches(
       state.action,
-      this.actionPayload(requireResourceId('verification form', state.form)),
+      this.actionPayload(requireResourceId('verification form', state.form), this.appliedLinkFormId(state)),
       true,
     )
     if (!state.bindings.some((binding) => binding.action?.id === state.action?.id)) {
@@ -1594,6 +1670,11 @@ function bindingsSnapshot(bindings: JsonObject[]): JsonObject[] {
   return bindings
     .filter((binding) => binding.action?.id)
     .map((binding) => ({ ref: { type: 'action_id', value: binding.action.id }, display_name: binding.display_name }))
+}
+
+/** Whether the Action the tenant runs names a link Form, the account link's switch. */
+function runsAccountLink(action: JsonObject): boolean {
+  return /const ACCOUNT_LINK_FORM_ID = "[^"]+"/.test(String(action.deployed_version?.code ?? action.code ?? ''))
 }
 
 function secretNames(action: JsonObject): string[] {
