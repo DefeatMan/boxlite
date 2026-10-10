@@ -290,15 +290,22 @@ test('hydrateLoginPolicyAction leaves the account link off unless given an origi
   const source =
     'const origin = __ACCOUNT_LINK_API_ORIGIN_JSON__; const form = __ACCOUNT_LINK_FORM_ID_JSON__; const domain = __AUTH0_DOMAIN_JSON__;'
   const values = { clientId: 'spa_123', connectionName: 'boxlite-users', formId: 'ap_verify' }
+  // The line hydration fills; the stamp it appends is the upgrade tests' concern.
+  const hydratedLine = (code: string) => code.split('\n')[0]
 
-  assert.equal(hydrateLoginPolicyAction(source, values), 'const origin = ""; const form = ""; const domain = "";')
   assert.equal(
-    hydrateLoginPolicyAction(source, {
-      ...values,
-      accountLinkApiOrigin: 'https://api.example.com',
-      accountLinkFormId: 'ap_link',
-      tenant: 'tenant.us.auth0.com',
-    }),
+    hydratedLine(hydrateLoginPolicyAction(source, values)),
+    'const origin = ""; const form = ""; const domain = "";',
+  )
+  assert.equal(
+    hydratedLine(
+      hydrateLoginPolicyAction(source, {
+        ...values,
+        accountLinkApiOrigin: 'https://api.example.com',
+        accountLinkFormId: 'ap_link',
+        tenant: 'tenant.us.auth0.com',
+      }),
+    ),
     'const origin = "https://api.example.com"; const form = "ap_link"; const domain = "tenant.us.auth0.com";',
   )
 })
@@ -319,7 +326,20 @@ test('parseAuth0LoginPolicyOptions defaults to preview and requires exact tenant
       connectionName: 'boxlite-users',
       apply: false,
       allowTestEmailProvider: false,
+      replaceAction: false,
     },
+  )
+  assert.equal(
+    parseAuth0LoginPolicyOptions([
+      '--tenant',
+      'tenant.us.auth0.com',
+      '--client-id',
+      'spa_123',
+      '--connection',
+      'boxlite-users',
+      '--replace-action',
+    ]).replaceAction,
+    true,
   )
   assert.throws(() => parseAuth0LoginPolicyOptions(['--tenant', 'tenant.us.auth0.com']), /--client-id is required/)
 })
@@ -670,7 +690,11 @@ test('database connection setup retries Identifier First propagation without add
   }
 })
 
-test('Auth0LoginPolicyConfigurator applies, binds last, reads back, and journals without credentials', () => {
+/**
+ * An in-memory tenant answering the Management API calls the configurator
+ * makes, with the email-verification resources already journal-owned.
+ */
+function fakeTenant() {
   const journalDirectory = mkdtempSync(join(tmpdir(), 'boxlite-auth0-policy-'))
   const template = JSON.parse(readFileSync(new URL('./auth0/email-verification-form.json', import.meta.url), 'utf8'))
   const calls: Array<{ method: string; path: string; data?: Record<string, any> }> = []
@@ -814,7 +838,8 @@ test('Auth0LoginPolicyConfigurator applies, binds last, reads back, and journals
         return state.action
       }
       if (method === 'patch' && path === 'actions/actions/act_policy') {
-        Object.assign(state.action, options.data)
+        // A patch edits the draft; only a deploy changes what runs.
+        Object.assign(state.action, options.data, { all_changes_deployed: false })
         return state.action
       }
       if (method === 'post' && path === 'actions/actions/act_policy/deploy') {
@@ -837,6 +862,12 @@ test('Auth0LoginPolicyConfigurator applies, binds last, reads back, and journals
       return {}
     },
   }
+
+  return { journalDirectory, template, calls, state, client }
+}
+
+test('Auth0LoginPolicyConfigurator applies, binds last, reads back, and journals without credentials', () => {
+  const { journalDirectory, template, calls, state, client } = fakeTenant()
 
   try {
     const configurator = new Auth0LoginPolicyConfigurator(
@@ -1059,4 +1090,133 @@ test('login policy continuation trusts only the exact verification form', async 
   assert.equal(success.claims.email_verified, true)
   assert.match(wrongForm.denied[0], /Email verification failed/)
   assert.deepEqual(wrongForm.claims, {})
+})
+
+const POLICY_SOURCE = readFileSync(new URL('./auth0/login-policy.js', import.meta.url), 'utf8')
+
+function upgradeConfigurator(tenant: ReturnType<typeof fakeTenant>, replaceAction = false) {
+  return new Auth0LoginPolicyConfigurator(
+    {
+      tenant: 'tenant.us.auth0.com',
+      clientId: 'spa_123',
+      connectionName: 'boxlite-users',
+      apply: true,
+      allowTestEmailProvider: false,
+      replaceAction,
+    },
+    tenant.client,
+    {
+      actionCode: POLICY_SOURCE,
+      emailVerificationTemplate: tenant.template,
+      journalDirectory: tenant.journalDirectory,
+    },
+  )
+}
+
+function stampedCode(body: string, clientId = 'spa_123'): string {
+  return hydrateLoginPolicyAction(`const BOXLITE_CLIENT_ID = __BOXLITE_CLIENT_ID_JSON__\n${body}\n`, {
+    clientId,
+    connectionName: 'boxlite-users',
+    formId: 'ap_verify',
+    accountLinkApiOrigin: '',
+  })
+}
+
+/** A deployed Action this tool wrote for a client, spa_123 by default, from an earlier login-policy.js. */
+function earlierManagedAction(clientId = 'spa_123'): Record<string, any> {
+  const code = stampedCode('// earlier body', clientId)
+  return {
+    id: 'act_policy',
+    name: 'boxlite-login-policy',
+    supported_triggers: [{ id: 'post-login', version: 'v3' }],
+    runtime: 'node22',
+    code,
+    secrets: [],
+    all_changes_deployed: true,
+    deployed_version: { code, runtime: 'node22', deployed: true, secrets: [] },
+  }
+}
+
+function tenantWithAction(action: Record<string, any>) {
+  const tenant = fakeTenant()
+  tenant.state.action = structuredClone(action)
+  tenant.state.bindings = [{ action: { id: 'act_policy' }, display_name: 'boxlite-login-policy' }]
+  return tenant
+}
+
+test('login policy apply upgrades a stamped Action in place, and rollback redeploys the code it ran', () => {
+  const earlier = earlierManagedAction()
+  const tenant = tenantWithAction(earlier)
+  try {
+    const result = upgradeConfigurator(tenant).apply()
+
+    assert.equal(result.mode, 'applied')
+    assert.notEqual(tenant.state.action.deployed_version.code, earlier.code)
+    Auth0LoginPolicyConfigurator.rollback(result.journal as string, () => tenant.client)
+    assert.equal(tenant.state.action.deployed_version.code, earlier.code)
+  } finally {
+    rmSync(tenant.journalDirectory, { recursive: true, force: true })
+  }
+})
+
+test('login policy apply refuses an Action edited after it was stamped, unless told to replace it', () => {
+  const edited = earlierManagedAction()
+  edited.code = edited.deployed_version.code = edited.code.replace('// earlier body', '// edited in the dashboard')
+  const tenant = tenantWithAction(edited)
+  try {
+    assert.throws(() => upgradeConfigurator(tenant).apply(), /unmanaged contents.*--replace-action/)
+    assert.equal(tenant.state.action.code, edited.code)
+
+    const result = upgradeConfigurator(tenant, true).apply()
+    assert.equal(result.mode, 'applied')
+    Auth0LoginPolicyConfigurator.rollback(result.journal as string, () => tenant.client)
+    assert.equal(tenant.state.action.deployed_version.code, edited.code)
+  } finally {
+    rmSync(tenant.journalDirectory, { recursive: true, force: true })
+  }
+})
+
+test('login policy apply refuses an Action carrying secrets before writing, even told to replace it', () => {
+  const keyed = earlierManagedAction()
+  keyed.secrets = keyed.deployed_version.secrets = [{ name: 'OTHER_SECRET' }]
+  const tenant = tenantWithAction(keyed)
+  try {
+    assert.throws(() => upgradeConfigurator(tenant, true).apply(), /contains secrets/)
+    assert.equal(tenant.state.action.code, keyed.code)
+    assert.equal(tenant.state.action.deployed_version.code, keyed.deployed_version.code)
+  } finally {
+    rmSync(tenant.journalDirectory, { recursive: true, force: true })
+  }
+})
+
+test('login policy apply refuses a stamped Action written for another client, unless told to replace it', () => {
+  const other = earlierManagedAction('spa_other')
+  const tenant = tenantWithAction(other)
+  try {
+    assert.throws(() => upgradeConfigurator(tenant).apply(), /unmanaged contents.*--replace-action/)
+    assert.equal(tenant.state.action.code, other.code)
+
+    const result = upgradeConfigurator(tenant, true).apply()
+    assert.equal(result.mode, 'applied')
+    assert.match(tenant.state.action.deployed_version.code, /const BOXLITE_CLIENT_ID = "spa_123"/)
+  } finally {
+    rmSync(tenant.journalDirectory, { recursive: true, force: true })
+  }
+})
+
+test('login policy apply leaves an Action with an undeployed draft alone, and a replacement journals what ran', () => {
+  const drafted = earlierManagedAction()
+  const ran = drafted.code
+  drafted.code = stampedCode('// a draft nobody deployed')
+  drafted.all_changes_deployed = false
+  const tenant = tenantWithAction(drafted)
+  try {
+    assert.throws(() => upgradeConfigurator(tenant).apply(), /--replace-action/)
+
+    const result = upgradeConfigurator(tenant, true).apply()
+    Auth0LoginPolicyConfigurator.rollback(result.journal as string, () => tenant.client)
+    assert.equal(tenant.state.action.deployed_version.code, ran)
+  } finally {
+    rmSync(tenant.journalDirectory, { recursive: true, force: true })
+  }
 })
