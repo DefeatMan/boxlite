@@ -229,16 +229,21 @@ which the configurator reads from its environment, never argv, and refuses
 under 32 characters or with surrounding whitespace, which the API would trim.
 Auth0 never returns a secret's value, so every such apply rewrites all three;
 that is how a rotated key arrives. The journal keeps the Action's code and no
-secret, so `--rollback` restores the code and leaves the secrets in place. Give
-the API the same key:
+secret, so `--rollback` restores the code and leaves the secrets in place.
+
+Give the API the same key and
+[deploy the stage](deployment.md#deploy-through-github-actions) before that
+apply turns the link on. Until the API runs with the key, both endpoints answer
+404 and the Action denies every login it would link.
 
 ```bash
 export AUTH0_ACCOUNT_LINK_SECRET="$(openssl rand -base64 48)"
+printf %s "$AUTH0_ACCOUNT_LINK_SECRET" |
+  npm run mstage env set -- OIDC_ACCOUNT_LINK_SECRET --stage <stage>
+# Deploy the stage, then turn the link on:
 npm run auth0:configure-login -- --tenant <tenant.auth0.com> \
   --client-id <boxlite-spa-client-id> --connection <database-connection-name> \
   --account-link-api-origin https://api.<stage domain> --apply
-printf %s "$AUTH0_ACCOUNT_LINK_SECRET" |
-  npm run mstage env set -- OIDC_ACCOUNT_LINK_SECRET --stage <stage>
 ```
 
 The same apply creates the link Form as `BoxLite account link`, journals it
