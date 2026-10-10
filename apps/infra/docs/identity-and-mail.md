@@ -223,11 +223,13 @@ The Action depends on three things outside its code:
 - **The link Form**: defined in `bootstrap/auth0/account-link-form.json`, with
   a Password field `password`, which the Action rather than the Form requires,
   so Continue never stops for it, and two custom fields whose code sits in
-  `bootstrap/auth0/account-link-form/`. `account` is the greyed-out address,
-  adds the page's styles and hides the password field in code mode;
-  `bootstrap/account-link-form.ts` reads both fields' code and the styles into
-  the Form. `cancel` is the line under Continue. The Action renders the Form
-  with the vars `title`, `lead`, `error`, `mode` (`password` or `code`),
+  `bootstrap/auth0/account-link-form/`. `account` is the greyed-out address
+  and dresses the page like the login page: its styles, and the font and logo
+  `bootstrap/account-link-form.ts` resolves for the tenant from
+  `auth0/targets.json` and `auth0/branding/theme.json` as Universal Login does;
+  a tenant no stage names keeps Auth0's defaults. In code mode it hides the
+  password field. `cancel` is the line under Continue. The Action renders the
+  Form with the vars `title`, `lead`, `error`, `mode` (`password` or `code`),
   `address` and `render`, a fresh id per render. Forms gives a custom field no
   prefilled value, so the two fields take `{{vars.address}}`, `{{vars.mode}}`
   and `{{vars.render}}` as params, which Forms resolves and hands to their
