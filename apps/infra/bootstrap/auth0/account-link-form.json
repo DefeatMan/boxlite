@@ -71,6 +71,22 @@
             "config": {
               "text": "Continue"
             }
+          },
+          {
+            "id": "cancel",
+            "category": "FIELD",
+            "type": "CUSTOM",
+            "required": false,
+            "sensitive": false,
+            "config": {
+              "schema": {
+                "type": "string"
+              },
+              "code": "cancel-field.js",
+              "params": {
+                "render": "{{vars.render}}"
+              }
+            }
           }
         ],
         "next_node": "$ending"

@@ -464,7 +464,7 @@ describe('login-time account link, Action and API together', () => {
       expect(adopt).not.toHaveBeenCalled()
     })
 
-    it('sends a code page that comes back to the email Form, not to the fold', async () => {
+    it('sends a code page that comes back without Cancel to the email Form, not to the fold', async () => {
       const { action, adopt } = tenant({ accounts: [account(GOOGLE_USER)] })
       const step = transaction()
 
@@ -590,7 +590,30 @@ describe('login-time account link, Action and API together', () => {
     })
   })
 
-  describe('reopening', () => {
+  describe('Cancel and reopening', () => {
+    it.each([
+      [
+        'a new user, who would get a second account, is logged out to the login page',
+        [] as string[],
+        ['https://auth.example.com/v2/logout?client_id=spa_123&returnTo=https%3A%2F%2Fapp.example.com'],
+      ],
+      ['a user BoxLite knows goes on unlinked', [GOOGLE_USER], [] as string[]],
+    ])('on Cancel, even with a password typed, %s', async (_case, known, redirects) => {
+      const { action, adopt, calls } = tenant({ known })
+      const step = transaction()
+
+      await action.onContinuePostLogin(
+        google({ prompt: { id: 'ap_link', fields: { cancel: 'cancel', password: PASSWORD } } }),
+        step.api,
+      )
+
+      expect(step.seen.redirects).toEqual(redirects)
+      expect(step.seen.denied).toEqual([])
+      expect(step.seen.renders).toEqual([])
+      expect(adopt).not.toHaveBeenCalled()
+      expect(links(calls)).toEqual([])
+    })
+
     it('ends a login that would reopen the link page from an earlier sign-in, as the app opened again does', async () => {
       const { action } = tenant()
       const step = transaction()
@@ -676,17 +699,25 @@ describe('login-time account link, Action and API together', () => {
       await action.onExecutePostLogin(google(), step.api)
 
       const read = [...form.matchAll(/\{\{vars\.(\w+)\}\}/g)].map((match) => match[1])
-      expect(read).toEqual(expect.arrayContaining(['address', 'mode']))
+      expect(read).toEqual(expect.arrayContaining(['address', 'render', 'mode']))
       expect(Object.keys(step.seen.renders[0].vars)).toEqual(expect.arrayContaining(read))
     })
 
-    it('names the provider in its title', async () => {
+    it('names the provider and gives every render a fresh id', async () => {
       const { action } = tenant()
-      const step = transaction()
+      const github = login(GITHUB_USER)
+      const first = transaction()
+      const again = transaction()
 
-      await action.onExecutePostLogin(login(GITHUB_USER), step.api)
+      await action.onExecutePostLogin(github, first.api)
+      await action.onContinuePostLogin(
+        { ...github, prompt: { id: 'ap_link', fields: { password: 'wrong' } } },
+        again.api,
+      )
 
-      expect(step.seen.renders[0].vars.title).toBe('Link your GitHub sign-in')
+      expect(first.seen.renders[0].vars.title).toBe('Link your GitHub sign-in')
+      expect(again.seen.renders[0].vars.error).toMatch(/not right/)
+      expect(again.seen.renders[0].vars.render).not.toBe(first.seen.renders[0].vars.render)
     })
   })
 })
