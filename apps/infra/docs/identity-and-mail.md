@@ -113,12 +113,12 @@ The post-login Action is upgraded in place instead. Every Action the
 configurator writes ends with a stamp, a SHA-256 of the code above it. An apply
 rewrites an existing `boxlite-login-policy` Action when that stamp still
 matches, the code names this client, and the tenant runs exactly that code with
-no draft pending. The journal keeps the deployed code, so `--rollback`
-redeploys what ran before.
+no draft pending. The journal keeps the deployed version's code, runtime and
+trigger, so `--rollback` redeploys what ran before.
 
 Any other Action under that name, such as one edited in the dashboard or
 written before the stamp existed, stops the apply until it is removed or
-`--replace-action` is passed; that flag journals its deployed code the same way.
+`--replace-action` is passed; that flag journals its deployed version the same way.
 An Action carrying secrets this tool does not set stops the apply either way,
 before anything is written.
 
