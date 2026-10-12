@@ -1,7 +1,12 @@
 {
-  "_comment": "The signup counterpart of login-id, and the visitor's first contact, so this title names the product.",
+  "_comment": [
+    "The signup counterpart of login-id, and the visitor's first contact, so this title names the product.",
+    "loginActionText is the one paragraph under Continue, so the Terms and Privacy notice leads it and Auth0 appends the Log in link; the page escapes this text, so the URLs stay plain rather than links.",
+    "The page also collapses newlines, so non-breaking spaces join the words of Already have an account? to wrap it whole onto a line of its own."
+  ],
   "signup-id": {
     "title": "Welcome to BoxLite",
-    "description": "Boxes your agents build in, and ship from."
+    "description": "Boxes your agents build in, and ship from.",
+    "loginActionText": "By continuing, you agree to the Terms of Service (boxlite.ai/legal/terms) and Privacy Policy (boxlite.ai/legal/privacy). Already\u00a0have\u00a0an\u00a0account?"
   }
 }

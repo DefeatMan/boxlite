@@ -2,6 +2,7 @@
   "_comment": "The single-step signup screen, shown only when Identifier First is off; the visitor's first contact, so this title names the product.",
   "signup": {
     "title": "Welcome to BoxLite",
-    "description": "Boxes your agents build in, and ship from."
+    "description": "Boxes your agents build in, and ship from.",
+    "loginActionText": "By continuing, you agree to the Terms of Service (boxlite.ai/legal/terms) and Privacy Policy (boxlite.ai/legal/privacy). Already\u00a0have\u00a0an\u00a0account?"
   }
 }

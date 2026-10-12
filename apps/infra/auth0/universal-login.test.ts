@@ -325,13 +325,27 @@ test('the checked-in source binds dev to the reviewed stack, issuer, tenant, and
   const copy = new Map(source.prompts.map((prompt) => [prompt.prompt, prompt.text]))
   assert.deepEqual([...copy.keys()].sort(), ['login', 'login-id', 'signup', 'signup-id'])
   // Identifier First serves login-id/signup-id, so both variants of each screen carry the same copy.
-  for (const [prompt, title, description] of [
-    ['login-id', 'Start building on BoxLite', '$100 in free credits with your new account.'],
-    ['login', 'Start building on BoxLite', '$100 in free credits with your new account.'],
-    ['signup-id', 'Welcome to BoxLite', 'Boxes your agents build in, and ship from.'],
-    ['signup', 'Welcome to BoxLite', 'Boxes your agents build in, and ship from.'],
+  // The Terms notice leads the one paragraph under Continue; non-breaking spaces keep Auth0's prompt whole
+  // ahead of its Sign up or Log in link.
+  const notice =
+    'By continuing, you agree to the Terms of Service (boxlite.ai/legal/terms) and Privacy Policy (boxlite.ai/legal/privacy).'
+  const login = {
+    title: 'Start building on BoxLite',
+    description: '$100 in free credits with your new account.',
+    signupActionText: `${notice} Don't\u00a0have\u00a0an\u00a0account?`,
+  }
+  const signup = {
+    title: 'Welcome to BoxLite',
+    description: 'Boxes your agents build in, and ship from.',
+    loginActionText: `${notice} Already\u00a0have\u00a0an\u00a0account?`,
+  }
+  for (const [prompt, text] of [
+    ['login-id', login],
+    ['login', login],
+    ['signup-id', signup],
+    ['signup', signup],
   ] as const) {
-    assert.deepEqual(copy.get(prompt), { [prompt]: { title, description } })
+    assert.deepEqual(copy.get(prompt), { [prompt]: text })
   }
   assert.equal(source.tenant.picture_url, 'https://dev.boxlite.ai/auth0/boxlite-black-12c2c991.png')
   assert.equal('_comment' in source.theme, false)

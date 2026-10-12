@@ -1,7 +1,12 @@
 {
-  "_comment": "Identifier First makes this the first screen every visitor sees, new ones included, so the title sells starting rather than greeting a return; login covers the single-step variant.",
+  "_comment": [
+    "Identifier First makes this the first screen every visitor sees, new ones included, so the title sells starting rather than greeting a return; login covers the single-step variant.",
+    "signupActionText is the one paragraph under Continue, so the Terms and Privacy notice leads it and Auth0 appends the Sign up link; the page escapes this text, so the URLs stay plain rather than links.",
+    "The page also collapses newlines, so non-breaking spaces join the words of Don't have an account? to wrap it whole onto a line of its own."
+  ],
   "login-id": {
     "title": "Start building on BoxLite",
-    "description": "$100 in free credits with your new account."
+    "description": "$100 in free credits with your new account.",
+    "signupActionText": "By continuing, you agree to the Terms of Service (boxlite.ai/legal/terms) and Privacy Policy (boxlite.ai/legal/privacy). Don't\u00a0have\u00a0an\u00a0account?"
   }
 }

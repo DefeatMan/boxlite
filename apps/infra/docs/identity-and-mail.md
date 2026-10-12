@@ -343,6 +343,14 @@ keys starting with `_` are comments the command never sends. Identifier First se
 `signup-id`, and the single-step `login` and `signup` return when it is off, so each pair carries the
 same copy. The checked-in-copy test in `auth0/universal-login.test.ts` pins both.
 
+The Terms of Service and Privacy Policy notice leads the one paragraph Auth0 renders under Continue:
+`signupActionText` on `login-id` and `login`, `loginActionText` on `signup-id` and `signup`. Each value
+ends with Auth0's own prompt, `Don't have an account?` or `Already have an account?`, because Auth0
+appends the Sign up or Log in link right after it. The page escapes these values, so the notice spells
+its URLs as plain text. It also collapses newlines, so non-breaking spaces (U+00A0) join the
+prompt's words instead: the prompt wraps whole and, at the card's width, lands on a line of its own. A
+linked notice needs a page template or prompt partials, which the Free plan lacks.
+
 The copy renders on the stage's Auth0 domain (`auth.dev.boxlite.ai` for dev), not the dashboard
 origin, and only to a visitor without an Auth0 session. After `apply`, run `preview` again: it reads
 the tenant back and reports `already up to date` once every write has landed.
