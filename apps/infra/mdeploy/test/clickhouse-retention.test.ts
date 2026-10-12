@@ -109,9 +109,9 @@ test('ClickHouse providers preserve host inputs and reconcile optional reader cr
     callerRanges: ['10.0.0.0/24'], clickStackConsumerProject: 'project',
     clickStackConsumerAccount: null, managed: null, dependsOn: [],
   }
-  const deploy = (retentionHours: number, logReaderRef: string | null = null) => {
+  const deploy = (retentionHours: number, otelOpenapiEnabled = false) => {
     resources.clear()
-    gcpClickHouseProvider({ ...providerConfig, logReader: logReaderRef ? { username: 'audit_logs', passwordRef: logReaderRef } : null })({ mode: 'self-hosted', database: 'otel', writerUsername: 'otel_writer',
+    gcpClickHouseProvider({ ...providerConfig, otelOpenapiEnabled })({ mode: 'self-hosted', database: 'otel', writerUsername: 'otel_writer',
       readerUsername: 'otel_reader', instanceSize: 'small', dataGb: 100, retentionHours })
     const vm = resources.get('ClickHouse')!
     const policy = resources.get('ClickHouseRetention')!.args.osPolicies[0].resourceGroups[0].resources[0].exec
@@ -125,17 +125,20 @@ test('ClickHouse providers preserve host inputs and reconcile optional reader cr
     assert.notEqual(after.policy, before.policy)
     assert.match(after.policy, /INTERVAL 720 HOUR/)
   })
-  await t.test('the dedicated reader grants host access without creating or adopting a secret', () => {
-    const reference = 'projects/project/secrets/log-reader/versions/1'
-    const enabled = deploy(720, reference)
-    assert.match(enabled.script, /read_secret 'projects\/project\/secrets\/log-reader\/versions\/1'/)
-    const access = resources.get('ClickHouseLogReaderSecretAccess')!
-    assert.equal(access.args.secretId, 'log-reader')
-    assert.equal(access.args.role, 'roles/secretmanager.secretAccessor')
-    assert.ok(resources.get('ClickHouse')!.options.dependsOn.some((resource: any) => resource.secretId === 'log-reader'))
-    assert.equal([...resources.keys()].filter(name => name.startsWith('ClickHouseLogReader')).length, 1)
+  await t.test('GCP uses a separate managed secret and its version at boot', () => {
+    const enabled = deploy(720, true)
+    assert.equal(resources.get('ClickHouseOpenapiReaderSecret')!.args.secretId, 'boxlite-dev-clickhouse-openapi-reader')
+    assert.ok(resources.has('ClickHouseOpenapiReaderSecretPassword'))
+    assert.match(enabled.script, /read_secret 'ClickHouseOpenapiReaderSecretValue\/versions\/1'/)
+    assert.match(enabled.script, /CREATE USER IF NOT EXISTS "otel_openapi_reader"/)
+    assert.equal(resources.get('ClickHouseSecretAccess3')!.args.role, 'roles/secretmanager.secretAccessor')
+    assert.ok(resources.get('ClickHouse')!.options.dependsOn.some((resource: any) => resource.secretId === 'boxlite-dev-clickhouse-openapi-reader'))
+    assert.equal(deploy(720, true).script, enabled.script)
+    rotated = 'ClickHouseOpenapiReaderSecretValue'
+    assert.notEqual(deploy(720, true).script, enabled.script)
+    rotated = ''
     assert.equal(deploy(720).script, after.script)
-    assert.ok(!resources.has('ClickHouseLogReaderSecretAccess'))
+    assert.ok(!resources.has('ClickHouseOpenapiReaderSecret'))
   })
   for (const account of ['Admin', 'Writer', 'Reader']) {
     rotated = `ClickHouse${account}SecretValue`
@@ -146,23 +149,28 @@ test('ClickHouse providers preserve host inputs and reconcile optional reader cr
       assert.match(rotation.script, new RegExp(`${rotated}/versions/2`))
     })
   }
-  await t.test('AWS reuses the configured secret and includes SQL changes in readiness triggers', () => {
-    resources.clear()
-    const passwordRef = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:dedicated'
-    const invoke = (username: string) => awsClickHouseProvider({
-      region: 'us-east-1', managed: null, logReader: { username, passwordRef },
-      network: { cloud: 'aws', vpcId: 'vpc', vpc: { securityGroups: [] }, privateSubnets: ['subnet'] } as any,
-    })({ mode: 'self-hosted', database: 'otel', writerUsername: 'otel_writer', readerUsername: 'otel_reader',
-      instanceSize: 'small', dataGb: 100, retentionHours: 720 })
-    invoke('audit_logs')
+  await t.test('AWS uses a fixed secret name and managed version in readiness', () => {
+    const invoke = (otelOpenapiEnabled: boolean) => {
+      resources.clear()
+      return awsClickHouseProvider({
+        region: 'us-east-1', managed: null, otelOpenapiEnabled,
+        network: { cloud: 'aws', vpcId: 'vpc', vpc: { securityGroups: [] }, privateSubnets: ['subnet'] } as any,
+      })({ mode: 'self-hosted', database: 'otel', writerUsername: 'otel_writer', readerUsername: 'otel_reader',
+        instanceSize: 'small', dataGb: 100, retentionHours: 720 })
+    }
+    invoke(true)
     const readiness = resources.get('ClickHouseDatabaseReady')!.args
-    assert.equal(readiness.environment.CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD, passwordRef)
-    const sql = Buffer.from(readiness.environment.CLICKHOUSE_OPENAPI_LOG_READER_SQL_BASE64, 'base64').toString()
-    assert.match(sql, /REVOKE ALL FROM "audit_logs"/)
+    assert.equal(resources.get('ClickHouseOpenapiReaderSecret')!.args.name, 'boxlite-dev-clickhouse-openapi-reader')
+    assert.equal(resources.get('ClickHouseOpenapiReaderSecret')!.args.namePrefix, undefined)
+    assert.equal(resources.get('ClickHouseReaderSecret')!.args.namePrefix, 'boxlite-dev-clickhouse-reader-')
+    assert.equal(readiness.environment.CLICKHOUSE_OPENAPI_READER_SECRET_ARN.value, 'ClickHouseOpenapiReaderSecret-arn')
+    const sql = Buffer.from(readiness.environment.CLICKHOUSE_OPENAPI_READER_SQL_BASE64, 'base64').toString()
+    assert.match(sql, /REVOKE ALL FROM "otel_openapi_reader"/)
     assert.ok(readiness.triggers.includes(sql))
-    assert.ok(JSON.parse(resources.get('ClickHouseSecretPolicy')!.args.policy.value).Statement[0].Resource.includes(passwordRef))
-    assert.ok(!resources.has('ClickHouseLogReaderSecret'))
-    invoke('other_logs')
-    assert.notDeepEqual(resources.get('ClickHouseDatabaseReady')!.args.triggers, readiness.triggers)
+    assert.ok(readiness.triggers.some((value: any) => value?.value === 'ClickHouseOpenapiReaderSecretValue'))
+    assert.ok(JSON.parse(resources.get('ClickHouseSecretPolicy')!.args.policy.value).Statement[0].Resource.includes('ClickHouseOpenapiReaderSecret-arn'))
+    invoke(false)
+    assert.ok(!resources.has('ClickHouseOpenapiReaderSecret'))
+    assert.equal(resources.get('ClickHouseDatabaseReady')!.args.environment.CLICKHOUSE_OPENAPI_READER_SECRET_ARN, undefined)
   })
 })

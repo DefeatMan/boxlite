@@ -46,84 +46,59 @@ Keep database/user settings aligned with the bundled schema and boot scripts;
 
 ## Optional OpenAPI log reader
 
-Set these optional values in the encrypted mstage `deploy` group. `PASSWORD` also
-belongs to `secret` and holds a JSON reference, never a password. Keeping it in
-`deploy` includes address changes in `--digest`; neither key is a workload variable.
-
-| Key | Value |
-| --- | --- |
-| `CLICKHOUSE_OPENAPI_LOG_READER` | Dedicated SQL username, e.g. `audit_logs` |
-| `CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD` | `{"address":"<cloud-secret-address>"}`, or absent to request creation |
-
-For an existing GCP credential, write both values together:
+Enable the dedicated account with the optional mstage deploy flag:
 
 ```bash
-npm run mstage env set -- --stage dev --digest --json \
-  'CLICKHOUSE_OPENAPI_LOG_READER="audit_logs"' \
-  'CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD={"address":"projects/example-project/secrets/log-reader-password"}'
+npm run mstage env set -- --stage dev --digest OTEL_OPENAPI_ENABLED=true
 ```
 
-Add `--confirm` for a protected stage. The shared secret parser validates the JSON
-and cloud address; bare addresses are refused. Only the ClickHouse host reads the
-secret payload. To request bootstrap, omit/delete the optional PASSWORD key;
-`mstage env set` rejects empty values for keys in the secret group.
+Add `--confirm` for protected stages. Missing, blank or `false` disables provisioning;
+only `true` enables it. Other values fail. The feature requires self-hosted `otel`.
 
-Both values must be nonempty before the account is enabled. An empty username
-leaves it unmanaged, even if an address remains. With only a username, **mdeploy
-apply** first creates `<app>-<stage>-clickhouse-<username>-password`, saves its
-JSON reference and updates the stage digest, then enables the account. Preview refuses
-this incomplete pair without writing anything; remove and refresh never bootstrap.
-Creation requires the deploy identity's secret-create and stage-store-write access.
+The SQL username is fixed at `otel_openapi_reader`; its secret is
+`<app>-<stage>-clickhouse-openapi-reader` on both clouds. Neither name is configurable.
+For example, `boxlite-app/dev` uses `boxlite-app-dev-clickhouse-openapi-reader`.
+GCP references it as `projects/<project>/secrets/<name>/versions/<version>`;
+AWS uses its Secrets Manager ARN. No credential or secret address belongs in mstage.
 
-For example, `audit_logs` in `boxlite-app/dev` creates
-`boxlite-app-dev-clickhouse-audit_logs-password`. GCP saves
-`{"address":"projects/<project>/secrets/<name>/versions/1"}`; AWS wraps the returned
-Secrets Manager ARN in the same JSON shape. Each stage creates its own password.
-**If that name already exists while PASSWORD is empty, deployment fails.** It
-never adopts or overwrites a same-name secret. This also applies after creation
-succeeds but writeback fails: inspect the secret, then explicitly set its address
-with `mstage env set --json` and `--digest` before retrying. Serialize stage configuration
-edits with deployment, as the existing stage store uses read-modify-write updates.
+Like `otel_reader`, the account uses the stack's RandomPassword, Secret and
+SecretVersion resources. Deployment state preserves the generated password on an
+unchanged redeploy; each stage has its own credential. A manually created same-name
+secret is not automatically imported or overwritten: creation fails. Do not pre-create
+it before applying. State recovery/import requires an explicit ownership plan.
 
-An explicit JSON reference skips all credential creation and writeback. GCP accepts
-`projects/<project>/secrets/<secret>[/versions/<version>]` in its `address` field,
-within the stage project;
-omitting the version selects `latest`. AWS accepts a Secrets Manager ARN.
-Generated secrets remain outside the deployment stack's deletion lifecycle;
-existing secrets retain their owner, address, value and consumer permissions.
+The GCP startup script or AWS SSM readiness command preserves the SQL user's identity
+and reapplies the [policy](../clickhouse/openapi-log-reader.sql), removing inherited
+roles and old grants. Only SELECT and SHOW COLUMNS on `otel.otel_logs` remain.
+The `otel_openapi_reader_limits` profile replaces settings with all 18 immutable
+limits. Access data survives on the retained disk. GCP reconciles at boot; AWS
+reconciles when deployment inputs, policy SQL or managed credential versions change.
+Disabling the flag removes the optional credential resources according to the stack's
+normal removal policy; it does not revoke a SQL account already stored on disk.
+Review the resource deletion plan before disabling or removing a stage.
 
-The feature requires self-hosted `otel`. Usernames match `[a-z][a-z0-9_]{0,63}`
-and cannot reuse the admin, default, writer or reader accounts. The existing GCP
-startup script or AWS SSM readiness command preserves the user's identity and
-reapplies the [SQL policy](../clickhouse/openapi-log-reader.sql), revoking inherited
-roles and old grants even when the user already exists. Only SELECT and SHOW
-COLUMNS on `otel.otel_logs` remain. The `<username>_limits` profile replaces all
-settings with the policy's 18 immutable limits. SQL access data survives on the
-retained data disk. GCP applies this on boot; AWS reconciles when deployment
-inputs, policy SQL or credential versions change.
+Backoffice connects over the private ClickHouse endpoint as `otel_openapi_reader`.
+Grant its runtime identity access to this one secret and inject the password through
+its platform's secret mechanism. Host IAM is provisioned by this stack; consumer IAM
+and application configuration are separate. Keep passwords out of URLs, code and logs.
 
-To adopt an existing account, set **both its current username and current secret
-address together** before applying. The account switches to the per-user settings
-profile with the same limits; old profiles are left untouched. Removing the keys
-stops management and does not revoke an existing SQL user. Renaming a user or
-changing secret ownership requires a separate migration.
+Rotate through the existing deployment engine by replacing only the account's
+RandomPassword resource, then applying the resulting SecretVersion and host changes.
+Inspect the plan first; replacing a secret container or hand-writing a new version
+bypasses the managed credential flow. Coordinate Backoffice's credential refresh
+with the host change. Keep the previous version until the new login is verified;
+rollback must reconcile both the SQL password and consumer credential through the
+same deployment state, rather than only moving a cloud version label.
 
-Backoffice connects over its private ClickHouse endpoint using the configured
-username and the referenced password through its existing secret injection.
-Configure the consumer's username to match; grant its runtime identity access to
-that one secret. Do not put a password in a URL, mstage value, code or deploy log.
-
-For rotation, retain the old enabled version, create a new version, and coordinate
-producer reconciliation with the consumer's credential rollout. Prefer a pinned
-GCP version: changing `latest` alone does not rerun startup. AWS follows
-`AWSCURRENT` on deployment. Rollback restores the previous reference/version and
-reruns provisioning; changing the account password requires a coordinated switch.
+For migration from a separately managed reader, deploy this account and secret,
+verify access, then switch the consumer. Old users and external secrets require
+explicit cleanup; removing their obsolete stage keys does not delete them.
 
 Review rollout impact first: GCP startup changes replace the VM; AWS readiness
-restarts ClickHouse. The data disk is retained, but neither path offers uninterrupted
-adoption. Check authentication, denied writes/tables/settings and persistence after
-restart. Run `BOXLITE_CLICKHOUSE_INTEGRATION=1 make test:apps:infra` with Docker for
-a disposable local check. Full stack typechecking uses `make test:apps:infra-config`.
+restarts ClickHouse. The data disk is retained, but rollout can interrupt queries.
+Check authentication, denied writes/tables/settings and persistence after restart.
+Run `BOXLITE_CLICKHOUSE_INTEGRATION=1 make test:apps:infra` with Docker for a
+disposable local check. Full stack typechecking uses `make test:apps:infra-config`.
 
 ## Managed endpoint
 

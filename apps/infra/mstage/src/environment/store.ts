@@ -13,7 +13,6 @@ import { awsBackend, ambientClients as awsAmbientClients, clientsFor as awsClien
 import type { AwsIdentity } from '../aws/identity.ts'
 
 export { EnvError, type StoreBackend, type StoredVersion }
-export { digestOfGroup } from './digest.ts'
 export { readStateBucket } from './aws-backend.ts'
 
 /** The AWS clients, under their old names because every caller builds them. */

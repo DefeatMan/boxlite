@@ -22,12 +22,10 @@
 
 import { apiEnvironmentFrom } from './api-environment.ts'
 import { clickHouseRetentionHours } from '../../shared/clickhouse-retention.ts'
-import { LOG_READER_PASSWORD, OTEL_GROUP, PROXY_GROUP, RUNNER_GROUP, serviceSecretsFrom, splitServiceChannels, type GroupDeclaration } from './env.ts'
+import { OTEL_GROUP, PROXY_GROUP, RUNNER_GROUP, serviceSecretsFrom, splitServiceChannels, type GroupDeclaration } from './env.ts'
 import type { RunnerSlot } from '../stack/runners.ts'
-import type { ClickHouseLogReader } from '../stack/clickhouse.ts'
 import { runnerNameFor } from '../stack/runners.ts'
 import type { Cloud } from 'mstage/config'
-import { SECRET_GROUP, secretAddressesOf } from 'mstage/secret-address'
 import { IMAGE_TAG } from 'mbuild/address'
 
 export class StackEnvError extends Error {
@@ -174,8 +172,8 @@ export type StackEnvironment = {
   managedClickHouse: { url: string; writerSecretArn: string; readerSecretArn: string } | null
   /** Hours the stage asked for, or null for none; the stack resolves the default once it knows the mode. */
   clickHouseRetentionHours: number | null
-  /** Enabled only when both username and credential address are present. */
-  clickHouseLogReader: ClickHouseLogReader | null
+  /** Provision a dedicated account with a stage-owned credential. */
+  otelOpenapiEnabled: boolean
   /**
    * The consumer of this stage's ClickStack publication, by service account, or
    * null for a stage that publishes to nobody.
@@ -293,14 +291,10 @@ export const readStackEnvironment = ({
   // network, and `http` there is the shape every stage has used. What must
   // never be defaulted is the zone above, which is public.
   const proxyProtocol = optional(environment, 'PROXY_PROTOCOL') ?? 'http'
-  const logReaderUsername = optional(environment, 'CLICKHOUSE_OPENAPI_LOG_READER')
-  const logReaderPassword = optional(environment, LOG_READER_PASSWORD)
-  if (logReaderPassword && !declaration.groups[SECRET_GROUP]?.includes(LOG_READER_PASSWORD)) {
-    throw new StackEnvError(`${LOG_READER_PASSWORD} must belong to env.selectGroup.secret`)
+  const openapi = optional(environment, 'OTEL_OPENAPI_ENABLED')
+  if (openapi !== null && !['true', 'false'].includes(openapi)) {
+    throw new StackEnvError('OTEL_OPENAPI_ENABLED must be true or false')
   }
-  const logReaderPasswordRef = logReaderPassword
-    ? secretAddressesOf({ values: { [LOG_READER_PASSWORD]: logReaderPassword }, home })[LOG_READER_PASSWORD]!
-    : null
   return {
     tag,
     domain: required(environment, 'STACK_DOMAIN', "the stage's own domain; the control plane answers at api.<domain>"),
@@ -321,9 +315,7 @@ export const readStackEnvironment = ({
     managedClickHouse: managedClickHouseFrom(environment),
     clickHouseRetentionHours:
       optional(environment, 'CLICKHOUSE_RETENTION_HOURS') === null ? null : clickHouseRetentionHours(environment),
-    clickHouseLogReader: logReaderUsername && logReaderPasswordRef
-      ? { username: logReaderUsername, passwordRef: logReaderPasswordRef }
-      : null,
+    otelOpenapiEnabled: openapi === 'true',
     clickStackConsumer: clickStackConsumerFrom(environment),
     dnsZoneId: required(environment, 'CLOUDFLARE_ZONE_ID', 'every public record this stage writes goes into it'),
     mailRelayHost: optional(environment, 'MAIL_RELAY_HOST'),

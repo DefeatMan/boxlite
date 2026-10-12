@@ -20,8 +20,6 @@ import type { Scope } from 'mstage/scope'
 
 /** The group `mstage.config.json` must declare for a deploy to fetch anything. */
 export const DEPLOY_GROUP = 'deploy'
-/** Consumed by the ClickHouse host; the deploy only handles its address. */
-export const LOG_READER_PASSWORD = 'CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD'
 
 /**
  * The groups the deploy carries but never reads, one per service.
@@ -169,14 +167,13 @@ export const rolloutGroups = (config: Pick<MstageConfig, 'envSelectGroup'>): str
   config.envSelectGroup[SECRET_GROUP] ? [...ROLLOUT_GROUPS, SECRET_GROUP] : [...ROLLOUT_GROUPS]
 
 /**
- * Refuse references for credentials the deploy spends itself. The log-reader
- * reference is kept in deploy for fingerprinting, but only the ClickHouse host
- * reads its payload. All other deploy credentials must remain direct values.
+ * Refuse references for credentials the deploy spends itself: only a workload's
+ * platform resolves addresses into secret values.
  */
 export const assertAddressesAreNotSpent = (config: Pick<MstageConfig, 'envSelectGroup' | 'path'>): void => {
   const marked = config.envSelectGroup[SECRET_GROUP]
   if (!marked) return
-  const spent = marked.filter((key) => key !== LOG_READER_PASSWORD && (config.envSelectGroup[DEPLOY_GROUP] ?? []).includes(key))
+  const spent = marked.filter((key) => (config.envSelectGroup[DEPLOY_GROUP] ?? []).includes(key))
   if (spent.length > 0) {
     throw new Error(
       `${config.path}: env.selectGroup.${SECRET_GROUP} marks ${spent.join(', ')}, which ` +

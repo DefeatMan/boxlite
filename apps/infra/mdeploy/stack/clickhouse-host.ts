@@ -26,11 +26,11 @@ const schemaSource = [
 if (!schemaSource) throw new Error('clickhouse/otel-schema-v0.144.0.sql was not found')
 const schemaTemplate = readFileSync(schemaSource, 'utf8')
 
+export const OPENAPI_READER_USERNAME = 'otel_openapi_reader'
+
 /** Preserve an existing user's identity; the host substitutes only a SHA-256 hash. */
-export function renderClickHouseLogReaderSql(username: string) {
-  if (!/^[a-z][a-z0-9_]{0,63}$/.test(username) || ['default', 'boxlite_admin', 'otel_writer', 'otel_reader'].includes(username)) {
-    throw new Error('CLICKHOUSE_OPENAPI_LOG_READER must be a distinct lowercase SQL username (1–64 characters)')
-  }
+export function renderClickHouseLogReaderSql() {
+  const username = OPENAPI_READER_USERNAME
   const source = typeof schemaSource === 'string'
     ? resolve(dirname(schemaSource), 'openapi-log-reader.sql')
     : new URL('openapi-log-reader.sql', schemaSource)

@@ -215,8 +215,8 @@ function reconcile() {
     expectedImage: CLICKHOUSE_EXPECTED_IMAGE,
     schemaBase64: CLICKHOUSE_SCHEMA_BASE64,
     retentionHours: Number(CLICKHOUSE_RETENTION_HOURS),
-    logReaderSecretArn: process.env.CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD,
-    logReaderSqlBase64: process.env.CLICKHOUSE_OPENAPI_LOG_READER_SQL_BASE64,
+    logReaderSecretArn: process.env.CLICKHOUSE_OPENAPI_READER_SECRET_ARN,
+    logReaderSqlBase64: process.env.CLICKHOUSE_OPENAPI_READER_SQL_BASE64,
   })
   runSsmCommand({
     region: AWS_REGION,

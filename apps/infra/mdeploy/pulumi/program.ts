@@ -265,7 +265,7 @@ export const gcpProgram =
         // the API with, so it is read from the one declaration of it.
         volumePrefix: config.storage.volumePrefix,
         managedClickHouse: stackEnvironment.managedClickHouse,
-        clickHouseLogReader: stackEnvironment.clickHouseLogReader,
+        otelOpenapiEnabled: stackEnvironment.otelOpenapiEnabled,
         clickStackConsumer: stackEnvironment.clickStackConsumer,
       }),
       config,

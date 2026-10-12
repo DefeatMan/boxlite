@@ -6,14 +6,12 @@ import { StackEnvError, readStackEnvironment } from '../src/stack-env.ts'
 import type { GroupDeclaration } from '../src/env.ts'
 import { assertAddressesAreNotSpent } from '../src/env.ts'
 import { parseBase } from 'mstage/config'
-import { assertSecretAddresses } from 'mstage/secret-address'
 
 const SHA = 'a'.repeat(40)
 const DIGEST = 'b'.repeat(64)
 
 const declaration: GroupDeclaration = {
-  groups: { deploy: [], api: ['OIDC_CLIENT_ID'], proxy: ['PROXY_API_KEY'], 'otel-collector': [], runner: [],
-    secret: ['CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD'] },
+  groups: { deploy: [], api: ['OIDC_CLIENT_ID'], proxy: ['PROXY_API_KEY'], 'otel-collector': [], runner: [] },
   where: '/repo/mstage.config.json',
 }
 
@@ -54,47 +52,26 @@ test('the dashboard stays on the stage domain unless the stage names another hos
   assert.equal(read({ ...complete, DASHBOARD_DOMAIN: 'app.dev.boxlite.ai' }).dashboardDomain, 'app.dev.boxlite.ai')
 })
 
-test('the OpenAPI reader is enabled only with both username and secret address', () => {
-  const reference = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:audit-logs'
-  const json = JSON.stringify({ address: reference })
-  for (const username of [undefined, '', ' ', 'audit_logs']) {
-    for (const password of [undefined, '', ' ', json]) {
-      const result = read({ ...complete, CLICKHOUSE_OPENAPI_LOG_READER: username, CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD: password })
-      assert.deepEqual(result.clickHouseLogReader, username?.trim() && password?.trim() ? { username, passwordRef: reference } : null)
-    }
+test('the OpenAPI reader uses only the fixed feature flag', () => {
+  for (const flag of [undefined, '', ' ', 'false', 'true', ' true ']) {
+    const result = read({ ...complete, OTEL_OPENAPI_ENABLED: flag })
+    assert.equal(result.otelOpenapiEnabled, flag?.trim() === 'true')
+    assert.ok(!('OTEL_OPENAPI_ENABLED' in result.apiEnvironment))
   }
-  const result = read({ ...complete, CLICKHOUSE_OPENAPI_LOG_READER: ' audit_logs ', CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD: json })
-  assert.deepEqual(result.clickHouseLogReader, { username: 'audit_logs', passwordRef: reference })
-  assert.ok(!('CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD' in result.apiEnvironment))
+  for (const flag of ['1', 'yes', 'TRUE', 'invalid']) {
+    assert.throws(() => read({ ...complete, OTEL_OPENAPI_ENABLED: flag }), /OTEL_OPENAPI_ENABLED/)
+  }
 })
 
-test('the manifest marks the optional host credential as a secret while retaining digest coverage', () => {
+test('the manifest fingerprints the optional flag without exposing credential configuration', () => {
   const path = new URL('../../mstage.env.json', import.meta.url).pathname
   const config = { ...parseBase(path, readFileSync(path, 'utf8')), path }
-  const key = 'CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD'
-  assert.ok(config.envSelectGroup.secret?.includes(key))
-  assert.ok(config.envOptional.secret?.includes(key))
-  assert.ok(config.envSelectGroup[config.envDigest!.group]!.includes(key))
-  assert.doesNotThrow(() => assertAddressesAreNotSpent(config))
-  assertSecretAddresses({ entries: [[key, '{"address":"projects/project/secrets/reader"}']], groups: config.envSelectGroup, home: 'gcp' })
-  assert.throws(() => assertSecretAddresses({ entries: [[key, 'plaintext-sentinel']], groups: config.envSelectGroup, home: 'gcp' }), /does not hold JSON/)
-  assert.throws(() => assertAddressesAreNotSpent({ ...config, envSelectGroup: {
-    ...config.envSelectGroup, secret: [key, 'CLOUDFLARE_API_TOKEN'],
-  } }), /marks CLOUDFLARE_API_TOKEN/)
-})
-
-test('the log reader uses the shared secret parser and rejects invalid references without disclosing them', () => {
-  const key = 'CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD'
-  const parse = (value: string, home: 'aws' | 'gcp', selected = declaration) => readStackEnvironment({
-    environment: { ...complete, CLICKHOUSE_OPENAPI_LOG_READER: 'audit_logs', [key]: value },
-    declaration: selected, app: 'boxlite-app', stage: 'dev', region: 'us-east-1', home,
-  })
-  const address = 'projects/project/secrets/reader/versions/1'
-  assert.deepEqual(parse(JSON.stringify({ address }), 'gcp').clickHouseLogReader, { username: 'audit_logs', passwordRef: address })
-  for (const invalid of ['plaintext-sentinel', address, '{"address":"sensitive-sentinel"', '{"address":""}', JSON.stringify({ address }), '{"address":123}']) {
-    assert.throws(() => parse(invalid, 'aws'), error => String(error).includes(key) && !String(error).includes(invalid))
+  assert.ok(config.envOptional.deploy?.includes('OTEL_OPENAPI_ENABLED'))
+  assert.ok(config.envSelectGroup[config.envDigest!.group]!.includes('OTEL_OPENAPI_ENABLED'))
+  for (const group of Object.values(config.envSelectGroup)) {
+    assert.ok(!group.some(key => key.startsWith('CLICKHOUSE_OPENAPI_LOG_READER')))
   }
-  assert.throws(() => parse(JSON.stringify({ address }), 'gcp', { ...declaration, groups: { ...declaration.groups, secret: [] } }), /env.selectGroup.secret/)
+  assert.doesNotThrow(() => assertAddressesAreNotSpent(config))
 })
 
 test('a key nothing supplies stops the deploy, named, before anything is built', () => {

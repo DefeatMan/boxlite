@@ -19,9 +19,8 @@
  */
 
 import { publishClickStack } from './clickstack.ts'
-import { renderClickHouseLogReaderSql, renderClickHouseSchema } from '../../clickhouse-host.ts'
-import { secretCoordinatesOf, versionedSecretRef } from './secret-env.ts'
-import type { ClickHouse, ClickHouseLogReader, ClickHouseProvider, ClickHouseRequest } from '../../clickhouse.ts'
+import { OPENAPI_READER_USERNAME, renderClickHouseLogReaderSql, renderClickHouseSchema } from '../../clickhouse-host.ts'
+import type { ClickHouse, ClickHouseProvider, ClickHouseRequest } from '../../clickhouse.ts'
 import type { NetworkBinding } from '../../network.ts'
 import { identityFor, instanceFor } from 'naming'
 
@@ -127,7 +126,7 @@ export const clickHouseStartupScript = ({
   adminRef,
   writerRef,
   readerRef,
-  logReader = null,
+  openapiReaderRef = null,
 }: {
   database: string
   writerUsername: string
@@ -136,7 +135,7 @@ export const clickHouseStartupScript = ({
   adminRef: string
   writerRef: string
   readerRef: string
-  logReader?: ClickHouseLogReader | null
+  openapiReaderRef?: string | null
 }): string => `#!/bin/bash
 set -euo pipefail
 # The console as well as the file. Nobody can SSH to this host — OS Login
@@ -241,12 +240,12 @@ clickhouse-client --query "CREATE USER OR REPLACE ${readerUsername} IDENTIFIED W
 # grants the AWS reconcile makes.
 clickhouse-client --query "GRANT SELECT, INSERT, SHOW COLUMNS ON ${database}.* TO ${writerUsername}"
 clickhouse-client --query "GRANT SELECT, SHOW COLUMNS ON ${database}.* TO ${readerUsername}"
-${logReader ? `# Reconcile the dedicated reader with its configured credential.
-LOG_READER_PASSWORD=$(read_secret '${logReader.passwordRef.replaceAll("'", `'"'"'`)}')
+${openapiReaderRef ? `# Reconcile the dedicated reader with its managed credential.
+LOG_READER_PASSWORD=$(read_secret '${openapiReaderRef.replaceAll("'", `'"'"'`)}')
 test -n "$LOG_READER_PASSWORD"
 LOG_READER_HASH=$(hash_of "$LOG_READER_PASSWORD")
 clickhouse-client --multiquery <<SQL
-${renderClickHouseLogReaderSql(logReader.username).replaceAll('__PASSWORD_SHA256__', '$LOG_READER_HASH')}SQL
+${renderClickHouseLogReaderSql().replaceAll('__PASSWORD_SHA256__', '$LOG_READER_HASH')}SQL
 unset LOG_READER_PASSWORD LOG_READER_HASH
 ` : ''}echo "clickhouse setup complete"
 `
@@ -262,7 +261,7 @@ export const gcpClickHouseProvider =
     clickStackConsumerProject,
     clickStackConsumerAccount,
     managed,
-    logReader = null,
+    otelOpenapiEnabled = false,
     dependsOn,
   }: {
     network: Extract<NetworkBinding, { cloud: 'gcp' }>
@@ -299,22 +298,13 @@ export const gcpClickHouseProvider =
     /** The identity let read the reader password, or null to grant nobody. */
     clickStackConsumerAccount: string | null
     managed: { url: string; writerSecretArn: string; readerSecretArn: string } | null
-    logReader?: ClickHouseLogReader | null
+    otelOpenapiEnabled?: boolean
     dependsOn: any[]
   }): ClickHouseProvider =>
   (request: ClickHouseRequest): ClickHouse => {
-    const logReaderRef = logReader?.passwordRef
-    if (logReader) renderClickHouseLogReaderSql(logReader.username)
-    if (logReader && [request.writerUsername, request.readerUsername].includes(logReader.username)) {
-      throw new Error('The OpenAPI log reader must not reuse the writer or reader account')
-    }
-    if (logReader && (request.mode !== 'self-hosted' || request.database !== 'otel' ||
-      !/^projects\/[a-z0-9-]+\/secrets\/[A-Za-z0-9_-]+(?:\/versions\/(?:[1-9][0-9]*|latest))?$/.test(logReaderRef ?? ''))) {
-      throw new Error('CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD requires self-hosted otel and a GCP Secret Manager reference')
-    }
-    const logReaderSecret = logReaderRef ? secretCoordinatesOf(logReaderRef) : null
-    if (logReaderSecret && logReaderSecret.project !== project) {
-      throw new Error('The OpenAPI log reader secret must belong to this stage project')
+    if (otelOpenapiEnabled && (request.mode !== 'self-hosted' || request.database !== 'otel' ||
+      [request.writerUsername, request.readerUsername].includes(OPENAPI_READER_USERNAME))) {
+      throw new Error('OTEL_OPENAPI_ENABLED requires self-hosted otel and a separate reader account')
     }
     if (request.mode === 'disabled') return { active: false, mode: 'disabled' }
 
@@ -368,13 +358,18 @@ export const gcpClickHouseProvider =
       instanceFor({ app: $app.name, stage: $app.stage, artifact: 'clickhouse-reader' }),
     )
 
+    const openapiReader = otelOpenapiEnabled ? clickHouseSecret(
+      'ClickHouseOpenapiReaderSecret', project,
+      instanceFor({ app: $app.name, stage: $app.stage, artifact: 'clickhouse-openapi-reader' }),
+    ) : null
+
     const host = new gcp.serviceaccount.Account('ClickHouseServiceAccount', {
       project,
       accountId: identityFor({ appShort, stage: $app.stage, artifact: 'clickhouse', action: 'run' }),
       displayName: `BoxLite ClickHouse (${$app.stage})`,
     })
     // Name each credential individually, including the optional dedicated reader below.
-    const access = [admin, writer, reader].map(
+    const access = [admin, writer, reader, ...(openapiReader ? [openapiReader] : [])].map(
       ({ secret }, index) =>
         new gcp.secretmanager.SecretIamMember(`ClickHouseSecretAccess${index}`, {
           project,
@@ -383,12 +378,6 @@ export const gcpClickHouseProvider =
           member: host.email.apply((email: string) => `serviceAccount:${email}`),
         }),
     )
-    if (logReaderSecret) {
-      access.push(new gcp.secretmanager.SecretIamMember('ClickHouseLogReaderSecretAccess', {
-        project, secretId: logReaderSecret.secret, role: 'roles/secretmanager.secretAccessor',
-        member: host.email.apply((email: string) => `serviceAccount:${email}`),
-      }))
-    }
 
     /*
      * The data disk, separate and retained.
@@ -410,8 +399,8 @@ export const gcpClickHouseProvider =
       { retainOnDelete: true },
     )
 
-    const startupScript = $resolve([admin.version.name, writer.version.name, reader.version.name]).apply(
-      ([adminRef, writerRef, readerRef]) =>
+    const startupScript = $resolve([admin.version.name, writer.version.name, reader.version.name, ...(openapiReader ? [openapiReader.version.name] : [])]).apply(
+      ([adminRef, writerRef, readerRef, openapiReaderRef]) =>
         clickHouseStartupScript({
           database: request.database,
           writerUsername: request.writerUsername,
@@ -419,7 +408,7 @@ export const gcpClickHouseProvider =
           adminRef,
           writerRef,
           readerRef,
-          logReader: logReader ? { ...logReader, passwordRef: versionedSecretRef(logReader.passwordRef) } : null,
+          openapiReaderRef,
         }),
     )
 
