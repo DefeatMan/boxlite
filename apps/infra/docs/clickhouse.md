@@ -46,33 +46,48 @@ Keep database/user settings aligned with the bundled schema and boot scripts;
 
 ## Optional OpenAPI log reader
 
-Set these optional values in the encrypted mstage `deploy` group. `PASSWORD` holds
-an address, never plaintext or a JSON credential; neither key is a workload variable.
+Set these optional values in the encrypted mstage `deploy` group. `PASSWORD` also
+belongs to `secret` and holds a JSON reference, never a password. Keeping it in
+`deploy` includes address changes in `--digest`; neither key is a workload variable.
 
 | Key | Value |
 | --- | --- |
 | `CLICKHOUSE_OPENAPI_LOG_READER` | Dedicated SQL username, e.g. `audit_logs` |
-| `CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD` | Existing cloud secret address, or empty to request creation |
+| `CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD` | `{"address":"<cloud-secret-address>"}`, or absent to request creation |
+
+For an existing GCP credential, write both values together:
+
+```bash
+npm run mstage env set -- --stage dev --digest --json \
+  'CLICKHOUSE_OPENAPI_LOG_READER="audit_logs"' \
+  'CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD={"address":"projects/example-project/secrets/log-reader-password"}'
+```
+
+Add `--confirm` for a protected stage. The shared secret parser validates the JSON
+and cloud address; bare addresses are refused. Only the ClickHouse host reads the
+secret payload. To request bootstrap, omit/delete the optional PASSWORD key;
+`mstage env set` rejects empty values for keys in the secret group.
 
 Both values must be nonempty before the account is enabled. An empty username
 leaves it unmanaged, even if an address remains. With only a username, **mdeploy
 apply** first creates `<app>-<stage>-clickhouse-<username>-password`, saves its
-address and updates the stage digest, then enables the account. Preview refuses
+JSON reference and updates the stage digest, then enables the account. Preview refuses
 this incomplete pair without writing anything; remove and refresh never bootstrap.
 Creation requires the deploy identity's secret-create and stage-store-write access.
 
 For example, `audit_logs` in `boxlite-app/dev` creates
 `boxlite-app-dev-clickhouse-audit_logs-password`. GCP saves
-`projects/<project>/secrets/<name>/versions/1`; AWS saves the returned Secrets
-Manager ARN, including its generated suffix. Each stage creates its own password.
+`{"address":"projects/<project>/secrets/<name>/versions/1"}`; AWS wraps the returned
+Secrets Manager ARN in the same JSON shape. Each stage creates its own password.
 **If that name already exists while PASSWORD is empty, deployment fails.** It
 never adopts or overwrites a same-name secret. This also applies after creation
 succeeds but writeback fails: inspect the secret, then explicitly set its address
-with `mstage env set` and `--digest` before retrying. Serialize stage configuration
+with `mstage env set --json` and `--digest` before retrying. Serialize stage configuration
 edits with deployment, as the existing stage store uses read-modify-write updates.
 
-An explicit address skips all credential creation and writeback. GCP accepts
-`projects/<project>/secrets/<secret>[/versions/<version>]` in the stage project;
+An explicit JSON reference skips all credential creation and writeback. GCP accepts
+`projects/<project>/secrets/<secret>[/versions/<version>]` in its `address` field,
+within the stage project;
 omitting the version selects `latest`. AWS accepts a Secrets Manager ARN.
 Generated secrets remain outside the deployment stack's deletion lifecycle;
 existing secrets retain their owner, address, value and consumer permissions.

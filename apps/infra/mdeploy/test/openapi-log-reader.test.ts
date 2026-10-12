@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { digestOfGroup, readEnvironment, writeStage, type StoreBackend } from 'mstage/env'
 import { prepareLogReaderSecret } from '../src/openapi-log-reader.ts'
+import { secretAddressesOf } from 'mstage/secret-address'
 
 const USER = 'CLICKHOUSE_OPENAPI_LOG_READER', PASSWORD = 'CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD'
 const deploy = JSON.parse(readFileSync(new URL('../../.mstage.config.example.json', import.meta.url), 'utf8')).stages.dev.deploy
@@ -18,8 +19,8 @@ const fixture = async (cloud = 'gcp', values = { [USER]: 'audit_logs' }) => {
   const address = cloud === 'gcp' ? 'projects/project/secrets/boxlite-app-dev-clickhouse-audit_logs-password/versions/1'
     : 'arn:aws:secretsmanager:us-east-1:123456789012:secret:boxlite-app-dev-clickhouse-audit_logs-password-AbCd12'
   const options = {
-    config: { path: '/test/config', stages: { dev: { deploy } }, envSelectGroup: { deploy: [USER, PASSWORD, 'DIGEST'] },
-      envOptional: { deploy: [PASSWORD, 'DIGEST'] }, envDigest: { group: 'deploy', key: 'DIGEST' } } as any,
+    config: { path: '/test/config', stages: { dev: { deploy } }, envSelectGroup: { deploy: [USER, PASSWORD, 'DIGEST'], secret: [PASSWORD] },
+      envOptional: { deploy: [PASSWORD, 'DIGEST'], secret: [PASSWORD] }, envDigest: { group: 'deploy', key: 'DIGEST' } } as any,
     scope: { app: store.app, stage: store.stage, home: cloud, region: 'us-east-1', project: 'project' } as any,
     backend, identity: { assertUsableFor: async () => {}, childEnvironment: async () => ({ env: { RESOLVED_IDENTITY: 'yes' }, expiresAt: null }) },
     request: { intent: 'deploy' as const, stageEnvironment: values, log: (line: string) => logs.push(line) },
@@ -41,10 +42,11 @@ for (const cloud of ['gcp', 'aws']) {
   test(`${cloud} creates once, saves only the address, updates the digest and then reuses it`, async () => {
     const f = await fixture(cloud)
     const result = await prepareLogReaderSecret(f.options)
-    assert.equal(result[PASSWORD], f.address)
+    assert.deepEqual(secretAddressesOf({ values: { [PASSWORD]: result[PASSWORD]! }, home: cloud as 'gcp' | 'aws' }), { [PASSWORD]: f.address })
     const saved = await f.read()
+    assert.equal(saved[PASSWORD], JSON.stringify({ address: f.address }))
     assert.equal(saved.UNRELATED, 'preserved')
-    assert.equal(saved.DIGEST, digestOfGroup({ values: { [USER]: 'audit_logs', [PASSWORD]: f.address }, digestKey: 'DIGEST' }))
+    assert.equal(saved.DIGEST, digestOfGroup({ values: { [USER]: 'audit_logs', [PASSWORD]: saved[PASSWORD]! }, digestKey: 'DIGEST' }))
     assert.deepEqual(await prepareLogReaderSecret({ ...f.options, request: { ...f.options.request, stageEnvironment: result } }), result)
     assert.equal(f.calls(), 1)
   })
@@ -62,7 +64,8 @@ for (const cloud of ['gcp', 'aws']) {
 }
 
 test('no credential creation without a username, with an explicit address, or for non-apply operations', async () => {
-  for (const values of [{}, { [USER]: ' ' }, { [PASSWORD]: 'existing' }, { [USER]: 'audit_logs', [PASSWORD]: 'existing' }]) {
+  const reference = JSON.stringify({ address: 'projects/project/secrets/existing' })
+  for (const values of [{}, { [USER]: ' ' }, { [PASSWORD]: reference }, { [USER]: 'audit_logs', [PASSWORD]: reference }]) {
     const f = await fixture('gcp', values as any)
     assert.deepEqual(await prepareLogReaderSecret(f.options), values)
     assert.equal(f.calls(), 0)

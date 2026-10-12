@@ -10,9 +10,9 @@ import { parseDeployConfig } from './config.ts'
 import { windowFor } from './credential-window.ts'
 import type { DeployRequest } from './deploy.ts'
 import { renderClickHouseLogReaderSql } from '../stack/clickhouse-host.ts'
+import { LOG_READER_PASSWORD as PASSWORD } from './env.ts'
 
 const USER = 'CLICKHOUSE_OPENAPI_LOG_READER'
-const PASSWORD = 'CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD'
 
 /** Bootstrap once, then require an explicit address for all reuse, including interrupted attempts. */
 export async function prepareLogReaderSecret({ config, scope, backend, identity, request, execute = spawnSync }: {
@@ -62,21 +62,22 @@ export async function prepareLogReaderSecret({ config, scope, backend, identity,
   if (scope.home === 'aws' && !/^arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:\d{12}:secret:[A-Za-z0-9/_+=.@-]+$/.test(address)) {
     throw new Error(`Secret ${name} was created but returned no valid address; inspect it and set ${PASSWORD} explicitly`)
   }
+  const reference = JSON.stringify({ address })
   try {
     await setValues({ ...store, entries: [], derive: values => {
       unchanged(values)
-      const entries: [string, string][] = [[PASSWORD, address]]
+      const entries: [string, string][] = [[PASSWORD, reference]]
       const digest = config.envDigest
       if (digest) entries.push([digest.key, digestOfGroup({ digestKey: digest.key, values: valuesOfGroup({
         group: digest.group, groups: config.envSelectGroup, where: config.path,
-        optional: [...(config.envOptional[digest.group] ?? []), digest.key], values: { ...values, [PASSWORD]: address },
+        optional: [...(config.envOptional[digest.group] ?? []), digest.key], values: { ...values, [PASSWORD]: reference },
       }) })])
       return entries
     } })
     const stored = await readEnvironment(store)
-    if (stored[USER]?.trim() !== username || stored[PASSWORD] !== address) throw new Error('Writeback did not persist')
+    if (stored[USER]?.trim() !== username || stored[PASSWORD] !== reference) throw new Error('Writeback did not persist')
     request.log(`${PASSWORD} address saved; the OpenAPI log reader is now configured`)
-    return { ...environment, [PASSWORD]: address, ...(config.envDigest ? { [config.envDigest.key]: stored[config.envDigest.key]! } : {}) }
+    return { ...environment, [PASSWORD]: reference, ...(config.envDigest ? { [config.envDigest.key]: stored[config.envDigest.key]! } : {}) }
   } catch {
     throw new Error(`Secret ${name} was created but address writeback failed; inspect it and set ${PASSWORD} explicitly before retrying`)
   }

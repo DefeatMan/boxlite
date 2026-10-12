@@ -22,11 +22,12 @@
 
 import { apiEnvironmentFrom } from './api-environment.ts'
 import { clickHouseRetentionHours } from '../../shared/clickhouse-retention.ts'
-import { OTEL_GROUP, PROXY_GROUP, RUNNER_GROUP, serviceSecretsFrom, splitServiceChannels, type GroupDeclaration } from './env.ts'
+import { LOG_READER_PASSWORD, OTEL_GROUP, PROXY_GROUP, RUNNER_GROUP, serviceSecretsFrom, splitServiceChannels, type GroupDeclaration } from './env.ts'
 import type { RunnerSlot } from '../stack/runners.ts'
 import type { ClickHouseLogReader } from '../stack/clickhouse.ts'
 import { runnerNameFor } from '../stack/runners.ts'
 import type { Cloud } from 'mstage/config'
+import { SECRET_GROUP, secretAddressesOf } from 'mstage/secret-address'
 import { IMAGE_TAG } from 'mbuild/address'
 
 export class StackEnvError extends Error {
@@ -293,7 +294,13 @@ export const readStackEnvironment = ({
   // never be defaulted is the zone above, which is public.
   const proxyProtocol = optional(environment, 'PROXY_PROTOCOL') ?? 'http'
   const logReaderUsername = optional(environment, 'CLICKHOUSE_OPENAPI_LOG_READER')
-  const logReaderPasswordRef = optional(environment, 'CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD')
+  const logReaderPassword = optional(environment, LOG_READER_PASSWORD)
+  if (logReaderPassword && !declaration.groups[SECRET_GROUP]?.includes(LOG_READER_PASSWORD)) {
+    throw new StackEnvError(`${LOG_READER_PASSWORD} must belong to env.selectGroup.secret`)
+  }
+  const logReaderPasswordRef = logReaderPassword
+    ? secretAddressesOf({ values: { [LOG_READER_PASSWORD]: logReaderPassword }, home })[LOG_READER_PASSWORD]!
+    : null
   return {
     tag,
     domain: required(environment, 'STACK_DOMAIN', "the stage's own domain; the control plane answers at api.<domain>"),

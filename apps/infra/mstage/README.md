@@ -90,18 +90,21 @@ those strings when imported with the current JSON semantics.
 ## Secret references
 
 The optional `env.selectGroup.secret` group marks values as secret addresses. A key must also
-belong to a consumer group. The BoxLite app manifest currently declares no such reference group.
+belong to a consumer group. The BoxLite app manifest marks the optional ClickHouse
+OpenAPI log-reader credential this way; its host resolves the secret payload.
 Consumers must explicitly deliver references through their platform's secret mechanism.
 
 Supported address shapes are `{"address":"arn:aws:ssm:REGION:ACCOUNT:parameter/NAME"}`,
 `{"address":"arn:aws:secretsmanager:REGION:ACCOUNT:secret:NAME"}`, or
 `{"address":"projects/PROJECT/secrets/NAME"}`. The stage's home determines the accepted cloud.
-GCP addresses omit a version. Write with `--json`; plaintext where an address belongs is refused.
+GCP addresses may include `/versions/<version>`. Write with `--json`; plaintext
+where an address belongs is refused.
 
 Creating the secret and granting runtime read access remain the owner's responsibility.
 On AWS, check execution-role policy, permissions boundary and any customer-managed KMS key;
 on GCP, check the runtime service account's access. mdeploy refuses references in groups it
-would consume directly as values. See [`src/environment/secret-address.ts`](src/environment/secret-address.ts).
+would consume directly as values. The host-consumed log-reader reference remains
+in `deploy` for digest coverage. See [`src/environment/secret-address.ts`](src/environment/secret-address.ts).
 
 ## Fingerprints and group reads
 

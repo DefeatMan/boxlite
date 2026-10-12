@@ -4,12 +4,16 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { StackEnvError, readStackEnvironment } from '../src/stack-env.ts'
 import type { GroupDeclaration } from '../src/env.ts'
+import { assertAddressesAreNotSpent } from '../src/env.ts'
+import { parseBase } from 'mstage/config'
+import { assertSecretAddresses } from 'mstage/secret-address'
 
 const SHA = 'a'.repeat(40)
 const DIGEST = 'b'.repeat(64)
 
 const declaration: GroupDeclaration = {
-  groups: { deploy: [], api: ['OIDC_CLIENT_ID'], proxy: ['PROXY_API_KEY'], 'otel-collector': [], runner: [] },
+  groups: { deploy: [], api: ['OIDC_CLIENT_ID'], proxy: ['PROXY_API_KEY'], 'otel-collector': [], runner: [],
+    secret: ['CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD'] },
   where: '/repo/mstage.config.json',
 }
 
@@ -52,15 +56,45 @@ test('the dashboard stays on the stage domain unless the stage names another hos
 
 test('the OpenAPI reader is enabled only with both username and secret address', () => {
   const reference = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:audit-logs'
+  const json = JSON.stringify({ address: reference })
   for (const username of [undefined, '', ' ', 'audit_logs']) {
-    for (const password of [undefined, '', ' ', reference]) {
+    for (const password of [undefined, '', ' ', json]) {
       const result = read({ ...complete, CLICKHOUSE_OPENAPI_LOG_READER: username, CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD: password })
-      assert.deepEqual(result.clickHouseLogReader, username?.trim() && password?.trim() ? { username, passwordRef: password } : null)
+      assert.deepEqual(result.clickHouseLogReader, username?.trim() && password?.trim() ? { username, passwordRef: reference } : null)
     }
   }
-  const result = read({ ...complete, CLICKHOUSE_OPENAPI_LOG_READER: ' audit_logs ', CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD: reference })
+  const result = read({ ...complete, CLICKHOUSE_OPENAPI_LOG_READER: ' audit_logs ', CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD: json })
   assert.deepEqual(result.clickHouseLogReader, { username: 'audit_logs', passwordRef: reference })
   assert.ok(!('CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD' in result.apiEnvironment))
+})
+
+test('the manifest marks the optional host credential as a secret while retaining digest coverage', () => {
+  const path = new URL('../../mstage.env.json', import.meta.url).pathname
+  const config = { ...parseBase(path, readFileSync(path, 'utf8')), path }
+  const key = 'CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD'
+  assert.ok(config.envSelectGroup.secret?.includes(key))
+  assert.ok(config.envOptional.secret?.includes(key))
+  assert.ok(config.envSelectGroup[config.envDigest!.group]!.includes(key))
+  assert.doesNotThrow(() => assertAddressesAreNotSpent(config))
+  assertSecretAddresses({ entries: [[key, '{"address":"projects/project/secrets/reader"}']], groups: config.envSelectGroup, home: 'gcp' })
+  assert.throws(() => assertSecretAddresses({ entries: [[key, 'plaintext-sentinel']], groups: config.envSelectGroup, home: 'gcp' }), /does not hold JSON/)
+  assert.throws(() => assertAddressesAreNotSpent({ ...config, envSelectGroup: {
+    ...config.envSelectGroup, secret: [key, 'CLOUDFLARE_API_TOKEN'],
+  } }), /marks CLOUDFLARE_API_TOKEN/)
+})
+
+test('the log reader uses the shared secret parser and rejects invalid references without disclosing them', () => {
+  const key = 'CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD'
+  const parse = (value: string, home: 'aws' | 'gcp', selected = declaration) => readStackEnvironment({
+    environment: { ...complete, CLICKHOUSE_OPENAPI_LOG_READER: 'audit_logs', [key]: value },
+    declaration: selected, app: 'boxlite-app', stage: 'dev', region: 'us-east-1', home,
+  })
+  const address = 'projects/project/secrets/reader/versions/1'
+  assert.deepEqual(parse(JSON.stringify({ address }), 'gcp').clickHouseLogReader, { username: 'audit_logs', passwordRef: address })
+  for (const invalid of ['plaintext-sentinel', address, '{"address":"sensitive-sentinel"', '{"address":""}', JSON.stringify({ address }), '{"address":123}']) {
+    assert.throws(() => parse(invalid, 'aws'), error => String(error).includes(key) && !String(error).includes(invalid))
+  }
+  assert.throws(() => parse(JSON.stringify({ address }), 'gcp', { ...declaration, groups: { ...declaration.groups, secret: [] } }), /env.selectGroup.secret/)
 })
 
 test('a key nothing supplies stops the deploy, named, before anything is built', () => {
