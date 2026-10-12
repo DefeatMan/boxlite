@@ -16,10 +16,9 @@ import { FallbackProps } from 'react-error-boundary'
  * hosted email verification step. Reloading or retrying replays the same
  * unverified identity.
  *
- * /logout marks the session just-logged-out, which LandingPage honours by
- * showing a manual sign-in button instead of auto-redirecting (see
- * lib/auth-session.ts). That pause is wanted here: it keeps a still-unverified
- * account from being bounced straight back into the same 403.
+ * /logout ends on LandingPage, which waits for a click before signing in again
+ * (see lib/auth-session.ts). That pause is wanted here: it keeps a
+ * still-unverified account from being bounced straight back into the same 403.
  *
  * This boundary sits outside the router and the auth provider (see main.tsx), so
  * it navigates the whole page rather than reaching for useNavigate/useAuth.

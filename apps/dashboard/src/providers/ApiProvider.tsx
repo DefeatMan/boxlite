@@ -9,16 +9,21 @@ import { useEffect, useRef, useState } from 'react'
 import { useAuth } from 'react-oidc-context'
 import LoadingFallback from '@/components/LoadingFallback'
 import { ApiClient } from '@/api/apiClient'
-import { useLocation } from 'react-router-dom'
+import { RoutePath } from '@/enums/RoutePath'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useConfig } from '@/hooks/useConfig'
 
 export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, isAuthenticated, isLoading, signinRedirect, removeUser } = useAuth()
   const config = useConfig()
   const location = useLocation()
+  const navigate = useNavigate()
 
   const apiRef = useRef<ApiClient | null>(null)
   const [isApiReady, setIsApiReady] = useState(false)
+  // Set when a 401 clears the user. That user already passed the landing page's
+  // terms notice, so the effect below signs them straight back in.
+  const isReauthenticating = useRef(false)
 
   // Initialize API client as soon as user is available
   useEffect(() => {
@@ -31,7 +36,10 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         // handler can tell a started recovery (suspend) from a failed one
         // (surface an error). The redirect stays owned by the effect below to
         // avoid a double-redirect.
-        apiRef.current = new ApiClient(config, user.access_token, () => removeUser())
+        apiRef.current = new ApiClient(config, user.access_token, () => {
+          isReauthenticating.current = true
+          return removeUser()
+        })
       } else {
         apiRef.current.setAccessToken(user.access_token)
       }
@@ -42,14 +50,16 @@ export const ApiProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [user, config, removeUser])
 
   useEffect(() => {
-    if (!isLoading && !isAuthenticated) {
-      void signinRedirect({
-        state: {
-          returnTo: location.pathname + location.search,
-        },
-      })
+    if (isLoading || isAuthenticated) return
+    const returnTo = location.pathname + location.search
+    if (isReauthenticating.current) {
+      void signinRedirect({ state: { returnTo } })
+      return
     }
-  }, [isLoading, isAuthenticated, signinRedirect, location])
+    // Anyone else signs in from the landing page, past its terms notice, and
+    // returns here afterwards.
+    navigate(RoutePath.LANDING, { replace: true, state: { returnTo } })
+  }, [isLoading, isAuthenticated, signinRedirect, navigate, location])
 
   if (isLoading || !isApiReady) {
     return <LoadingFallback />

@@ -81,3 +81,16 @@ what to do next, and any dialog it opens must be the same one the rest of the UI
 opens. A second entry point to the same guide is a bug, not a convenience —
 mounting one twice has already caused duplicate API keys to be minted
 (issue #1491).
+
+## Signing in starts at the terms
+
+The console never sends a signed-out visitor to the hosted login on its own. `/`
+shows **Continue to BoxLite** above the Terms of Service and Privacy Policy
+notice, and only that button starts the sign-in; after a logout the same page
+says so and offers Sign in. `ApiProvider` sends a signed-out `/dashboard` link
+there too, carrying `returnTo`, so a bookmark or an invitation meets the notice
+and still ends up where it pointed.
+
+Two sign-ins skip the page. A 401 re-login goes straight back to the hosted
+login, since that user already agreed. `boxlite login` opens the hosted login
+directly and never reaches the console.

@@ -5,12 +5,10 @@
  */
 
 // Bridges the logout flow to the landing page. `signoutRedirect` ends the IdP
-// session and returns the browser to '/', where LandingPage would otherwise
-// immediately re-initiate login — defeating the logout, and looping straight
-// back into the dashboard when the IdP still holds an SSO cookie. We mark the
-// logout here so the landing page shows a manual sign-in instead of auto-
-// redirecting. sessionStorage survives the cross-origin round-trip to the IdP
-// and back within the same tab, and clears on tab close.
+// session and returns the browser to '/'; the mark lets the landing page say the
+// visitor has been signed out and offer Sign in rather than Continue.
+// sessionStorage survives the cross-origin round-trip to the IdP and back within
+// the same tab, and clears on tab close.
 const JUST_LOGGED_OUT_KEY = 'boxlite-just-logged-out'
 
 export function markJustLoggedOut() {
@@ -22,7 +20,7 @@ export function markJustLoggedOut() {
 }
 
 // Reads and clears the flag — a logout is consumed exactly once, so a later
-// plain visit to '/' auto-redirects as usual.
+// plain visit to '/' shows the usual Continue page.
 export function consumeJustLoggedOut(): boolean {
   try {
     const flagged = sessionStorage.getItem(JUST_LOGGED_OUT_KEY) === '1'
