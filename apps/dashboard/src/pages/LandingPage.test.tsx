@@ -98,6 +98,36 @@ describe('LandingPage', () => {
     expect(auth.signinRedirect).toHaveBeenCalledWith({ state: { returnTo: '/dashboard/user/invitations?id=inv-1' } })
   })
 
+  it.each([['a string', 'stale'], ['a returnTo that is not a string', { returnTo: 42 }]])(
+    'falls back to the dashboard when router state holds %s',
+    (_label, state) => {
+      render({ pathname: '/', search: '?ref=docs', state })
+
+      clickButton('Continue to BoxLite')
+
+      expect(auth.signinRedirect).toHaveBeenCalledWith({ state: { returnTo: '/dashboard?ref=docs' } })
+    },
+  )
+
+  it('starts the hosted login once, however often Continue is pressed', () => {
+    render()
+
+    clickButton('Continue to BoxLite')
+    clickButton('Continue to BoxLite')
+
+    expect(auth.signinRedirect).toHaveBeenCalledOnce()
+  })
+
+  it('shows only the boot screen, and does not sign in, while the sign-in state loads', () => {
+    auth.isLoading = true
+    render()
+
+    expect(container.querySelector('[role="status"]')?.textContent ?? '').toContain('Loading the console')
+    expect(container.textContent).not.toContain('Continue to BoxLite')
+    expect(container.textContent).not.toContain('Terms of Service')
+    expect(auth.signinRedirect).not.toHaveBeenCalled()
+  })
+
   it('says a visitor who just logged out has been signed out, with the same notice', () => {
     markJustLoggedOut()
     render()
