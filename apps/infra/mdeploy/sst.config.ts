@@ -164,6 +164,7 @@ export default $config({
         dashboardDomain: stackEnvironment.dashboardDomain,
         artifactsBucket,
         managedClickHouse: stackEnvironment.managedClickHouse,
+        clickHouseLogReader: stackEnvironment.clickHouseLogReader,
       }),
       config,
       inputs: {

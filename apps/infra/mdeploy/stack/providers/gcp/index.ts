@@ -18,6 +18,7 @@
  */
 
 import type { StackProviders } from '../../index.ts'
+import type { ClickHouseLogReader } from '../../clickhouse.ts'
 import type { WorkloadHost } from '../../cluster.ts'
 import type { Network, NetworkBinding, Placement } from '../../network.ts'
 import { gcpImages } from '../../image.ts'
@@ -78,6 +79,7 @@ export const gcpStackProviders = ({
   artifactsBucket,
   volumePrefix,
   managedClickHouse = null,
+  clickHouseLogReader = null,
   clickStackConsumer = null,
   notificationChannels = [],
 }: {
@@ -108,6 +110,7 @@ export const gcpStackProviders = ({
    */
   volumePrefix: string
   managedClickHouse?: { url: string; writerSecretArn: string; readerSecretArn: string } | null
+  clickHouseLogReader?: ClickHouseLogReader | null
   /** Who may read the ClickHouse reader password; see `clickstack.ts`. */
   clickStackConsumer?: string | null
   notificationChannels?: string[]
@@ -157,6 +160,7 @@ export const gcpStackProviders = ({
         clickStackConsumerProject: project,
         clickStackConsumerAccount: clickStackConsumer,
         managed: managedClickHouse,
+        logReader: clickHouseLogReader,
         dependsOn: network.ready,
       }),
     mail: gcpMailProvider({ relayHost }),

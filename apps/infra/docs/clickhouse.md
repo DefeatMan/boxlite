@@ -44,6 +44,56 @@ Moving a GCP host off the former 72-hour bootstrap schema replaces its VM once; 
 Keep database/user settings aligned with the bundled schema and boot scripts;
 `otel`, `otel_writer` and `otel_reader` are the example's supported baseline.
 
+## Optional OpenAPI log reader
+
+Set these optional values in the encrypted mstage `deploy` group. `PASSWORD` holds
+an address, never plaintext or a JSON credential; neither key is a workload variable.
+
+| Key | Value |
+| --- | --- |
+| `CLICKHOUSE_OPENAPI_LOG_READER` | Dedicated SQL username, e.g. `audit_logs` |
+| `CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD` | Existing cloud secret address |
+
+Both values must be nonempty before the account is enabled. Missing either value
+leaves the account unmanaged. Existing secrets retain their owner, address, value
+and consumer permissions.
+
+GCP accepts `projects/<project>/secrets/<secret>[/versions/<version>]` in the stage
+project; omitting the version selects `latest`. AWS accepts a Secrets Manager ARN.
+
+The feature requires self-hosted `otel`. Usernames match `[a-z][a-z0-9_]{0,63}`
+and cannot reuse the admin, default, writer or reader accounts. The existing GCP
+startup script or AWS SSM readiness command preserves the user's identity and
+reapplies the [SQL policy](../clickhouse/openapi-log-reader.sql), revoking inherited
+roles and old grants even when the user already exists. Only SELECT and SHOW
+COLUMNS on `otel.otel_logs` remain. The `<username>_limits` profile replaces all
+settings with the policy's 18 immutable limits. SQL access data survives on the
+retained data disk. GCP applies this on boot; AWS reconciles when deployment
+inputs, policy SQL or credential versions change.
+
+To adopt an existing account, set **both its current username and current secret
+address together** before applying. The account switches to the per-user settings
+profile with the same limits; old profiles are left untouched. Removing the keys
+stops management and does not revoke an existing SQL user. Renaming a user or
+changing secret ownership requires a separate migration.
+
+Backoffice connects over its private ClickHouse endpoint using the configured
+username and the referenced password through its existing secret injection.
+Configure the consumer's username to match; grant its runtime identity access to
+that one secret. Do not put a password in a URL, mstage value, code or deploy log.
+
+For rotation, retain the old enabled version, create a new version, and coordinate
+producer reconciliation with the consumer's credential rollout. Prefer a pinned
+GCP version: changing `latest` alone does not rerun startup. AWS follows
+`AWSCURRENT` on deployment. Rollback restores the previous reference/version and
+reruns provisioning; changing the account password requires a coordinated switch.
+
+Review rollout impact first: GCP startup changes replace the VM; AWS readiness
+restarts ClickHouse. The data disk is retained, but neither path offers uninterrupted
+adoption. Check authentication, denied writes/tables/settings and persistence after
+restart. Run `BOXLITE_CLICKHOUSE_INTEGRATION=1 make test:apps:infra` with Docker for
+a disposable local check. Full stack typechecking uses `make test:apps:infra-config`.
+
 ## Managed endpoint
 
 Supply these three values together in the encrypted stage store:

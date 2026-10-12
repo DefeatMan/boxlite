@@ -22,6 +22,8 @@
 
 export type ClickHouseMode = 'self-hosted' | 'managed' | 'disabled'
 
+export type ClickHouseLogReader = { username: string; passwordRef: string }
+
 export type ClickHouseRequest = {
   mode: ClickHouseMode
   /** The database telemetry lands in. One name on every stage. */

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { clickHouseRetentionPolicy, clickHouseStartupScript, gcpClickHouseProvider } from '../stack/providers/gcp/clickhouse.ts'
+import { awsClickHouseProvider } from '../stack/providers/aws/clickhouse.ts'
 
 test('GCP bootstrap uses 30 days while the policy uses configured hours', () => {
   const script = clickHouseStartupScript({
@@ -64,7 +65,7 @@ fi
   }
 })
 
-test('GCP retention changes preserve VM inputs while secret rotations reach the startup script', async (t) => {
+test('ClickHouse providers preserve host inputs and reconcile optional reader credentials', async (t) => {
   // Capture the actual provider boundary without contacting GCP. Outputs resolve synchronously.
   const output = (value: any): any => ({ value, apply: (fn: (value: any) => any) => output(fn(value)) })
   const resources = new Map<string, { args: any; options: any }>()
@@ -74,15 +75,21 @@ test('GCP retention changes preserve VM inputs while secret rotations reach the 
     constructor(name: string, args: any, options: any = {}) {
       resources.set(name, { args, options })
       Object.assign(this, args, {
-        id: output(name), selfLink: output(name), email: output('host@example.test'),
+        id: output(name), arn: output(`${name}-arn`), selfLink: output(name), email: output('host@example.test'),
         name: output(`${name}/versions/${name === rotated ? 2 : 1}`),
         networkInterfaces: [{ networkIp: '10.0.0.2' }], result: output('test-password'),
       })
     }
   }
-  const constructors = new Proxy({}, { get: () => Resource })
+  const lookups: Record<string, any> = {
+    getSubnetOutput: () => ({ availabilityZone: 'us-east-1a' }),
+    getAmiOutput: () => ({ id: output('ami') }),
+    getSecretVersionsOutput: () => ({ versions: output([{ versionId: 'current', versionStages: ['AWSCURRENT'] }]) }),
+  }
+  const constructors = new Proxy({}, { get: (_, name) => lookups[String(name)] ?? Resource })
   const globals = {
     gcp: new Proxy({}, { get: () => constructors }), random: constructors,
+    aws: new Proxy({}, { get: () => constructors }), command: { local: constructors }, $cli: { paths: { root: '/test' } },
     $app: { name: 'boxlite', stage: 'dev' },
     $util: { output, secret: output },
     $resolve: (values: any[]) => output(values.map((value) => value.value)),
@@ -96,14 +103,15 @@ test('GCP retention changes preserve VM inputs while secret rotations reach the 
       else Reflect.deleteProperty(globalThis, key)
     })
   }
-  const provider = gcpClickHouseProvider({
+  const providerConfig = {
     network: { cloud: 'gcp', network: 'network', subnetwork: 'subnet' } as any,
     project: 'project', region: 'us-central1', zone: 'us-central1-a', appShort: 'bl',
     callerRanges: ['10.0.0.0/24'], clickStackConsumerProject: 'project',
     clickStackConsumerAccount: null, managed: null, dependsOn: [],
-  })
-  const deploy = (retentionHours: number) => {
-    provider({ mode: 'self-hosted', database: 'otel', writerUsername: 'otel_writer',
+  }
+  const deploy = (retentionHours: number, logReaderRef: string | null = null) => {
+    resources.clear()
+    gcpClickHouseProvider({ ...providerConfig, logReader: logReaderRef ? { username: 'audit_logs', passwordRef: logReaderRef } : null })({ mode: 'self-hosted', database: 'otel', writerUsername: 'otel_writer',
       readerUsername: 'otel_reader', instanceSize: 'small', dataGb: 100, retentionHours })
     const vm = resources.get('ClickHouse')!
     const policy = resources.get('ClickHouseRetention')!.args.osPolicies[0].resourceGroups[0].resources[0].exec
@@ -117,6 +125,18 @@ test('GCP retention changes preserve VM inputs while secret rotations reach the 
     assert.notEqual(after.policy, before.policy)
     assert.match(after.policy, /INTERVAL 720 HOUR/)
   })
+  await t.test('the dedicated reader grants host access without creating or adopting a secret', () => {
+    const reference = 'projects/project/secrets/log-reader/versions/1'
+    const enabled = deploy(720, reference)
+    assert.match(enabled.script, /read_secret 'projects\/project\/secrets\/log-reader\/versions\/1'/)
+    const access = resources.get('ClickHouseLogReaderSecretAccess')!
+    assert.equal(access.args.secretId, 'log-reader')
+    assert.equal(access.args.role, 'roles/secretmanager.secretAccessor')
+    assert.ok(resources.get('ClickHouse')!.options.dependsOn.some((resource: any) => resource.secretId === 'log-reader'))
+    assert.equal([...resources.keys()].filter(name => name.startsWith('ClickHouseLogReader')).length, 1)
+    assert.equal(deploy(720).script, after.script)
+    assert.ok(!resources.has('ClickHouseLogReaderSecretAccess'))
+  })
   for (const account of ['Admin', 'Writer', 'Reader']) {
     rotated = `ClickHouse${account}SecretValue`
     const rotation = deploy(720)
@@ -126,4 +146,23 @@ test('GCP retention changes preserve VM inputs while secret rotations reach the 
       assert.match(rotation.script, new RegExp(`${rotated}/versions/2`))
     })
   }
+  await t.test('AWS reuses the configured secret and includes SQL changes in readiness triggers', () => {
+    resources.clear()
+    const passwordRef = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:dedicated'
+    const invoke = (username: string) => awsClickHouseProvider({
+      region: 'us-east-1', managed: null, logReader: { username, passwordRef },
+      network: { cloud: 'aws', vpcId: 'vpc', vpc: { securityGroups: [] }, privateSubnets: ['subnet'] } as any,
+    })({ mode: 'self-hosted', database: 'otel', writerUsername: 'otel_writer', readerUsername: 'otel_reader',
+      instanceSize: 'small', dataGb: 100, retentionHours: 720 })
+    invoke('audit_logs')
+    const readiness = resources.get('ClickHouseDatabaseReady')!.args
+    assert.equal(readiness.environment.CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD, passwordRef)
+    const sql = Buffer.from(readiness.environment.CLICKHOUSE_OPENAPI_LOG_READER_SQL_BASE64, 'base64').toString()
+    assert.match(sql, /REVOKE ALL FROM "audit_logs"/)
+    assert.ok(readiness.triggers.includes(sql))
+    assert.ok(JSON.parse(resources.get('ClickHouseSecretPolicy')!.args.policy.value).Statement[0].Resource.includes(passwordRef))
+    assert.ok(!resources.has('ClickHouseLogReaderSecret'))
+    invoke('other_logs')
+    assert.notDeepEqual(resources.get('ClickHouseDatabaseReady')!.args.triggers, readiness.triggers)
+  })
 })

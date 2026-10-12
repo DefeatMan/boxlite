@@ -24,6 +24,7 @@ import { apiEnvironmentFrom } from './api-environment.ts'
 import { clickHouseRetentionHours } from '../../shared/clickhouse-retention.ts'
 import { OTEL_GROUP, PROXY_GROUP, RUNNER_GROUP, serviceSecretsFrom, splitServiceChannels, type GroupDeclaration } from './env.ts'
 import type { RunnerSlot } from '../stack/runners.ts'
+import type { ClickHouseLogReader } from '../stack/clickhouse.ts'
 import { runnerNameFor } from '../stack/runners.ts'
 import type { Cloud } from 'mstage/config'
 import { IMAGE_TAG } from 'mbuild/address'
@@ -172,6 +173,8 @@ export type StackEnvironment = {
   managedClickHouse: { url: string; writerSecretArn: string; readerSecretArn: string } | null
   /** Hours the stage asked for, or null for none; the stack resolves the default once it knows the mode. */
   clickHouseRetentionHours: number | null
+  /** Enabled only when both username and credential address are present. */
+  clickHouseLogReader: ClickHouseLogReader | null
   /**
    * The consumer of this stage's ClickStack publication, by service account, or
    * null for a stage that publishes to nobody.
@@ -289,6 +292,8 @@ export const readStackEnvironment = ({
   // network, and `http` there is the shape every stage has used. What must
   // never be defaulted is the zone above, which is public.
   const proxyProtocol = optional(environment, 'PROXY_PROTOCOL') ?? 'http'
+  const logReaderUsername = optional(environment, 'CLICKHOUSE_OPENAPI_LOG_READER')
+  const logReaderPasswordRef = optional(environment, 'CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD')
   return {
     tag,
     domain: required(environment, 'STACK_DOMAIN', "the stage's own domain; the control plane answers at api.<domain>"),
@@ -309,6 +314,9 @@ export const readStackEnvironment = ({
     managedClickHouse: managedClickHouseFrom(environment),
     clickHouseRetentionHours:
       optional(environment, 'CLICKHOUSE_RETENTION_HOURS') === null ? null : clickHouseRetentionHours(environment),
+    clickHouseLogReader: logReaderUsername && logReaderPasswordRef
+      ? { username: logReaderUsername, passwordRef: logReaderPasswordRef }
+      : null,
     clickStackConsumer: clickStackConsumerFrom(environment),
     dnsZoneId: required(environment, 'CLOUDFLARE_ZONE_ID', 'every public record this stage writes goes into it'),
     mailRelayHost: optional(environment, 'MAIL_RELAY_HOST'),

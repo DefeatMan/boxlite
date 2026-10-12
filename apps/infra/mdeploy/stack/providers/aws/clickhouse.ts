@@ -26,8 +26,9 @@ import {
   CLICKHOUSE_IMAGE,
   encodeClickHouseUserData,
   renderClickHouseSchema,
+  renderClickHouseLogReaderSql,
 } from '../../clickhouse-host.ts'
-import type { ClickHouse, ClickHouseProvider, ClickHouseRequest } from '../../clickhouse.ts'
+import type { ClickHouse, ClickHouseLogReader, ClickHouseProvider, ClickHouseRequest } from '../../clickhouse.ts'
 import type { NetworkBinding } from '../../network.ts'
 import { instanceFor } from 'naming'
 
@@ -78,13 +79,24 @@ export const awsClickHouseProvider =
     network,
     region,
     managed,
+    logReader = null,
   }: {
     network: Extract<NetworkBinding, { cloud: 'aws' }>
     region: string
     /** The endpoint and its two secrets, for a stage that runs none of its own. */
     managed: { url: string; writerSecretArn: string; readerSecretArn: string } | null
+    logReader?: ClickHouseLogReader | null
   }): ClickHouseProvider =>
   (request: ClickHouseRequest): ClickHouse => {
+    const logReaderRef = logReader?.passwordRef
+    const logReaderSql = logReader ? renderClickHouseLogReaderSql(logReader.username) : null
+    if (logReader && [request.writerUsername, request.readerUsername].includes(logReader.username)) {
+      throw new Error('The OpenAPI log reader must not reuse the writer or reader account')
+    }
+    if (logReader && (request.mode !== 'self-hosted' || request.database !== 'otel' ||
+      !/^arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:\d{12}:secret:[A-Za-z0-9/_+=.@-]+$/.test(logReaderRef ?? ''))) {
+      throw new Error('CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD requires self-hosted otel and a Secrets Manager ARN')
+    }
     if (request.mode === 'disabled') return { active: false, mode: 'disabled' }
 
     if (request.mode === 'managed') {
@@ -150,7 +162,7 @@ export const awsClickHouseProvider =
       policy: $resolve([admin.resource.arn, writer.resource.arn, reader.resource.arn]).apply(([...arns]) =>
         JSON.stringify({
           Version: '2012-10-17',
-          Statement: [{ Effect: 'Allow', Action: ['secretsmanager:GetSecretValue'], Resource: arns }],
+          Statement: [{ Effect: 'Allow', Action: ['secretsmanager:GetSecretValue'], Resource: [...arns, ...(logReaderRef ? [logReaderRef] : [])] }],
         }),
       ),
     })
@@ -240,6 +252,10 @@ export const awsClickHouseProvider =
           CLICKHOUSE_EXPECTED_IMAGE: CLICKHOUSE_IMAGE,
           CLICKHOUSE_SCHEMA_BASE64: Buffer.from(renderClickHouseSchema(retentionHours)).toString('base64'),
           CLICKHOUSE_RETENTION_HOURS: String(retentionHours),
+          ...(logReaderRef ? {
+            CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD: logReaderRef,
+            CLICKHOUSE_OPENAPI_LOG_READER_SQL_BASE64: Buffer.from(logReaderSql!).toString('base64'),
+          } : {}),
         },
         // Every input that changes the answer. A rotated password re-grants
         // rather than locking the collector out until someone notices.
@@ -251,6 +267,7 @@ export const awsClickHouseProvider =
           admin.version.id,
           writer.version.id,
           reader.version.id,
+          ...(logReaderRef ? [logReaderSql, currentVersion('CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD', logReaderRef, region)] : []),
         ],
       },
       { dependsOn: [attachment] },

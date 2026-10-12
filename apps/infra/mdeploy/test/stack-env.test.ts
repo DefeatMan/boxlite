@@ -50,6 +50,19 @@ test('the dashboard stays on the stage domain unless the stage names another hos
   assert.equal(read({ ...complete, DASHBOARD_DOMAIN: 'app.dev.boxlite.ai' }).dashboardDomain, 'app.dev.boxlite.ai')
 })
 
+test('the OpenAPI reader is enabled only with both username and secret address', () => {
+  const reference = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:audit-logs'
+  for (const username of [undefined, '', ' ', 'audit_logs']) {
+    for (const password of [undefined, '', ' ', reference]) {
+      const result = read({ ...complete, CLICKHOUSE_OPENAPI_LOG_READER: username, CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD: password })
+      assert.deepEqual(result.clickHouseLogReader, username?.trim() && password?.trim() ? { username, passwordRef: password } : null)
+    }
+  }
+  const result = read({ ...complete, CLICKHOUSE_OPENAPI_LOG_READER: ' audit_logs ', CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD: reference })
+  assert.deepEqual(result.clickHouseLogReader, { username: 'audit_logs', passwordRef: reference })
+  assert.ok(!('CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD' in result.apiEnvironment))
+})
+
 test('a key nothing supplies stops the deploy, named, before anything is built', () => {
   for (const key of ['BOXLITE_IMAGE_TAG', 'STACK_DOMAIN', 'PROXY_DOMAIN', 'CLOUDFLARE_ZONE_ID']) {
     assert.throws(() => read({ ...complete, [key]: undefined }), new RegExp(`${key} is required`), `${key} is not required`)

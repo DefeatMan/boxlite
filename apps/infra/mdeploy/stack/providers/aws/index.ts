@@ -14,6 +14,7 @@
 
 
 import type { StackProviders } from '../../index.ts'
+import type { ClickHouseLogReader } from '../../clickhouse.ts'
 import type { Network, NetworkBinding, Placement } from '../../network.ts'
 import type { WorkloadHost } from '../../cluster.ts'
 import { awsImages } from '../../image.ts'
@@ -47,6 +48,7 @@ export const awsStackProviders = ({
   dashboardDomain = null,
   artifactsBucket,
   managedClickHouse,
+  clickHouseLogReader = null,
 }: {
   stage: string
   region: string
@@ -63,6 +65,7 @@ export const awsStackProviders = ({
    * and one with `mode: managed` and no endpoint is refused by the provider.
    */
   managedClickHouse: { url: string; writerSecretArn: string; readerSecretArn: string } | null
+  clickHouseLogReader?: ClickHouseLogReader | null
 }): StackProviders => {
   /*
    * One DNS adapter for every record this stack writes.
@@ -84,7 +87,7 @@ export const awsStackProviders = ({
     database: ({ network }) => awsDatabaseProvider({ network: binding(network) }),
     cache: ({ network }) => awsCacheProvider({ network: binding(network) }),
     clickhouse: ({ network }) =>
-      awsClickHouseProvider({ network: binding(network), region, managed: managedClickHouse }),
+      awsClickHouseProvider({ network: binding(network), region, managed: managedClickHouse, logReader: clickHouseLogReader }),
     mail: awsMailProvider({ region, dns }),
     collector: ({ host: where, clickhouse, dependsOn }) =>
       awsCollectorProvider({ host: host(where), clickhouse, dependsOn }),
