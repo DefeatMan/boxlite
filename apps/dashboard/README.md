@@ -95,4 +95,7 @@ changing registry logins, alongside password cleanup on dialog close.
 
 An organization has no finer roles yet, so inviting asks only for an email
 address: a role picker would offer choices the product does not have. For the
-same reason a pending invitation can be cancelled but not edited.
+same reason a pending invitation can be cancelled but not edited, and a member
+can be removed but not given another role. The member whose personal
+organization this is has no remove action, because the API refuses that
+removal.
