@@ -52,14 +52,30 @@ an address, never plaintext or a JSON credential; neither key is a workload vari
 | Key | Value |
 | --- | --- |
 | `CLICKHOUSE_OPENAPI_LOG_READER` | Dedicated SQL username, e.g. `audit_logs` |
-| `CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD` | Existing cloud secret address |
+| `CLICKHOUSE_OPENAPI_LOG_READER_PASSWORD` | Existing cloud secret address, or empty to request creation |
 
-Both values must be nonempty before the account is enabled. Missing either value
-leaves the account unmanaged. Existing secrets retain their owner, address, value
-and consumer permissions.
+Both values must be nonempty before the account is enabled. An empty username
+leaves it unmanaged, even if an address remains. With only a username, **mdeploy
+apply** first creates `<app>-<stage>-clickhouse-<username>-password`, saves its
+address and updates the stage digest, then enables the account. Preview refuses
+this incomplete pair without writing anything; remove and refresh never bootstrap.
+Creation requires the deploy identity's secret-create and stage-store-write access.
 
-GCP accepts `projects/<project>/secrets/<secret>[/versions/<version>]` in the stage
-project; omitting the version selects `latest`. AWS accepts a Secrets Manager ARN.
+For example, `audit_logs` in `boxlite-app/dev` creates
+`boxlite-app-dev-clickhouse-audit_logs-password`. GCP saves
+`projects/<project>/secrets/<name>/versions/1`; AWS saves the returned Secrets
+Manager ARN, including its generated suffix. Each stage creates its own password.
+**If that name already exists while PASSWORD is empty, deployment fails.** It
+never adopts or overwrites a same-name secret. This also applies after creation
+succeeds but writeback fails: inspect the secret, then explicitly set its address
+with `mstage env set` and `--digest` before retrying. Serialize stage configuration
+edits with deployment, as the existing stage store uses read-modify-write updates.
+
+An explicit address skips all credential creation and writeback. GCP accepts
+`projects/<project>/secrets/<secret>[/versions/<version>]` in the stage project;
+omitting the version selects `latest`. AWS accepts a Secrets Manager ARN.
+Generated secrets remain outside the deployment stack's deletion lifecycle;
+existing secrets retain their owner, address, value and consumer permissions.
 
 The feature requires self-hosted `otel`. Usernames match `[a-z][a-z0-9_]{0,63}`
 and cannot reuse the admin, default, writer or reader accounts. The existing GCP

@@ -14,10 +14,11 @@ import test from 'node:test'
 import { resolveDeployTarget } from '../src/deploy.ts'
 import { pulumiDeploy } from '../src/pulumi.ts'
 import { DnsAuthorizationError } from '../src/dns-authorization.ts'
+import type { MstageConfig } from 'mstage/config'
 import { DEPLOY_GROUP, PULUMI_GROUP, SERVICE_GROUPS } from '../src/env.ts'
 import { REQUIRED_CREDENTIAL_SECONDS, REQUIRED_PREVIEW_SECONDS, windowFor } from '../src/credential-window.ts'
 
-const config = { root: '/repo/apps/infra', path: '/repo/apps/infra/mstage.config.json' }
+const config = { root: '/repo/apps/infra', path: '/repo/apps/infra/mstage.config.json' } as MstageConfig
 const scope = (overrides: Record<string, unknown> = {}) =>
   ({
     stage: 'dev',

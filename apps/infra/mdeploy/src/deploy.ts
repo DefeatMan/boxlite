@@ -24,6 +24,7 @@ import type { StoreBackend } from 'mstage/env'
 import type { Scope } from 'mstage/scope'
 import { awsTarget } from './sst.ts'
 import { gcpTarget } from './pulumi.ts'
+import { prepareLogReaderSecret } from './openapi-log-reader.ts'
 
 /**
  * What the engine is asked to do. A preview reads; the other two write.
@@ -79,7 +80,7 @@ export type DeployTarget = {
 
 export type DeployTargetInput = {
   /** Where the config file is, for the paths the engines resolve against it. */
-  config: Pick<MstageConfig, 'root' | 'path'>
+  config: MstageConfig
   /** `scope.home` is which cloud this stage lives in, folded once by mstage. */
   scope: Scope
   /** Injected so a test drives the dispatch without reaching either cloud. */
@@ -100,19 +101,25 @@ export const resolveDeployTarget = async ({
   resolveHomeWith = resolveHome,
 }: DeployTargetInput): Promise<DeployTarget> => {
   const home = await resolveHomeWith({ scope })
+  const prepared = (target: DeployTarget): DeployTarget => ({
+    ...target,
+    run: async request => target.run({ ...request, stageEnvironment: await prepareLogReaderSecret({
+      config, scope, backend: home.backend, identity: home.identity, request,
+    }) }),
+  })
   // Exhaustive rather than an if with a fallthrough: a cloud added to mstage and
   // not to this switch should be a type error here, not a run silently handed to
   // whichever engine happened to be the else branch.
   switch (home.identity.home) {
     case 'aws':
-      return awsTarget({ config, scope, identity: home.identity, backend: home.backend })
+      return prepared(awsTarget({ config, scope, identity: home.identity, backend: home.backend }))
     case 'gcp':
-      return gcpTarget({
+      return prepared(gcpTarget({
         config,
         scope,
         identity: home.identity,
         backend: home.backend,
         stateBucket: home.stateBucket,
-      })
+      }))
   }
 }
