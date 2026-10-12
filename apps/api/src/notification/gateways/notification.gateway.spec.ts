@@ -104,6 +104,29 @@ describe('NotificationGateway connection rooms', () => {
 
     expect(socket.joined).toEqual(['user-2'])
   })
+
+  it('keeps a JWT connection that names no organization in its user room only', async () => {
+    const socket = connect({ jwtPayload: { sub: 'user-1' }, memberships: [['org-1', 'user-1']] })
+
+    await socket.run()
+
+    expect(socket.joined).toEqual(['user-1'])
+    expect(socket.next).toHaveBeenCalledWith()
+  })
+})
+
+describe('NotificationGateway eviction', () => {
+  it("takes every socket of the user out of the organization's room", () => {
+    const socketsLeave = jest.fn()
+    const serverIn = jest.fn(() => ({ socketsLeave }))
+    const gateway = new NotificationGateway({} as never, {} as never, {} as never, {} as never)
+    gateway.server = { in: serverIn } as unknown as Server
+
+    gateway.leaveOrganizationRoom('user-2', 'org-1')
+
+    expect(serverIn).toHaveBeenCalledWith('user-2')
+    expect(socketsLeave).toHaveBeenCalledWith('org-1')
+  })
 })
 
 describe('NotificationService on member removal', () => {
