@@ -23,13 +23,24 @@ describe('OrganizationInvitationService state errors', () => {
     return { service, repository }
   }
 
-  it.each([
+  const staleInvitations = [
     ['no longer pending', OrganizationInvitationStatus.ACCEPTED, 60_000],
     ['expired', OrganizationInvitationStatus.PENDING, -60_000],
-  ])('answers 409 when cancelling an invitation that is %s', async (_, status, expiresInMs) => {
+  ] as const
+
+  it.each(staleInvitations)('answers 409 when cancelling an invitation that is %s', async (_, status, expiresInMs) => {
     const { service, repository } = serviceFor({ status, expiresAt: new Date(Date.now() + expiresInMs) })
 
     await expect(service.cancel('org-1', 'inv-1')).rejects.toMatchObject({ status: 409 })
+    expect(repository.save).not.toHaveBeenCalled()
+  })
+
+  it.each(staleInvitations)('answers 409 when updating an invitation that is %s', async (_, status, expiresInMs) => {
+    const { service, repository } = serviceFor({ status, expiresAt: new Date(Date.now() + expiresInMs) })
+
+    await expect(service.update('org-1', 'inv-1', { assignedRoleIds: [] } as never)).rejects.toMatchObject({
+      status: 409,
+    })
     expect(repository.save).not.toHaveBeenCalled()
   })
 })

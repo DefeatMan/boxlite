@@ -176,6 +176,48 @@ describe('BoxLite REST members and invitations', () => {
     )
   })
 
+  it('passes a requested expiry to the service as a date', async () => {
+    principal = apiKeyPrincipal('user-1', 'org-1')
+
+    const response = await call('POST', '/v1/org-1/invitations', {
+      email: 'new@example.com',
+      expires_at: '2026-10-01T00:00:00.000Z',
+    })
+
+    expect(response.status).toBe(201)
+    expect(organizationInvitationService.create).toHaveBeenCalledWith(
+      'org-1',
+      {
+        email: 'new@example.com',
+        role: OrganizationMemberRole.OWNER,
+        assignedRoleIds: [],
+        expiresAt: new Date('2026-10-01T00:00:00.000Z'),
+      },
+      'user-1@example.com',
+    )
+  })
+
+  it('lists pending invitations to any member of the organization', async () => {
+    principal = apiKeyPrincipal('user-3', 'org-1')
+
+    const response = await call('GET', '/v1/org-1/invitations')
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({
+      invitations: [
+        {
+          id: 'inv-1',
+          email: 'new@example.com',
+          status: 'pending',
+          invited_by: 'user-1@example.com',
+          created_at: '2026-09-02T00:00:00.000Z',
+          expires_at: '2026-09-09T00:00:00.000Z',
+        },
+      ],
+    })
+    expect(organizationInvitationService.findPending).toHaveBeenCalledWith('org-1')
+  })
+
   it('rejects an invitation without a valid email before reaching the service', async () => {
     principal = apiKeyPrincipal('user-1', 'org-1')
 
