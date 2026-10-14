@@ -4,26 +4,14 @@
  */
 
 import { EntityManager } from 'typeorm'
+import { TransactionalEvent } from './transactional.event'
 
-export class OrganizationUserRemovedEvent {
-  private readonly afterCommitTasks: Array<() => Promise<void>> = []
-
+export class OrganizationUserRemovedEvent extends TransactionalEvent {
   constructor(
-    public readonly entityManager: EntityManager,
+    entityManager: EntityManager,
     public readonly organizationId: string,
     public readonly userId: string,
-  ) {}
-
-  /**
-   * Defers work until the removal commits. Cache invalidation belongs here: cleared
-   * inside the transaction, a cache can be refilled by a concurrent request that
-   * still reads the uncommitted rows.
-   */
-  afterCommit(task: () => Promise<void>): void {
-    this.afterCommitTasks.push(task)
-  }
-
-  async runAfterCommitTasks(): Promise<void> {
-    await Promise.all(this.afterCommitTasks.map((task) => task()))
+  ) {
+    super(entityManager)
   }
 }

@@ -127,7 +127,7 @@ serves and the events it emits are catalogued below alongside its routes.
 | `POST`   | `/api/organizations/{organizationId}/box-default-limited-network-egress` | Changes the default limited-egress policy for new boxes. |
 | `PUT`    | `/api/organizations/{organizationId}/experimental-config`                | Replaces the organization's experimental configuration.  |
 | `GET`    | `/api/organizations/{organizationId}/users`                              | Lists organization members.                              |
-| `POST`   | `/api/organizations/{organizationId}/users/{userId}/access`              | Changes a member's organization access.                  |
+| `POST`   | `/api/organizations/{organizationId}/users/{userId}/access`              | Changes access; refuses to demote a default-org creator. |
 | `DELETE` | `/api/organizations/{organizationId}/users/{userId}`                     | Removes a member and revokes their API keys here.        |
 | `GET`    | `/api/organizations/invitations`                                         | Lists invitations addressed to the caller.               |
 | `GET`    | `/api/organizations/invitations/count`                                   | Counts invitations addressed to the caller.              |
@@ -513,7 +513,8 @@ registry host, then matches each box in memory using the longest repository pref
 <summary><b>Members and invitations</b> · 5 routes</summary>
 
 Contract: [`openapi/tenant.openapi.yaml`](../openapi/tenant.openapi.yaml), cloud-only and meant for the CLI
-and SDKs, which do not call it yet. Reads need membership; writes need the owner role.
+and SDKs, which do not call it yet. Reads need membership; writes need the owner role. Any API key
+of an owner qualifies, whatever permissions it was created with.
 Invitees accept in the console, through `/api/organizations/invitations/{invitationId}/accept`.
 
 | Method   | Path                                                   | What it does                                                        |

@@ -106,7 +106,16 @@ export class NotificationGateway extends NotificationEmitter implements OnGatewa
     if (!organizationId) {
       return
     }
-    if (!(await this.organizationUserService.exists(organizationId, userId))) {
+    let isMember: boolean
+    try {
+      isMember = await this.organizationUserService.exists(organizationId, userId)
+    } catch (error) {
+      // A failed lookup is not a failed login: refusing the token would end the
+      // connection for good, since the client does not retry a refused handshake.
+      this.logger.error(`Failed to check membership of user ${userId} in organization ${organizationId}:`, error)
+      return
+    }
+    if (!isMember) {
       this.logger.warn(`Socket for user ${userId} not joined to organization ${organizationId}: not a member`)
       return
     }

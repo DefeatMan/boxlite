@@ -40,7 +40,8 @@ info:
     ## Roles
 
     Members are `owner` or `member`. Owners invite and remove members. Every
-    invitation created through this API makes the invitee an `owner`.
+    invitation created through this API makes the invitee an `owner`. An
+    owner's API key may manage members whatever permissions it was created with.
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
@@ -280,7 +281,7 @@ components:
         expires_at:
           type: string
           format: date-time
-          description: When the invitation lapses (UTC). Defaults to seven days after creation.
+          description: When the invitation lapses (UTC); must be in the future. Defaults to seven days after creation.
 
     Invitation:
       type: object

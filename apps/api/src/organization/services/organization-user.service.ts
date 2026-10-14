@@ -65,7 +65,12 @@ export class OrganizationUserService {
     return dtos
   }
 
+  // Both lookups refuse a missing key: TypeORM drops a where condition whose value is
+  // undefined, so a caller without a user (a machine credential) would match a member.
   async findOne(organizationId: string, userId: string): Promise<OrganizationUser | null> {
+    if (!organizationId || !userId) {
+      return null
+    }
     return this.organizationUserRepository.findOne({
       where: { organizationId, userId },
       relations: {
@@ -75,6 +80,9 @@ export class OrganizationUserService {
   }
 
   async exists(organizationId: string, userId: string): Promise<boolean> {
+    if (!organizationId || !userId) {
+      return false
+    }
     return this.organizationUserRepository.exists({
       where: { organizationId, userId },
     })
@@ -98,6 +106,11 @@ export class OrganizationUserService {
 
     if (!organizationUser) {
       throw new NotFoundException(`User with ID ${userId} not found in organization with ID ${organizationId}`)
+    }
+
+    // Like removal, demotion would lock the user out of their own default organization.
+    if (organizationUser.isDefaultForUser && role !== OrganizationMemberRole.OWNER) {
+      throw new ForbiddenException('Cannot demote a user in their default organization')
     }
 
     // validate role
@@ -132,13 +145,18 @@ export class OrganizationUserService {
     organizationUser.assignedRoles = assignedRoles
 
     if (permissionsToRevoke.length > 0) {
-      await this.dataSource.transaction(async (em) => {
+      const unassignment = await this.dataSource.transaction(async (em) => {
         organizationUser = await em.save(organizationUser)
-        await this.eventEmitter.emitAsync(
-          OrganizationEvents.PERMISSIONS_UNASSIGNED,
-          new OrganizationResourcePermissionsUnassignedEvent(em, organizationId, userId, permissionsToRevoke),
+        const event = new OrganizationResourcePermissionsUnassignedEvent(
+          em,
+          organizationId,
+          userId,
+          permissionsToRevoke,
         )
+        await this.eventEmitter.emitAsync(OrganizationEvents.PERMISSIONS_UNASSIGNED, event)
+        return event
       })
+      await unassignment.runAfterCommitTasks()
     } else {
       organizationUser = await this.organizationUserRepository.save(organizationUser)
     }
@@ -169,7 +187,9 @@ export class OrganizationUserService {
       return event
     })
 
-    // Caches are cleared only after commit, so a request that refills one reads the removal.
+    // Caches are cleared only after commit; cleared earlier, any request racing the commit
+    // could cache the old rows again. One that read them just before the commit still can,
+    // so the old rows can outlive the removal by up to the cache TTL.
     await removal.runAfterCommitTasks()
     const cacheKey = OrganizationUserService.membershipCacheKey(organizationId, userId)
     try {

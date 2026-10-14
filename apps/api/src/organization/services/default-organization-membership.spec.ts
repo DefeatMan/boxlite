@@ -214,6 +214,34 @@ describe('default organization membership semantics', () => {
     expect(organizationUserRepository.manager.remove).not.toHaveBeenCalled()
   })
 
+  it('refuses to demote a user in their default organization', async () => {
+    const organizationUserRepository = {
+      findOne: jest.fn().mockResolvedValue({
+        organizationId: 'org-1',
+        userId: 'user-1',
+        role: OrganizationMemberRole.OWNER,
+        assignedRoles: [],
+        isDefaultForUser: true,
+      }),
+      // A second owner, so the last-owner rule does not refuse the demotion first.
+      count: jest.fn().mockResolvedValue(2),
+    }
+    const entityManager = { save: jest.fn(async (entity) => entity) }
+    const service = new OrganizationUserService(
+      organizationUserRepository as never,
+      { findByIds: jest.fn().mockResolvedValue([]) } as never,
+      { findOne: jest.fn().mockResolvedValue({ id: 'user-1', name: 'User', email: 'user-1@example.com' }) } as never,
+      { emitAsync: jest.fn() } as never,
+      { transaction: async (work: (em: unknown) => unknown) => work(entityManager) } as never,
+      {} as never,
+    )
+
+    await expect(service.updateAccess('org-1', 'user-1', OrganizationMemberRole.MEMBER, [])).rejects.toBeInstanceOf(
+      ForbiddenException,
+    )
+    expect(entityManager.save).not.toHaveBeenCalled()
+  })
+
   it('does not delete a default organization that still has other members when its creator is deleted', async () => {
     const organization = { id: 'org-1' }
     const deletedUserMembership = {
