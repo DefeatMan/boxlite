@@ -17,6 +17,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 import pytest_asyncio
@@ -24,11 +25,28 @@ import pytest_asyncio
 import boxlite
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
-from e2e_auth import auth_context, credentials_path
+from e2e_auth import auth_context, credentials_path, load_profile
 from images import default_image
 from path_verification import runner_journal_seek, runner_hits_for_box
 
 DEFAULT_IMAGE = default_image()
+
+# Whether the suite targets a deployed stage rather than a local stack. A case
+# whose failure has only been seen on a cloud stage conditions its strict xfail
+# on this, so the same case passing locally is not an XPASS failure.
+_STAGE_HOST = urlparse(
+    os.environ.get("BOXLITE_E2E_API_URL") or load_profile(required=False).get("url", "")
+).hostname or "localhost"
+STAGE_IS_REMOTE = _STAGE_HOST not in ("localhost", "127.0.0.1", "::1")
+
+# On a cloud stage, a tunnel read that waits for the guest service to close the
+# connection fails with "peer closed connection without sending TLS
+# close_notify", while reads that stop at the expected bytes succeed.
+TUNNEL_READ_TO_EOF_XFAIL = pytest.mark.xfail(
+    condition=STAGE_IS_REMOTE,
+    strict=True,
+    reason="a tunnel read that waits for EOF fails with a TLS unexpected-EOF error on a cloud stage (#1950)",
+)
 
 # Every box this suite creates gets a lifetime a dead run cannot outlive.
 #

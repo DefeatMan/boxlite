@@ -117,15 +117,8 @@ async function main(): Promise<void> {
       pathPrefix: env('BOXLITE_E2E_PREFIX', ''),
     }),
   )
-  // #1370 (446e9aec) made an unspecified inbound mode private, and the API
-  // rejects a tunnel on a private box (boxlite-proxy.controller.ts:243). Every
-  // box in this driver exists to be tunnelled to, so each one asks for inbound
-  // access explicitly — which today changes nothing on the wire:
-  // `inbound = enabled` with an empty allow-list equals NetworkSpec::default()
-  // (runtime/options.rs:876-895,983-989), so from_options takes the pre-split
-  // branch and drops the field (rest/types.rs:327-333). Stated, not relied on:
-  // these cases are xfail until that is fixed, and the request they send is
-  // what should have worked all along.
+  // An unspecified inbound mode means private, and the API refuses a tunnel on
+  // a private box, so every box in this driver asks for inbound access.
   // Every other Node driver removes its box; this one only stopped its four,
   // and a stopped box is never reclaimed: `autoRemove` never reaches the wire
   // over REST, the server's auto_delete default is 0, and apps/e2e/sweep.py

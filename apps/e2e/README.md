@@ -167,21 +167,20 @@ Two limits worth knowing before reading a green dev run as proof:
 
 ### Known-broken on a cloud stage
 
-Tunnel and preview cases are `xfail(strict=True)`, not skipped, because no SDK
-caller can create a public box today. #1370 made an unspecified inbound mode
-mean private, and `CreateBoxNetworkSpec::from_options`
-(`src/boxlite/src/rest/types.rs:327-333`) drops the `inbound` field whenever
-its allow-list is empty — which is exactly what `mode="enabled"` looks like.
-Raw REST with the nested shape returns preview 200 against the same stage, so
-the server is not at fault. Telling "unset" from "enabled" needs an option
-change in the Rust core and every SDK, hence the marks rather than a local
-workaround. Strict means CI fails the day the SDK is fixed, which is when the
-marks should come off. What strict cannot do is tell that cause from a later
-break inside `tunnelable_box` itself — both read as "expected failure" — so a
-green run on those cases proves only that they still fail, not why.
+Three tunnel cases are `xfail(strict=True)` on a remote stage only:
+`test_python_sdk_tunnel_proxies_http_from_rest_box` and the Node driver's HTTP
+and stopped-box cases. On a cloud stage, a tunnel read that waits for the guest
+service to close the connection fails with "peer closed connection without
+sending TLS close_notify", while reads that stop at the expected bytes succeed
+(#1950). Which hop drops the TLS shutdown is not established, and no local run
+has shown it, so the mark is `TUNNEL_READ_TO_EOF_XFAIL` in `cases/conftest.py`,
+conditional on `STAGE_IS_REMOTE`. Strict means CI fails the day the stage stops
+failing, which is when the marks should come off; it cannot tell that cause
+from a later break in the same case. The half-close cases keep their own
+unconditional mark.
 
-`test_cli_run_foreground_streams_command_output` carries the same mark for a
-different reason, and unlike the tunnel cases it is conditional. `boxlite run
+`test_cli_run_foreground_streams_command_output` is marked the same conditional
+way for a different reason. `boxlite run
 <image> <cmd>` without `-d` is create → WS `/boxes/{id}/attach` → `POST
 /start`, and on a cloud stage that upgrade comes back a bare 503 whose body
 (`upstream connect error or disconnect/reset before headers`) is an envelope

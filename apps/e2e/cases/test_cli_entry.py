@@ -23,18 +23,17 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
-from urllib.parse import urlparse
 
 import pytest
 
 from conftest import (
     E2E_AUTO_DELETE_SECONDS,
     E2E_AUTO_STOP_SECONDS,
+    STAGE_IS_REMOTE,
     e2e_box_name,
 )
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
-from e2e_auth import load_profile
 from images import default_image
 
 BOXLITE_BIN = os.environ.get("BOXLITE_E2E_CLI", shutil.which("boxlite"))
@@ -154,12 +153,6 @@ FOREGROUND_RUN_ATTACH_503 = (
     "a bare 503 by the load balancing in front of the API, after the box has "
     "already been created"
 )
-
-_STAGE_HOST = urlparse(
-    os.environ.get("BOXLITE_E2E_API_URL")
-    or load_profile(CLI_PROFILE, required=False).get("url", "")
-).hostname or "localhost"
-STAGE_IS_REMOTE = _STAGE_HOST not in ("localhost", "127.0.0.1", "::1")
 
 
 @pytest.mark.xfail(
