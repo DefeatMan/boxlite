@@ -303,6 +303,9 @@ transaction. Key and membership caches are cleared and notification sockets
 leave those organization rooms only after commit. A shared default organization
 and its other members' keys remain; the existing fallback-owner rule still applies.
 
+Removal events capture membership identifiers before deleting the entity,
+because TypeORM clears its primary columns during removal.
+
 | Column | Type | Notes |
 | ------ | ---- | ----- |
 | `organizationId` | `uuid` | primary key |
