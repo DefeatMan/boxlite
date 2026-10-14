@@ -4,7 +4,7 @@
  */
 
 import { EntityManager } from 'typeorm'
-import { TransactionalEvent } from './transactional.event'
+import { TransactionalEvent } from '../../common/events/transactional.event'
 
 export class OrganizationUserRemovedEvent extends TransactionalEvent {
   constructor(

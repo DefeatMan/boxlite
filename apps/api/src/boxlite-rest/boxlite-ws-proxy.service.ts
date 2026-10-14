@@ -171,10 +171,9 @@ export class BoxliteWsProxyService {
    *
    * API key: the bearer must be a non-expired API key. A non-admin user must
    * still be a member of the key's organization and carry write:boxes; a system
-   * admin is admitted without either. Removing a member deletes their keys in
-   * that org, but deleting a user drops memberships and leaves keys, so the
-   * membership check still keeps those keys out. The URL tenant is ignored
-   * (key is scoped).
+   * admin is admitted without either. Member removal and user deletion revoke
+   * the affected keys; the membership check also rejects keys left behind by
+   * older deletion paths. The URL tenant is ignored (key is scoped).
    *
    * JWT (OIDC): when the bearer is not an API key, verify it via `JwtStrategy`
    * (same JWKS/issuer/audience as the HTTP path). A JWT carries no org, so the

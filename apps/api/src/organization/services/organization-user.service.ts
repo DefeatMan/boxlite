@@ -191,12 +191,18 @@ export class OrganizationUserService {
     // could cache the old rows again. One that read them just before the commit still can,
     // so the old rows can outlive the removal by up to the cache TTL.
     await removal.runAfterCommitTasks()
-    const cacheKey = OrganizationUserService.membershipCacheKey(organizationId, userId)
-    try {
-      await this.redis.del(cacheKey)
-    } catch (error) {
-      this.logger.error(`Failed to invalidate membership cache ${cacheKey}:`, error)
-    }
+  }
+
+  @OnAsyncEvent({ event: OrganizationEvents.USER_REMOVED })
+  async handleOrganizationUserRemovedEvent(event: OrganizationUserRemovedEvent): Promise<void> {
+    event.afterCommit(async () => {
+      const cacheKey = OrganizationUserService.membershipCacheKey(event.organizationId, event.userId)
+      try {
+        await this.redis.del(cacheKey)
+      } catch (error) {
+        this.logger.error(`Failed to invalidate membership cache ${cacheKey}:`, error)
+      }
+    })
   }
 
   private async removeWithEntityManager(
@@ -280,7 +286,18 @@ export class OrganizationUserService {
     //  - auto-delete the organization if there are no other members
     //  - auto-promote a new owner if there are other members
     */
-    await Promise.all(memberships.map((membership) => this.removeWithEntityManager(payload.entityManager, membership)))
+    await Promise.all(
+      memberships.map(async (membership) => {
+        await this.removeWithEntityManager(payload.entityManager, membership)
+        const removal = new OrganizationUserRemovedEvent(
+          payload.entityManager,
+          membership.organizationId,
+          payload.userId,
+        )
+        await this.eventEmitter.emitAsync(OrganizationEvents.USER_REMOVED, removal)
+        payload.afterCommit(() => removal.runAfterCommitTasks())
+      }),
+    )
   }
 
   private getAssignedPermissions(
