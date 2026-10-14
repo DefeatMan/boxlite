@@ -288,12 +288,13 @@ export class OrganizationUserService {
     */
     await Promise.all(
       memberships.map(async (membership) => {
-        await this.removeWithEntityManager(payload.entityManager, membership)
+        // TypeORM clears primary columns on removed entities; capture the identity first.
         const removal = new OrganizationUserRemovedEvent(
           payload.entityManager,
           membership.organizationId,
           payload.userId,
         )
+        await this.removeWithEntityManager(payload.entityManager, membership)
         await this.eventEmitter.emitAsync(OrganizationEvents.USER_REMOVED, removal)
         payload.afterCommit(() => removal.runAfterCommitTasks())
       }),

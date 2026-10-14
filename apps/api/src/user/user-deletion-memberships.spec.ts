@@ -59,6 +59,8 @@ async function createServices(sharedDefault: boolean) {
   const find = async (entity: unknown, { where }: { where: Record<string, unknown> }) =>
     (rows.get(entity) ?? []).filter((row) =>
       Object.entries(where).every(([field, value]) => {
+        // TypeORM 0.3 ignores undefined where values by default.
+        if (value === undefined) return true
         const actual = (row as Record<string, unknown>)[field]
         if (value instanceof FindOperator && value.type === 'not') return actual !== value.value
         return actual === value
@@ -74,6 +76,10 @@ async function createServices(sharedDefault: boolean) {
         for (let i = memberships.length - 1; i >= 0; i--) {
           if (memberships[i].organizationId === entity.id) memberships.splice(i, 1)
         }
+      }
+      if (entity instanceof OrganizationUser) {
+        // TypeORM remove clears primary columns on the supplied entity.
+        Object.assign(entity, { organizationId: undefined, userId: undefined })
       }
     }
   }
