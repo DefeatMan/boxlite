@@ -76,9 +76,9 @@ const UserOrganizationInvitations: React.FC = () => {
   // not as a failed accept.
   const switchToJoinedOrganization = async (organizationId: string) => {
     try {
-      // Listing the new organization is not enough: the selection only follows
-      // localStorage on the next load, so switch to it now.
-      await refreshOrganizations(organizationId)
+      // Refresh the list without persisting a choice; selection saves it only
+      // after membership validation succeeds.
+      await refreshOrganizations()
       await onSelectOrganization(organizationId)
     } catch (error) {
       handleApiError(error, 'Failed to switch to the joined organization')

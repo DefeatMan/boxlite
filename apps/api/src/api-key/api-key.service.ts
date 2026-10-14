@@ -14,7 +14,7 @@ import { OnAsyncEvent } from '../common/decorators/on-async-event.decorator'
 import { OrganizationEvents } from '../organization/constants/organization-events.constant'
 import { OrganizationResourcePermissionsUnassignedEvent } from '../organization/events/organization-resource-permissions-unassigned.event'
 import { OrganizationUserRemovedEvent } from '../organization/events/organization-user-removed.event'
-import { TransactionalEvent } from '../organization/events/transactional.event'
+import { TransactionalEvent } from '../common/events/transactional.event'
 import { InjectRedis } from '@nestjs-modules/ioredis'
 import Redis from 'ioredis'
 import {

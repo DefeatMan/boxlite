@@ -110,6 +110,10 @@ menu, which shows how many invitations are pending. Accepting switches to the
 organization just joined, because a membership that only shows up after a
 reload reads as a failed accept.
 
+The new selection is saved only after membership validation succeeds. If switching
+fails, acceptance still succeeds and the invitation disappears, while the console
+keeps the previous organization both on screen and for the next reload.
+
 ## The organization you pick is the one you come back to
 
 A user in more than one organization switches between them from the profile

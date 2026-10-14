@@ -84,7 +84,7 @@ async function createServices(membership: OrganizationUser, apiKeys: StoredApiKe
   // Registers the @OnEvent listeners, so removal runs through the real event wiring.
   await moduleRef.init()
 
-  return { service: moduleRef.get(OrganizationUserService), removed, timeline }
+  return { service: moduleRef.get(OrganizationUserService), removed, timeline, redis }
 }
 
 describe('OrganizationUserService.delete', () => {
@@ -94,6 +94,21 @@ describe('OrganizationUserService.delete', () => {
     role: OrganizationMemberRole.OWNER,
     isDefaultForUser: false,
   } as OrganizationUser
+
+  it('review regressions: a key-cache Redis failure does not skip membership invalidation', async () => {
+    const key = { organizationId: 'org-1', userId: 'user-2', name: 'ci', keyHash: 'hash-ci' }
+    const { service, timeline, redis } = await createServices(membership, [key])
+    redis.del.mockImplementation(async (cacheKey) => {
+      timeline.push(`del ${cacheKey}`)
+      if (cacheKey.startsWith('api-key:')) throw new Error('Redis unavailable')
+      return 1
+    })
+
+    await expect(service.delete('org-1', 'user-2')).resolves.toBeUndefined()
+
+    expect(timeline[0]).toBe('commit')
+    expect(timeline.slice(1).sort()).toEqual(['del api-key:validation:hash-ci', 'del organization-user:org-1:user-2'])
+  })
 
   it("revokes the removed member's API keys in that organization and nothing else", async () => {
     const removedMembersKey = { organizationId: 'org-1', userId: 'user-2', name: 'ci', keyHash: 'hash-ci' }
@@ -116,7 +131,8 @@ describe('OrganizationUserService.delete', () => {
 
     await service.delete('org-1', 'user-2')
 
-    expect(timeline).toEqual(['commit', 'del api-key:validation:hash-ci', 'del organization-user:org-1:user-2'])
+    expect(timeline[0]).toBe('commit')
+    expect(timeline.slice(1).sort()).toEqual(['del api-key:validation:hash-ci', 'del organization-user:org-1:user-2'])
   })
 })
 
