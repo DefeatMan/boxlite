@@ -22,11 +22,13 @@ function connect(options: {
   apiKeyContext?: Record<string, unknown>
   queryOrganizationId?: string
   memberships: Array<[string, string]>
+  membershipLookupError?: Error
 }) {
   const organizationUserService = {
-    exists: jest.fn(async (organizationId: string, userId: string) =>
-      options.memberships.some(([org, user]) => org === organizationId && user === userId),
-    ),
+    exists: jest.fn(async (organizationId: string, userId: string) => {
+      if (options.membershipLookupError) throw options.membershipLookupError
+      return options.memberships.some(([org, user]) => org === organizationId && user === userId)
+    }),
   }
   const jwtStrategy = {
     verifyToken: jest.fn(async () => {
@@ -103,6 +105,20 @@ describe('NotificationGateway connection rooms', () => {
     await socket.run()
 
     expect(socket.joined).toEqual(['user-2'])
+  })
+
+  it('keeps a JWT member connected in its user room when the membership lookup fails', async () => {
+    const socket = connect({
+      jwtPayload: { sub: 'user-1' },
+      queryOrganizationId: 'org-1',
+      memberships: [['org-1', 'user-1']],
+      membershipLookupError: new Error('Connection terminated'),
+    })
+
+    await socket.run()
+
+    expect(socket.joined).toEqual(['user-1'])
+    expect(socket.next).toHaveBeenCalledWith()
   })
 
   it('keeps a JWT connection that names no organization in its user room only', async () => {

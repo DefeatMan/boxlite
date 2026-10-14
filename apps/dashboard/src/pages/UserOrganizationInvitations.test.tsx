@@ -7,6 +7,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
+import { toast } from 'sonner'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import UserOrganizationInvitations from './UserOrganizationInvitations'
 
@@ -77,7 +78,7 @@ describe('UserOrganizationInvitations', () => {
     document.body.innerHTML = ''
   })
 
-  it('switches the console to the organization the user just joined', async () => {
+  async function acceptTheInvitation() {
     const host = document.createElement('div')
     document.body.appendChild(host)
     await act(async () => {
@@ -94,7 +95,31 @@ describe('UserOrganizationInvitations', () => {
     )
     expect(accept).toBeTruthy()
     await act(async () => accept?.click())
+  }
+
+  it('switches the console to the organization the user just joined', async () => {
+    await acceptTheInvitation()
 
     expect(mocks.calls).toEqual(['accept', 'refresh org-2', 'select org-2'])
+  })
+
+  it('keeps a successful accept when switching to the joined organization fails', async () => {
+    const { organizationsApi } = mocks.api
+    const selectOrganization = mocks.selectedOrganization.onSelectOrganization
+    mocks.selectedOrganization.onSelectOrganization = async () => {
+      throw new Error('Request failed with status code 429')
+    }
+    const listInvitations = vi.spyOn(organizationsApi, 'listOrganizationInvitationsForAuthenticatedUser')
+    vi.mocked(toast.error).mockClear()
+    try {
+      await acceptTheInvitation()
+
+      expect(toast.error).not.toHaveBeenCalledWith('Failed to accept invitation', expect.anything())
+      // Once on load, and again because the accepted invitation leaves the list.
+      expect(listInvitations).toHaveBeenCalledTimes(2)
+    } finally {
+      mocks.selectedOrganization.onSelectOrganization = selectOrganization
+      listInvitations.mockRestore()
+    }
   })
 })

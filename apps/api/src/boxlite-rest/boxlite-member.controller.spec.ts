@@ -9,6 +9,7 @@ import { ValidationPipe, type INestApplication } from '@nestjs/common'
 import { Test } from '@nestjs/testing'
 import { getRedisConnectionToken } from '@nestjs-modules/ioredis'
 import type { AddressInfo } from 'net'
+import { QueryFailedError } from 'typeorm'
 import { CombinedAuthGuard } from '../auth/combined-auth.guard'
 import { AuthenticatedRateLimitGuard } from '../common/guards/authenticated-rate-limit.guard'
 import { OrganizationMemberRole } from '../organization/enums/organization-member-role.enum'
@@ -27,6 +28,8 @@ const memberships = new Map([
   ['org-1:user-3', { organizationId: 'org-1', userId: 'user-3', role: OrganizationMemberRole.MEMBER }],
   ['org-2:user-2', { organizationId: 'org-2', userId: 'user-2', role: OrganizationMemberRole.OWNER }],
 ])
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 // An API-key principal, as ApiKeyStrategy builds it: the key names its organization.
 function apiKeyPrincipal(userId: string, organizationId: string) {
@@ -60,7 +63,13 @@ describe('BoxLite REST members and invitations', () => {
   const organizationInvitationService = {
     create: jest.fn(async () => invitation),
     findPending: jest.fn(async () => [invitation]),
-    cancel: jest.fn(async () => undefined),
+    // The invitation id column is a uuid, and Postgres answers any other string
+    // with a cast error rather than a miss.
+    cancel: jest.fn(async (_organizationId: string, invitationId: string) => {
+      if (!UUID.test(invitationId)) {
+        throw new QueryFailedError('SELECT', [invitationId], new Error('invalid input syntax for type uuid'))
+      }
+    }),
   }
 
   beforeAll(async () => {
@@ -181,7 +190,7 @@ describe('BoxLite REST members and invitations', () => {
 
     const response = await call('POST', '/v1/org-1/invitations', {
       email: 'new@example.com',
-      expires_at: '2026-10-01T00:00:00.000Z',
+      expires_at: '2099-10-01T00:00:00.000Z',
     })
 
     expect(response.status).toBe(201)
@@ -191,7 +200,7 @@ describe('BoxLite REST members and invitations', () => {
         email: 'new@example.com',
         role: OrganizationMemberRole.OWNER,
         assignedRoleIds: [],
-        expiresAt: new Date('2026-10-01T00:00:00.000Z'),
+        expiresAt: new Date('2099-10-01T00:00:00.000Z'),
       },
       'user-1@example.com',
     )
@@ -235,12 +244,40 @@ describe('BoxLite REST members and invitations', () => {
   })
 
   it('lets an owner cancel a pending invitation, and refuses a plain member', async () => {
+    const invitationId = '6f1c2a4e-0b7d-4c3e-9a5f-2d8e1b7c4a90'
     principal = apiKeyPrincipal('user-1', 'org-1')
-    expect((await call('DELETE', '/v1/org-1/invitations/inv-1')).status).toBe(204)
-    expect(organizationInvitationService.cancel).toHaveBeenCalledWith('org-1', 'inv-1')
+    expect((await call('DELETE', `/v1/org-1/invitations/${invitationId}`)).status).toBe(204)
+    expect(organizationInvitationService.cancel).toHaveBeenCalledWith('org-1', invitationId)
 
     principal = apiKeyPrincipal('user-3', 'org-1')
-    expect((await call('DELETE', '/v1/org-1/invitations/inv-1')).status).toBe(403)
+    expect((await call('DELETE', `/v1/org-1/invitations/${invitationId}`)).status).toBe(403)
     expect(organizationInvitationService.cancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('answers 404 for an invitation id that is not a UUID', async () => {
+    principal = apiKeyPrincipal('user-1', 'org-1')
+
+    expect((await call('DELETE', '/v1/org-1/invitations/not-a-uuid')).status).toBe(404)
+  })
+
+  it('rejects invitation fields the contract does not define', async () => {
+    principal = apiKeyPrincipal('user-1', 'org-1')
+
+    const response = await call('POST', '/v1/org-1/invitations', { email: 'new@example.com', role: 'member' })
+
+    expect(response.status).toBe(400)
+    expect(organizationInvitationService.create).not.toHaveBeenCalled()
+  })
+
+  it('rejects an invitation that would already be expired', async () => {
+    principal = apiKeyPrincipal('user-1', 'org-1')
+
+    const response = await call('POST', '/v1/org-1/invitations', {
+      email: 'new@example.com',
+      expires_at: '2020-01-01T00:00:00.000Z',
+    })
+
+    expect(response.status).toBe(400)
+    expect(organizationInvitationService.create).not.toHaveBeenCalled()
   })
 })

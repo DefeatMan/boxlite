@@ -3,7 +3,20 @@
  * SPDX-License-Identifier: AGPL-3.0
  */
 
-import { Body, Controller, Delete, Get, HttpCode, Param, Post, UseGuards } from '@nestjs/common'
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  UseGuards,
+  UsePipes,
+  ValidationPipe,
+} from '@nestjs/common'
 import { ApiExcludeController } from '@nestjs/swagger'
 import { CombinedAuthGuard } from '../auth/combined-auth.guard'
 import { AuthenticatedRateLimitGuard } from '../common/guards/authenticated-rate-limit.guard'
@@ -33,6 +46,10 @@ type RestInvitation = {
 @Controller(['v1/invitations', 'v1/:prefix/invitations'])
 @ApiExcludeController()
 @UseGuards(CombinedAuthGuard, AuthenticatedRateLimitGuard, OrganizationActionGuard)
+// The spec declares `additionalProperties: false` on CreateInvitationRequest. The global
+// pipe lets an unknown field through and the handler ignores it, so a stray `role` would
+// still create an owner invitation.
+@UsePipes(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
 export class BoxliteInvitationController {
   constructor(private readonly organizationInvitationService: OrganizationInvitationService) {}
 
@@ -79,7 +96,8 @@ export class BoxliteInvitationController {
   })
   async cancel(
     @AuthContext() authContext: OrganizationAuthContext,
-    @Param('invitationId') invitationId: string,
+    // Ids are UUIDs: any other string names no invitation, and Postgres rejects it as a bad cast.
+    @Param('invitationId', new ParseUUIDPipe({ errorHttpStatusCode: HttpStatus.NOT_FOUND })) invitationId: string,
   ): Promise<void> {
     await this.organizationInvitationService.cancel(authContext.organizationId, invitationId)
   }

@@ -4,7 +4,7 @@
  */
 
 import { Type } from 'class-transformer'
-import { IsDate, IsEmail, IsOptional } from 'class-validator'
+import { IsDate, IsEmail, IsOptional, MinDate } from 'class-validator'
 
 /** Body of `POST /v1/{prefix}/invitations`; see openapi/tenant.openapi.yaml CreateInvitationRequest. */
 export class CreateInvitationDto {
@@ -14,5 +14,6 @@ export class CreateInvitationDto {
   @IsOptional()
   @Type(() => Date)
   @IsDate()
+  @MinDate(() => new Date(), { message: 'expires_at must be in the future' })
   expires_at?: Date
 }

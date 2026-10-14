@@ -72,15 +72,25 @@ const UserOrganizationInvitations: React.FC = () => {
     }
   }, [searchParams, invitations, setSearchParams, loadingInvitations])
 
+  // The membership already exists by now, so a failed switch is reported as such,
+  // not as a failed accept.
+  const switchToJoinedOrganization = async (organizationId: string) => {
+    try {
+      // Listing the new organization is not enough: the selection only follows
+      // localStorage on the next load, so switch to it now.
+      await refreshOrganizations(organizationId)
+      await onSelectOrganization(organizationId)
+    } catch (error) {
+      handleApiError(error, 'Failed to switch to the joined organization')
+    }
+  }
+
   const handleAcceptInvitation = async (invitation: OrganizationInvitation): Promise<boolean> => {
     setLoadingInvitationAction((prev) => ({ ...prev, [invitation.id]: true }))
     try {
       await organizationsApi.acceptOrganizationInvitation(invitation.id)
       toast.success(`You joined ${invitation.organizationName}`)
-      // Listing the new organization is not enough: the selection only follows
-      // localStorage on the next load, so switch to it now.
-      await refreshOrganizations(invitation.organizationId)
-      await onSelectOrganization(invitation.organizationId)
+      await switchToJoinedOrganization(invitation.organizationId)
       await fetchInvitations(false)
       return true
     } catch (error) {

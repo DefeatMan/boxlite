@@ -170,11 +170,11 @@ export class BoxliteWsProxyService {
    * `upgrade` caller can't leak a hung socket.
    *
    * API key: the bearer must be a non-expired API key. A non-admin user must
-   * still be a member of the key's organization — this check is critical, since
-   * removing a user from an org deletes the OrganizationUser row but does not
-   * cascade to ApiKey rows, so without it a removed member's surviving key could
-   * still attach — and must carry write:boxes; a system admin is admitted without
-   * either. The URL tenant is ignored (key is scoped).
+   * still be a member of the key's organization and carry write:boxes; a system
+   * admin is admitted without either. Removing a member deletes their keys in
+   * that org, but deleting a user drops memberships and leaves keys, so the
+   * membership check still keeps those keys out. The URL tenant is ignored
+   * (key is scoped).
    *
    * JWT (OIDC): when the bearer is not an API key, verify it via `JwtStrategy`
    * (same JWKS/issuer/audience as the HTTP path). A JWT carries no org, so the
@@ -234,10 +234,9 @@ export class BoxliteWsProxyService {
    * Authorize an attach upgrade with OrganizationResourceActionGuard's policy,
    * which the WS upgrade never reaches. A system admin is not organization-scoped
    * and is admitted without membership, exactly as OrganizationAccessGuard admits
-   * it on the HTTP path. Everyone else must be a current member — removing a user
-   * from an org drops the OrganizationUser row but not their API keys, so the check
-   * is critical — and must carry write:boxes (an org owner without an API key is
-   * exempt). Attach streams to an execution's stdin, i.e. interactive exec.
+   * it on the HTTP path. Everyone else must be a current member and must carry
+   * write:boxes (an org owner without an API key is exempt). Attach streams to an
+   * execution's stdin, i.e. interactive exec.
    */
   private async authorizeAttach(user: User, organizationId: string, apiKey?: ApiKey): Promise<boolean> {
     if (user.role === SystemRole.ADMIN) return true

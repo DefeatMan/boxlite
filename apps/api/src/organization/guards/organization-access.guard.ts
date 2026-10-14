@@ -87,6 +87,14 @@ export class OrganizationAccessGuard implements CanActivate {
       return true
     }
 
+    // Machine credentials (runner, proxy, health check, ...) carry no user, and TypeORM
+    // drops a where condition whose value is undefined: looking up their membership
+    // would return an arbitrary member of the organization.
+    if (!authContext.userId) {
+      this.logger.warn(`No user in the request context. Organization ID: ${organizationId}`)
+      return false
+    }
+
     const organizationUser = await this.getCachedOrganizationUser(organizationId, authContext.userId)
 
     if (!organizationUser) {

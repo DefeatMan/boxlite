@@ -29,6 +29,7 @@ function createEntityManager(apiKeys: StoredApiKey[]) {
     find: jest.fn(async (_entity: unknown, { where }: { where: Partial<StoredApiKey> }) =>
       apiKeys.filter((apiKey) => apiKey.organizationId === where.organizationId && apiKey.userId === where.userId),
     ),
+    save: jest.fn(async (entity: unknown) => entity),
     remove: jest.fn(async (rows: unknown) => {
       for (const row of Array.isArray(rows) ? rows : [rows]) {
         removed.push(row)
@@ -65,13 +66,17 @@ async function createServices(membership: OrganizationUser, apiKeys: StoredApiKe
       ApiKeyService,
       {
         provide: getRepositoryToken(OrganizationUser),
-        useValue: { findOne: jest.fn().mockResolvedValue(membership), manager: entityManager },
+        useValue: {
+          findOne: jest.fn().mockResolvedValue(membership),
+          count: jest.fn().mockResolvedValue(2),
+          manager: entityManager,
+        },
       },
       { provide: getRepositoryToken(ApiKey), useValue: {} },
       { provide: DataSource, useValue: dataSource },
       { provide: getRedisConnectionToken(), useValue: redis },
-      { provide: OrganizationRoleService, useValue: {} },
-      { provide: UserService, useValue: {} },
+      { provide: OrganizationRoleService, useValue: { findByIds: jest.fn().mockResolvedValue([]) } },
+      { provide: UserService, useValue: { findOne: jest.fn().mockResolvedValue(null) } },
       { provide: RedisLockProvider, useValue: {} },
       { provide: TypedConfigService, useValue: {} },
     ],
@@ -112,5 +117,25 @@ describe('OrganizationUserService.delete', () => {
     await service.delete('org-1', 'user-2')
 
     expect(timeline).toEqual(['commit', 'del api-key:validation:hash-ci', 'del organization-user:org-1:user-2'])
+  })
+})
+
+describe('OrganizationUserService.updateAccess', () => {
+  // The removal race again: a key revoked by an access change must not be cached
+  // again by a request that still reads it before the change commits.
+  it('clears revoked keys from the cache only after the access change commits', async () => {
+    const membership = {
+      organizationId: 'org-1',
+      userId: 'user-2',
+      role: OrganizationMemberRole.OWNER,
+      assignedRoles: [],
+      isDefaultForUser: false,
+    } as unknown as OrganizationUser
+    const revokedKey = { organizationId: 'org-1', userId: 'user-2', name: 'ci', keyHash: 'hash-ci' }
+    const { service, timeline } = await createServices(membership, [revokedKey])
+
+    await service.updateAccess('org-1', 'user-2', OrganizationMemberRole.MEMBER, [])
+
+    expect(timeline).toEqual(['commit', 'del api-key:validation:hash-ci'])
   })
 })

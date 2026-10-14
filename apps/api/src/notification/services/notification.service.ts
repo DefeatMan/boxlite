@@ -97,9 +97,10 @@ export class NotificationService {
     }
   }
 
-  // After commit, so a socket reconnecting during the removal already fails the
-  // gateway's membership check instead of re-joining the room. Best-effort: the
-  // removal has committed, so an eviction failure is logged, not thrown.
+  // After commit, so a socket that reconnects after the eviction fails the gateway's
+  // membership check. One whose check ran just before the commit can still join the
+  // room afterwards, and stays until it disconnects. Best-effort: the removal has
+  // committed, so an eviction failure is logged, not thrown.
   @OnAsyncEvent({ event: OrganizationEvents.USER_REMOVED })
   async handleOrganizationUserRemoved(event: OrganizationUserRemovedEvent) {
     event.afterCommit(async () => {
