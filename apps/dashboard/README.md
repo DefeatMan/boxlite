@@ -207,8 +207,14 @@ removal.
 
 The profile menu's Organization entry opens two tabs. General shows the editable
 name and copyable ID. Member combines members and outgoing invitations in one
-table, with Member and Invited statuses. Owners can invite, remove members, and
-cancel invitations. The Member tab can be bookmarked at
+table, with Member, Invited, and Expired statuses. Owners can invite, remove members,
+and cancel invitations. Expired invitations offer Remove (with confirmation) and
+Resend. Resending creates a new invitation with the same permissions and the current
+default lifetime, then removes the expired record. Creation failure preserves the
+old row; cleanup failure reports that the new invitation exists and refreshes both
+rows, so the owner can remove the expired one. The old link remains unusable.
+The page shows the current organization's name; switching stays in the profile menu.
+The Member tab can be bookmarked at
 `/dashboard/settings?tab=member`; older `/dashboard/members` links redirect there.
 
 ## Accepting an invitation opens the organization

@@ -108,6 +108,32 @@ const OrganizationMembers: React.FC = () => {
     }
   }
 
+  const handleResendInvitation = async (invitation: OrganizationInvitation): Promise<boolean> => {
+    if (!selectedOrganization) return false
+    setLoadingInvitationAction((prev) => ({ ...prev, [invitation.id]: true }))
+    try {
+      // Keep the expired record until its replacement exists; omit expiresAt to use the current default lifetime.
+      await organizationsApi.createOrganizationInvitation(selectedOrganization.id, {
+        email: invitation.email,
+        role: invitation.role,
+        assignedRoleIds: invitation.assignedRoles.map((role) => role.id),
+      })
+      try {
+        await organizationsApi.cancelOrganizationInvitation(selectedOrganization.id, invitation.id)
+      } catch (error) {
+        handleApiError(error, 'New invitation created, but failed to remove the expired invitation')
+      }
+      toast.success('New invitation created')
+      await fetchInvitations(false)
+      return true
+    } catch (error) {
+      handleApiError(error, 'Failed to resend invitation')
+      return false
+    } finally {
+      setLoadingInvitationAction((prev) => ({ ...prev, [invitation.id]: false }))
+    }
+  }
+
   const handleCancelInvitation = async (invitationId: string): Promise<boolean> => {
     if (!selectedOrganization) {
       return false
@@ -143,6 +169,7 @@ const OrganizationMembers: React.FC = () => {
         loadingMemberAction={loadingMemberAction}
         ownerMode={authenticatedUserIsOwner}
         onCancelInvitation={handleCancelInvitation}
+        onResendInvitation={handleResendInvitation}
         loadingInvitationAction={loadingInvitationAction}
       />
     </div>

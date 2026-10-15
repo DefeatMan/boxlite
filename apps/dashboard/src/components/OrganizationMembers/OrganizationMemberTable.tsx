@@ -34,6 +34,7 @@ interface DataTableProps {
   loadingMemberAction: Record<string, boolean>
   ownerMode: boolean
   onCancelInvitation: (invitationId: string) => Promise<boolean>
+  onResendInvitation: (invitation: OrganizationInvitation) => Promise<boolean>
   loadingInvitationAction: Record<string, boolean>
 }
 
@@ -47,6 +48,7 @@ export function OrganizationMemberTable({
   loadingMemberAction,
   ownerMode,
   onCancelInvitation,
+  onResendInvitation,
   loadingInvitationAction,
 }: DataTableProps) {
   const [sorting, setSorting] = useState<SortingState>([])
@@ -59,8 +61,13 @@ export function OrganizationMemberTable({
     [data, invitations, ownerMode],
   )
 
+  const isLoading = (row: MemberRow) =>
+    row.kind === 'member' ? loadingMemberAction[row.userId] : loadingInvitationAction[row.id]
+
   const columns = getColumns({
     onAction: setAction,
+    onResendInvitation,
+    isLoading,
     ownerMode,
   })
 
@@ -88,9 +95,6 @@ export function OrganizationMemberTable({
     if (success) setAction(null)
     return success
   }
-
-  const isLoading = (row: MemberRow) =>
-    row.kind === 'member' ? loadingMemberAction[row.userId] : loadingInvitationAction[row.id]
 
   return (
     <>
@@ -155,6 +159,7 @@ export function OrganizationMemberTable({
             if (!open) setAction(null)
           }}
           onCancelInvitation={handleConfirmAction}
+          expired={new Date(action.expiresAt) < new Date()}
           loading={isLoading(action)}
         />
       )}
@@ -164,9 +169,13 @@ export function OrganizationMemberTable({
 
 const getColumns = ({
   onAction,
+  onResendInvitation,
+  isLoading,
   ownerMode,
 }: {
   onAction: (row: MemberRow) => void
+  onResendInvitation: (invitation: OrganizationInvitation) => Promise<boolean>
+  isLoading: (row: MemberRow) => boolean
   ownerMode: boolean
 }): ColumnDef<MemberRow>[] => {
   const columns: ColumnDef<MemberRow>[] = [
@@ -204,17 +213,17 @@ const getColumns = ({
     columns.push({
       id: 'actions',
       cell: ({ row }) => {
+        const item = row.original
         // The API refuses to remove a user from their own personal organization.
-        if (
-          row.original.kind === 'member' ? row.original.isDefaultForUser : new Date(row.original.expiresAt) < new Date()
-        ) {
+        if (item.kind === 'member' && item.isDefaultForUser) {
           return null
         }
+        const expired = item.kind === 'invitation' && new Date(item.expiresAt) < new Date()
 
         return (
           <div className="text-right">
             <DropdownMenu>
-              <DropdownMenuTrigger asChild>
+              <DropdownMenuTrigger asChild disabled={isLoading(item)}>
                 <Button variant="ghost" className="h-8 w-8 p-0">
                   <span className="sr-only">Open menu</span>
                   <MoreHorizontal className="h-4 w-4" />
@@ -222,11 +231,21 @@ const getColumns = ({
               </DropdownMenuTrigger>
 
               <DropdownMenuContent align="end">
+                {item.kind === 'invitation' && expired && (
+                  <DropdownMenuItem
+                    className="cursor-pointer"
+                    disabled={isLoading(item)}
+                    onClick={() => onResendInvitation(item)}
+                  >
+                    Resend
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuItem
+                  disabled={isLoading(item)}
                   className="cursor-pointer text-red-600 dark:text-red-400"
-                  onClick={() => onAction(row.original)}
+                  onClick={() => onAction(item)}
                 >
-                  {row.original.kind === 'member' ? 'Remove' : 'Cancel'}
+                  {item.kind === 'member' || expired ? 'Remove' : 'Cancel'}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
