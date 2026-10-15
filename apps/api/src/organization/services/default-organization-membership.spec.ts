@@ -5,6 +5,7 @@
  */
 
 import { ForbiddenException } from '@nestjs/common'
+import { ConfigService } from '@nestjs/config'
 import { OrganizationInvitationService } from './organization-invitation.service'
 import { OrganizationService } from './organization.service'
 import { OrganizationUserService } from './organization-user.service'
@@ -138,7 +139,7 @@ describe('default organization membership semantics', () => {
         emit: jest.fn(),
       } as never,
       {} as never,
-      {} as never,
+      new ConfigService({ organizationInvitation: { ttlSeconds: 604800 } }),
     )
 
     await expect(

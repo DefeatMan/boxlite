@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: AGPL-3.0
  */
 
-import { act, Suspense } from 'react'
+import { act, StrictMode, Suspense } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
 import { toast } from 'sonner'
@@ -72,7 +72,7 @@ describe('review regressions: UserOrganizationInvitations', () => {
 
   beforeEach(() => {
     clear()
-    vi.clearAllMocks()
+    vi.resetAllMocks()
     localStorage.clear()
     localStorage.setItem(LocalStorageKey.SelectedOrganizationId, 'org-1')
     const own = { id: 'org-1', name: 'Personal', isDefaultForAuthenticatedUser: true }
@@ -91,13 +91,13 @@ describe('review regressions: UserOrganizationInvitations', () => {
     document.body.innerHTML = ''
   })
 
-  async function acceptTheInvitation() {
+  async function renderInvitations(path = '/dashboard/user/invitations', strict = false) {
     const host = document.createElement('div')
     document.body.appendChild(host)
     await act(async () => {
       root = createRoot(host)
-      root.render(
-        <MemoryRouter initialEntries={['/dashboard/user/invitations']}>
+      const page = (
+        <MemoryRouter initialEntries={[path]}>
           <Suspense fallback={null}>
             <OrganizationsProvider>
               <SelectedOrganizationProvider>
@@ -106,16 +106,41 @@ describe('review regressions: UserOrganizationInvitations', () => {
               </SelectedOrganizationProvider>
             </OrganizationsProvider>
           </Suspense>
-        </MemoryRouter>,
+        </MemoryRouter>
       )
+      root.render(strict ? <StrictMode>{page}</StrictMode> : page)
     })
+  }
 
+  async function acceptTheInvitation() {
+    await renderInvitations()
     const accept = [...document.querySelectorAll('button')].find((button) =>
       button.textContent?.includes('Accept invitation'),
     )
     expect(accept).toBeTruthy()
     await act(async () => accept?.click())
   }
+
+  it('accepts an email link once without confirmation, including StrictMode replay', async () => {
+    await renderInvitations('/dashboard/user/invitations?id=inv-1', true)
+    expect(organizationsApi.acceptOrganizationInvitation).toHaveBeenCalledTimes(1)
+    expect(organizationsApi.acceptOrganizationInvitation).toHaveBeenCalledWith('inv-1')
+    expect(document.querySelector('output')?.textContent).toBe('org-2')
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+  })
+
+  it.each([404, 409, 503])(
+    'shows a failed email-link join with status %s without changing organization',
+    async (status) => {
+      organizationsApi.acceptOrganizationInvitation.mockRejectedValueOnce({ response: { status } })
+      await renderInvitations('/dashboard/user/invitations?id=inv-1')
+      expect(organizationsApi.acceptOrganizationInvitation).toHaveBeenCalledTimes(1)
+      expect(document.querySelector('[role="alert"]')?.textContent).toContain('Unable to join')
+      expect(document.querySelector('output')?.textContent).toBe('org-1')
+      expect(localStorage.getItem(LocalStorageKey.SelectedOrganizationId)).toBe('org-1')
+      expect(toast.success).not.toHaveBeenCalled()
+    },
+  )
 
   it('switches the console to the organization the user just joined', async () => {
     await acceptTheInvitation()

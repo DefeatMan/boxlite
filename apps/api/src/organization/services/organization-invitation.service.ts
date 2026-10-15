@@ -71,7 +71,9 @@ export class OrganizationInvitationService {
     invitation.organizationId = organizationId
     invitation.organization = organization
     invitation.email = normalizedEmail
-    invitation.expiresAt = createOrganizationInvitationDto.expiresAt || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+    invitation.expiresAt =
+      createOrganizationInvitationDto.expiresAt ||
+      new Date(Date.now() + this.configService.getOrThrow<number>('organizationInvitation.ttlSeconds') * 1000)
     invitation.role = createOrganizationInvitationDto.role
     invitation.invitedBy = invitedBy
 

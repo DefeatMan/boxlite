@@ -5,9 +5,7 @@
  */
 
 import { CreateOrganizationInvitationDialog } from '@/components/OrganizationMembers/CreateOrganizationInvitationDialog'
-import { OrganizationInvitationTable } from '@/components/OrganizationMembers/OrganizationInvitationTable'
 import { OrganizationMemberTable } from '@/components/OrganizationMembers/OrganizationMemberTable'
-import { PageContent, PageHeader, PageLayout, PageTitle } from '@/components/PageLayout'
 import { useApi } from '@/hooks/useApi'
 import { useOrganizations } from '@/hooks/useOrganizations'
 import { useSelectedOrganization } from '@/hooks/useSelectedOrganization'
@@ -17,7 +15,7 @@ import {
   OrganizationInvitation,
   OrganizationUserRoleEnum,
 } from '@boxlite-ai/api-client'
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useState } from 'react'
 import { useAuth } from 'react-oidc-context'
 import { toast } from 'sonner'
 
@@ -28,6 +26,7 @@ const OrganizationMembers: React.FC = () => {
   const { refreshOrganizations } = useOrganizations()
   const { selectedOrganization, organizationMembers, refreshOrganizationMembers, authenticatedUserOrganizationMember } =
     useSelectedOrganization()
+  const authenticatedUserIsOwner = authenticatedUserOrganizationMember?.role === OrganizationUserRoleEnum.OWNER
 
   const [loadingMembers, setLoadingMembers] = useState(true)
   const [invitations, setInvitations] = useState<OrganizationInvitation[]>([])
@@ -38,7 +37,9 @@ const OrganizationMembers: React.FC = () => {
 
   const fetchInvitations = useCallback(
     async (showTableLoadingState = true) => {
-      if (!selectedOrganization) {
+      if (!selectedOrganization || !authenticatedUserIsOwner) {
+        setInvitations([])
+        setLoadingInvitations(false)
         return
       }
       if (showTableLoadingState) {
@@ -53,7 +54,7 @@ const OrganizationMembers: React.FC = () => {
         setLoadingInvitations(false)
       }
     },
-    [organizationsApi, selectedOrganization],
+    [organizationsApi, selectedOrganization, authenticatedUserIsOwner],
   )
 
   useEffect(() => {
@@ -125,44 +126,26 @@ const OrganizationMembers: React.FC = () => {
     }
   }
 
-  const authenticatedUserIsOwner = useMemo(() => {
-    return authenticatedUserOrganizationMember?.role === OrganizationUserRoleEnum.OWNER
-  }, [authenticatedUserOrganizationMember])
-
   return (
-    <PageLayout>
-      <PageHeader size="full">
-        <PageTitle>Members</PageTitle>
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-muted-foreground">Manage organization members and pending invitations.</p>
         {authenticatedUserIsOwner && (
           <CreateOrganizationInvitationDialog className="ml-auto" onCreateInvitation={handleCreateInvitation} />
         )}
-      </PageHeader>
+      </div>
 
-      <PageContent size="full">
-        <OrganizationMemberTable
-          data={organizationMembers}
-          loadingData={loadingMembers}
-          onRemoveMember={handleRemoveMember}
-          loadingMemberAction={loadingMemberAction}
-          ownerMode={authenticatedUserIsOwner}
-        />
-
-        {authenticatedUserIsOwner && (
-          <>
-            <div className="mb-2 mt-12 flex min-h-10 items-center justify-between">
-              <h2 className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">Invitations</h2>
-            </div>
-
-            <OrganizationInvitationTable
-              data={invitations}
-              loadingData={loadingInvitations}
-              onCancelInvitation={handleCancelInvitation}
-              loadingInvitationAction={loadingInvitationAction}
-            />
-          </>
-        )}
-      </PageContent>
-    </PageLayout>
+      <OrganizationMemberTable
+        data={organizationMembers}
+        invitations={invitations}
+        loadingData={loadingMembers || (authenticatedUserIsOwner && loadingInvitations)}
+        onRemoveMember={handleRemoveMember}
+        loadingMemberAction={loadingMemberAction}
+        ownerMode={authenticatedUserIsOwner}
+        onCancelInvitation={handleCancelInvitation}
+        loadingInvitationAction={loadingInvitationAction}
+      />
+    </div>
   )
 }
 

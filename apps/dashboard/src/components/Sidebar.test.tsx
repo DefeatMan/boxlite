@@ -84,7 +84,7 @@ describe('Sidebar primary navigation', () => {
     expect(volumeLinks.every((link) => link.textContent === 'Volumes')).toBe(true)
   })
 
-  it('links the members page from the profile menu', async () => {
+  it('groups organization management under one profile entry', async () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     act(() => {
@@ -102,10 +102,11 @@ describe('Sidebar primary navigation', () => {
       trigger?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, button: 0 })),
     )
 
-    const members = [...document.querySelectorAll<HTMLAnchorElement>('a[role="menuitem"]')].find(
-      (item) => item.textContent === 'Members',
+    const entries = [...document.querySelectorAll<HTMLAnchorElement>('a[role="menuitem"]')]
+    expect(entries.find((item) => item.textContent === 'Organization')?.getAttribute('href')).toBe(
+      '/dashboard/settings',
     )
-    expect(members?.getAttribute('href')).toBe('/dashboard/members')
+    expect(entries.find((item) => item.textContent === 'Members')).toBeUndefined()
   })
 
   it('links the invitations page from the profile menu with the pending count', async () => {
