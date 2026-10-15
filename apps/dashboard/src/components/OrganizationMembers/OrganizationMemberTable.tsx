@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: AGPL-3.0
  */
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { MoreHorizontal } from '@/components/ui/icon'
 import {
   ColumnDef,
@@ -15,46 +15,59 @@ import {
   SortingState,
   useReactTable,
 } from '@tanstack/react-table'
-import { OrganizationUser } from '@boxlite-ai/api-client'
+import { OrganizationInvitation, OrganizationUser } from '@boxlite-ai/api-client'
 import { Pagination } from '@/components/Pagination'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { TableHeader, TableRow, TableHead, TableBody, TableCell, Table } from '@/components/ui/table'
 import { RemoveOrganizationMemberDialog } from '@/components/OrganizationMembers/RemoveOrganizationMemberDialog'
+import { CancelOrganizationInvitationDialog } from '@/components/OrganizationMembers/CancelOrganizationInvitationDialog'
 import { capitalize } from '@/lib/utils'
 import { DEFAULT_PAGE_SIZE } from '@/constants/Pagination'
 import { TableEmptyState } from '../TableEmptyState'
 
 interface DataTableProps {
   data: OrganizationUser[]
+  invitations: OrganizationInvitation[]
   loadingData: boolean
   onRemoveMember: (userId: string) => Promise<boolean>
   loadingMemberAction: Record<string, boolean>
   ownerMode: boolean
+  onCancelInvitation: (invitationId: string) => Promise<boolean>
+  loadingInvitationAction: Record<string, boolean>
 }
+
+type MemberRow = (OrganizationUser & { kind: 'member' }) | (OrganizationInvitation & { kind: 'invitation' })
 
 export function OrganizationMemberTable({
   data,
+  invitations,
   loadingData,
   onRemoveMember,
   loadingMemberAction,
   ownerMode,
+  onCancelInvitation,
+  loadingInvitationAction,
 }: DataTableProps) {
   const [sorting, setSorting] = useState<SortingState>([])
-  const [memberToRemove, setMemberToRemove] = useState<string | null>(null)
-  const [isRemoveDialogOpen, setIsRemoveDialogOpen] = useState(false)
+  const [action, setAction] = useState<MemberRow | null>(null)
+  const rows = useMemo<MemberRow[]>(
+    () => [
+      ...data.map((member) => ({ ...member, kind: 'member' as const })),
+      ...(ownerMode ? invitations.map((invitation) => ({ ...invitation, kind: 'invitation' as const })) : []),
+    ],
+    [data, invitations, ownerMode],
+  )
 
   const columns = getColumns({
-    onRemove: (userId: string) => {
-      setMemberToRemove(userId)
-      setIsRemoveDialogOpen(true)
-    },
+    onAction: setAction,
     ownerMode,
   })
 
   const table = useReactTable({
-    data,
+    data: rows,
     columns,
+    getRowId: (row) => (row.kind === 'member' ? `member:${row.userId}` : `invitation:${row.id}`),
     getCoreRowModel: getCoreRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
     onSortingChange: setSorting,
@@ -69,17 +82,15 @@ export function OrganizationMemberTable({
     },
   })
 
-  const handleConfirmRemove = async () => {
-    if (memberToRemove) {
-      const success = await onRemoveMember(memberToRemove)
-      if (success) {
-        setMemberToRemove(null)
-        setIsRemoveDialogOpen(false)
-      }
-      return success
-    }
-    return false
+  const handleConfirmAction = async () => {
+    if (!action) return false
+    const success = await (action.kind === 'member' ? onRemoveMember(action.userId) : onCancelInvitation(action.id))
+    if (success) setAction(null)
+    return success
   }
+
+  const isLoading = (row: MemberRow) =>
+    row.kind === 'member' ? loadingMemberAction[row.userId] : loadingInvitationAction[row.id]
 
   return (
     <>
@@ -111,7 +122,7 @@ export function OrganizationMemberTable({
                   <TableRow
                     key={row.id}
                     data-state={row.getIsSelected() && 'selected'}
-                    className={`h-14 ${loadingMemberAction[row.original.userId] ? 'opacity-50 pointer-events-none' : ''}`}
+                    className={`h-14 ${isLoading(row.original) ? 'opacity-50 pointer-events-none' : ''}`}
                   >
                     {row.getVisibleCells().map((cell) => (
                       <TableCell key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</TableCell>
@@ -119,7 +130,7 @@ export function OrganizationMemberTable({
                   </TableRow>
                 ))
               ) : (
-                <TableEmptyState colSpan={columns.length} message="No Members found." />
+                <TableEmptyState colSpan={columns.length} message="No members or invitations found." />
               )}
             </TableBody>
           </Table>
@@ -127,17 +138,24 @@ export function OrganizationMemberTable({
         <Pagination table={table} className="mt-4" entityName="Members" />
       </div>
 
-      {memberToRemove && (
+      {action?.kind === 'member' && (
         <RemoveOrganizationMemberDialog
-          open={isRemoveDialogOpen}
+          open
           onOpenChange={(open) => {
-            setIsRemoveDialogOpen(open)
-            if (!open) {
-              setMemberToRemove(null)
-            }
+            if (!open) setAction(null)
           }}
-          onRemoveMember={handleConfirmRemove}
-          loading={loadingMemberAction[memberToRemove]}
+          onRemoveMember={handleConfirmAction}
+          loading={isLoading(action)}
+        />
+      )}
+      {action?.kind === 'invitation' && (
+        <CancelOrganizationInvitationDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setAction(null)
+          }}
+          onCancelInvitation={handleConfirmAction}
+          loading={isLoading(action)}
         />
       )}
     </>
@@ -145,16 +163,33 @@ export function OrganizationMemberTable({
 }
 
 const getColumns = ({
-  onRemove,
+  onAction,
   ownerMode,
 }: {
-  onRemove: (userId: string) => void
+  onAction: (row: MemberRow) => void
   ownerMode: boolean
-}): ColumnDef<OrganizationUser>[] => {
-  const columns: ColumnDef<OrganizationUser>[] = [
+}): ColumnDef<MemberRow>[] => {
+  const columns: ColumnDef<MemberRow>[] = [
     {
       accessorKey: 'email',
       header: 'Email',
+      cell: ({ row }) => (
+        <div>
+          <div>{row.original.email}</div>
+          {row.original.kind === 'invitation' && (
+            <div className="mt-1 text-xs text-muted-foreground">
+              Invited by {row.original.invitedBy} · Expires {new Date(row.original.expiresAt).toLocaleString()}
+            </div>
+          )}
+        </div>
+      ),
+    },
+    {
+      id: 'status',
+      header: 'Status',
+      accessorFn: (row) =>
+        row.kind === 'member' ? 'Member' : new Date(row.expiresAt) < new Date() ? 'Expired' : 'Invited',
+      cell: ({ getValue }) => <span className="border border-border px-2 py-1 text-xs">{getValue<string>()}</span>,
     },
     {
       accessorKey: 'role',
@@ -170,7 +205,9 @@ const getColumns = ({
       id: 'actions',
       cell: ({ row }) => {
         // The API refuses to remove a user from their own personal organization.
-        if (row.original.isDefaultForUser) {
+        if (
+          row.original.kind === 'member' ? row.original.isDefaultForUser : new Date(row.original.expiresAt) < new Date()
+        ) {
           return null
         }
 
@@ -187,9 +224,9 @@ const getColumns = ({
               <DropdownMenuContent align="end">
                 <DropdownMenuItem
                   className="cursor-pointer text-red-600 dark:text-red-400"
-                  onClick={() => onRemove(row.original.userId)}
+                  onClick={() => onAction(row.original)}
                 >
-                  Remove
+                  {row.original.kind === 'member' ? 'Remove' : 'Cancel'}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

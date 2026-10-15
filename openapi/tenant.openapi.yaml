@@ -281,7 +281,7 @@ components:
         expires_at:
           type: string
           format: date-time
-          description: When the invitation lapses (UTC); must be in the future. Defaults to seven days after creation.
+          description: When the invitation lapses (UTC); must be in the future. Defaults to the deployment's configured invitation lifetime (seven days when unset).
 
     Invitation:
       type: object

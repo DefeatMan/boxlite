@@ -516,6 +516,11 @@ Contract: [`openapi/tenant.openapi.yaml`](../openapi/tenant.openapi.yaml), cloud
 and SDKs, which do not call it yet. Reads need membership; writes need the owner role. Any API key
 of an owner qualifies, whatever permissions it was created with.
 Invitees accept in the console, through `/api/organizations/invitations/{invitationId}/accept`.
+Email links accept automatically after sign-in with the invited email address.
+New invitations without an explicit `expiresAt` (Cloud API) or `expires_at` (Tenant API)
+use `ORGANIZATION_INVITATION_TTL_SECONDS`, defaulting to `604800` (seven days).
+Changing this deployment setting leaves existing deadlines unchanged; see
+[invitation link lifetime](./infra/docs/configuration.md#invitation-link-lifetime).
 
 | Method   | Path                                                   | What it does                                                        |
 | -------- | ------------------------------------------------------ | ------------------------------------------------------------------- |

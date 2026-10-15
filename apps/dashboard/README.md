@@ -205,15 +205,22 @@ can be removed but not given another role. The member whose personal
 organization this is has no remove action, because the API refuses that
 removal.
 
-The members page sits in the profile menu, beside the organization settings,
-rather than in the sidebar: it manages the organization, not a resource in it.
+The profile menu's Organization entry opens two tabs. General shows the editable
+name and copyable ID. Member combines members and outgoing invitations in one
+table, with Member and Invited statuses. Owners can invite, remove members, and
+cancel invitations. The Member tab can be bookmarked at
+`/dashboard/settings?tab=member`; older `/dashboard/members` links redirect there.
 
 ## Accepting an invitation opens the organization
 
-An invitee reaches the invitations page from the email link or from the profile
-menu, which shows how many invitations are pending. Accepting switches to the
-organization just joined, because a membership that only shows up after a
-reload reads as a failed accept.
+Opening an email invitation link automatically accepts it after sign-in with the
+invited email address. The console preserves the link through sign-in and makes
+one acceptance request per visit, including under React effect replay. Expired,
+cancelled, or mismatched invitations show an error and keep the current organization.
+
+Personal incoming invitations remain in the profile menu with a pending count
+and manual accept/decline actions. Successful acceptance refreshes the organization
+list and switches to the joined organization.
 
 The new selection is saved only after membership validation succeeds. If switching
 fails, acceptance still succeeds and the invitation disappears, while the console

@@ -26,7 +26,7 @@ describe('EmailService invitation email', () => {
         'owner@example.com',
         'invitee@example.com',
         'inv-1',
-        new Date('2026-10-05T00:00:00.000Z'),
+        new Date('2026-10-05T12:34:56.000Z'),
       ),
     )
 
@@ -34,5 +34,6 @@ describe('EmailService invitation email', () => {
     expect(JSON.parse(message.html).invitationLink).toBe(
       'https://console.example.com/dashboard/user/invitations?id=inv-1',
     )
+    expect(JSON.parse(message.html).expiresAt).toMatch(/12:34:56.*UTC/)
   })
 })

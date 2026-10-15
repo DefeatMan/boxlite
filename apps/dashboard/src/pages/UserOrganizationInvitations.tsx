@@ -5,7 +5,6 @@
  */
 
 import { PageContent, PageHeader, PageLayout, PageTitle } from '@/components/PageLayout'
-import { OrganizationInvitationActionDialog } from '@/components/UserOrganizationInvitations/OrganizationInvitationActionDialog'
 import { UserOrganizationInvitationTable } from '@/components/UserOrganizationInvitations/UserOrganizationInvitationTable'
 import { useApi } from '@/hooks/useApi'
 import { useOrganizations } from '@/hooks/useOrganizations'
@@ -13,7 +12,7 @@ import { useSelectedOrganization } from '@/hooks/useSelectedOrganization'
 import { useUserOrganizationInvitations } from '@/hooks/useUserOrganizationInvitations'
 import { handleApiError } from '@/lib/error-handling'
 import { OrganizationInvitation } from '@boxlite-ai/api-client'
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 
@@ -52,54 +51,62 @@ const UserOrganizationInvitations: React.FC = () => {
   }, [fetchInvitations])
 
   const [searchParams, setSearchParams] = useSearchParams()
-  const [invitationActionDialogOpen, setInvitationActionDialogOpen] = useState(false)
-  const [selectedInvitation, setSelectedInvitation] = useState<OrganizationInvitation | null>(null)
-
-  useEffect(() => {
-    const invitationId = searchParams.get('id')
-    if (invitationId && invitations.length > 0) {
-      const invitation = invitations.find((i) => i.id === invitationId)
-      if (invitation) {
-        setSelectedInvitation(invitation)
-        setInvitationActionDialogOpen(true)
-      }
-    }
-    // clear the query parameter after processing
-    if (invitationId && !loadingInvitations) {
-      const newSearchParams = new URLSearchParams(searchParams)
-      newSearchParams.delete('id')
-      setSearchParams(newSearchParams, { replace: true })
-    }
-  }, [searchParams, invitations, setSearchParams, loadingInvitations])
+  const attemptedLinks = useRef(new Set<string>())
+  const [linkStatus, setLinkStatus] = useState<'joining' | 'failed' | null>(null)
 
   // The membership already exists by now, so a failed switch is reported as such,
   // not as a failed accept.
-  const switchToJoinedOrganization = async (organizationId: string) => {
-    try {
-      // Refresh the list without persisting a choice; selection saves it only
-      // after membership validation succeeds.
-      await refreshOrganizations()
-      await onSelectOrganization(organizationId)
-    } catch (error) {
-      handleApiError(error, 'Failed to switch to the joined organization')
-    }
-  }
+  const switchToJoinedOrganization = useCallback(
+    async (organizationId: string) => {
+      try {
+        // Refresh the list without persisting a choice; selection saves it only
+        // after membership validation succeeds.
+        await refreshOrganizations()
+        await onSelectOrganization(organizationId)
+      } catch (error) {
+        handleApiError(error, 'Failed to switch to the joined organization')
+      }
+    },
+    [refreshOrganizations, onSelectOrganization],
+  )
 
-  const handleAcceptInvitation = async (invitation: OrganizationInvitation): Promise<boolean> => {
-    setLoadingInvitationAction((prev) => ({ ...prev, [invitation.id]: true }))
-    try {
-      await organizationsApi.acceptOrganizationInvitation(invitation.id)
-      toast.success(`You joined ${invitation.organizationName}`)
-      await switchToJoinedOrganization(invitation.organizationId)
-      await fetchInvitations(false)
-      return true
-    } catch (error) {
-      handleApiError(error, 'Failed to accept invitation')
-      return false
-    } finally {
-      setLoadingInvitationAction((prev) => ({ ...prev, [invitation.id]: false }))
-    }
-  }
+  const acceptInvitation = useCallback(
+    async (invitationId: string): Promise<boolean> => {
+      setLoadingInvitationAction((prev) => ({ ...prev, [invitationId]: true }))
+      try {
+        const { data: invitation } = await organizationsApi.acceptOrganizationInvitation(invitationId)
+        toast.success(`You joined ${invitation.organizationName}`)
+        await switchToJoinedOrganization(invitation.organizationId)
+        await fetchInvitations(false)
+        return true
+      } catch (error) {
+        handleApiError(error, 'Failed to accept invitation')
+        return false
+      } finally {
+        setLoadingInvitationAction((prev) => ({ ...prev, [invitationId]: false }))
+      }
+    },
+    [organizationsApi, switchToJoinedOrganization, fetchInvitations],
+  )
+
+  useEffect(() => {
+    const invitationId = searchParams.get('id')
+    if (!invitationId || loadingInvitations || attemptedLinks.current.has(invitationId)) return
+    // Effects can replay; accepting a link must issue only one mutation per visit.
+    attemptedLinks.current.add(invitationId)
+    setLinkStatus('joining')
+    void acceptInvitation(invitationId).then((accepted) => {
+      setLinkStatus(accepted ? null : 'failed')
+      setSearchParams(
+        (current) => {
+          const next = new URLSearchParams(current)
+          if (next.get('id') === invitationId) next.delete('id')
+          return next
+        },
+        { replace: true },
+      )
+    })
+  }, [searchParams, setSearchParams, loadingInvitations, acceptInvitation])
 
   const handleDeclineInvitation = async (invitation: OrganizationInvitation): Promise<boolean> => {
     setLoadingInvitationAction((prev) => ({ ...prev, [invitation.id]: true }))
@@ -123,23 +130,20 @@ const UserOrganizationInvitations: React.FC = () => {
       </PageHeader>
 
       <PageContent size="full">
+        {linkStatus === 'joining' && <p role="status">Joining organization...</p>}
+        {linkStatus === 'failed' && (
+          <p role="alert" className="mb-4 text-sm text-destructive">
+            Unable to join using this invitation. Sign in with the invited email address, or ask the organization owner
+            for a new invitation.
+          </p>
+        )}
         <UserOrganizationInvitationTable
           data={invitations}
           loadingData={loadingInvitations}
-          onAcceptInvitation={handleAcceptInvitation}
+          onAcceptInvitation={(invitation) => acceptInvitation(invitation.id)}
           onDeclineInvitation={handleDeclineInvitation}
           loadingInvitationAction={loadingInvitationAction}
         />
-
-        {selectedInvitation && (
-          <OrganizationInvitationActionDialog
-            invitation={selectedInvitation}
-            open={invitationActionDialogOpen}
-            onOpenChange={setInvitationActionDialogOpen}
-            onAccept={handleAcceptInvitation}
-            onDecline={handleDeclineInvitation}
-          />
-        )}
       </PageContent>
     </PageLayout>
   )
