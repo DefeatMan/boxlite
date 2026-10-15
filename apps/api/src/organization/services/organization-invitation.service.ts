@@ -138,12 +138,15 @@ export class OrganizationInvitationService {
     return this.organizationInvitationRepository.save(invitation)
   }
 
-  async findPending(organizationId: string): Promise<OrganizationInvitation[]> {
+  async findPending(
+    organizationId: string,
+    options: { includeExpired?: boolean } = {},
+  ): Promise<OrganizationInvitation[]> {
     return this.organizationInvitationRepository.find({
       where: {
         organizationId,
         status: OrganizationInvitationStatus.PENDING,
-        expiresAt: MoreThan(new Date()),
+        ...(options.includeExpired ? {} : { expiresAt: MoreThan(new Date()) }),
       },
       relations: {
         organization: true,
@@ -248,7 +251,11 @@ export class OrganizationInvitationService {
       throw new NotFoundException(`Invitation with ID ${invitationId} not found`)
     }
 
-    if (invitation.expiresAt && invitation.expiresAt < new Date()) {
+    if (
+      newStatus !== OrganizationInvitationStatus.CANCELLED &&
+      invitation.expiresAt &&
+      invitation.expiresAt < new Date()
+    ) {
       throw new ConflictException(`Invitation with ID ${invitationId} is expired`)
     }
 

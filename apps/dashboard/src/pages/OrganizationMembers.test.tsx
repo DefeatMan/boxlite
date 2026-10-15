@@ -6,19 +6,26 @@
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import OrganizationMembers from './OrganizationMembers'
 
 // Hooks hand out stable references, as the real providers do; fresh objects on
 // every render would re-fire the page's effects forever.
 const mocks = vi.hoisted(() => {
   const createOrganizationInvitation = vi.fn(async () => ({ data: {} }))
+  const cancelOrganizationInvitation = vi.fn(async () => undefined)
+  const listOrganizationInvitations = vi.fn(async () => ({ data: [] as unknown[] }))
   return {
     createOrganizationInvitation,
+    cancelOrganizationInvitation,
+    listOrganizationInvitations,
+    handleApiError: vi.fn(),
+    success: vi.fn(),
     api: {
       organizationsApi: {
-        listOrganizationInvitations: async () => ({ data: [] }),
         createOrganizationInvitation,
+        cancelOrganizationInvitation,
+        listOrganizationInvitations,
       },
     },
     organizations: { refreshOrganizations: async () => undefined },
@@ -36,7 +43,8 @@ vi.mock('@/hooks/useApi', () => ({ useApi: () => mocks.api }))
 vi.mock('@/hooks/useOrganizations', () => ({ useOrganizations: () => mocks.organizations }))
 vi.mock('@/hooks/useSelectedOrganization', () => ({ useSelectedOrganization: () => mocks.selectedOrganization }))
 vi.mock('react-oidc-context', () => ({ useAuth: () => mocks.auth }))
-vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
+vi.mock('sonner', () => ({ toast: { success: mocks.success, error: vi.fn() } }))
+vi.mock('@/lib/error-handling', () => ({ handleApiError: mocks.handleApiError }))
 // The page chrome reads the banner context, which this test does not mount.
 vi.mock('@/components/PageLayout', () => ({
   PageLayout: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -55,19 +63,56 @@ describe('OrganizationMembers', () => {
       ({ matches: false, addEventListener: () => undefined, removeEventListener: () => undefined }) as never
   })
 
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.createOrganizationInvitation.mockResolvedValue({ data: {} })
+    mocks.cancelOrganizationInvitation.mockResolvedValue(undefined)
+    mocks.listOrganizationInvitations.mockResolvedValue({
+      data: [
+        {
+          id: 'expired-1',
+          email: 'expired@example.com',
+          role: 'member',
+          status: 'pending',
+          invitedBy: 'owner@example.com',
+          expiresAt: new Date(0),
+          assignedRoles: [{ id: 'role-1' }],
+        },
+      ],
+    })
+  })
+
   afterEach(() => {
     act(() => root?.unmount())
     root = null
     document.body.innerHTML = ''
   })
 
-  it('invites by email alone, as an owner with no role assignments', async () => {
+  async function renderPage() {
     const host = document.createElement('div')
     document.body.appendChild(host)
     await act(async () => {
       root = createRoot(host)
       root.render(<OrganizationMembers />)
     })
+  }
+
+  async function resendExpiredInvitation() {
+    const row = [...document.querySelectorAll('tbody tr')].find((item) =>
+      item.textContent?.includes('expired@example.com'),
+    )
+    const trigger = row?.querySelector('button')
+    expect(trigger).toBeTruthy()
+    await act(async () => trigger?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 })))
+    const resend = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+      (item) => item.textContent === 'Resend',
+    )
+    expect(resend).toBeTruthy()
+    await act(async () => resend?.click())
+  }
+
+  it('invites by email alone, as an owner with no role assignments', async () => {
+    await renderPage()
 
     const openDialog = [...document.querySelectorAll('button')].find((b) => b.textContent?.includes('Invite Member'))
     await act(async () => openDialog?.click())
@@ -90,5 +135,44 @@ describe('OrganizationMembers', () => {
       role: 'owner',
       assignedRoleIds: [],
     })
+  })
+
+  it('resends an expired invitation with the same permissions and a fresh default lifetime before removing the old row', async () => {
+    await renderPage()
+    await resendExpiredInvitation()
+    expect(mocks.createOrganizationInvitation).toHaveBeenCalledWith('org-1', {
+      email: 'expired@example.com',
+      role: 'member',
+      assignedRoleIds: ['role-1'],
+    })
+    expect(mocks.cancelOrganizationInvitation).toHaveBeenCalledWith('org-1', 'expired-1')
+    expect(mocks.createOrganizationInvitation.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.cancelOrganizationInvitation.mock.invocationCallOrder[0],
+    )
+    expect(mocks.listOrganizationInvitations).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the expired invitation when replacement creation fails', async () => {
+    const error = new Error('Creation failed')
+    mocks.createOrganizationInvitation.mockRejectedValueOnce(error)
+    await renderPage()
+    await resendExpiredInvitation()
+    expect(mocks.cancelOrganizationInvitation).not.toHaveBeenCalled()
+    expect(mocks.handleApiError).toHaveBeenCalledWith(error, 'Failed to resend invitation')
+    expect(mocks.success).not.toHaveBeenCalled()
+  })
+
+  it('reports cleanup failure separately after creating the replacement and refreshes the list', async () => {
+    const error = new Error('Cleanup failed')
+    mocks.cancelOrganizationInvitation.mockRejectedValueOnce(error)
+    await renderPage()
+    await resendExpiredInvitation()
+    expect(mocks.createOrganizationInvitation).toHaveBeenCalledTimes(1)
+    expect(mocks.handleApiError).toHaveBeenCalledWith(
+      error,
+      'New invitation created, but failed to remove the expired invitation',
+    )
+    expect(mocks.listOrganizationInvitations).toHaveBeenCalledTimes(2)
+    expect(mocks.success).toHaveBeenCalledWith('New invitation created')
   })
 })

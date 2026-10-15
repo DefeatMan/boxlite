@@ -133,10 +133,10 @@ serves and the events it emits are catalogued below alongside its routes.
 | `GET`    | `/api/organizations/invitations/count`                                   | Counts invitations addressed to the caller.              |
 | `POST`   | `/api/organizations/invitations/{invitationId}/accept`                   | Accepts an organization invitation.                      |
 | `POST`   | `/api/organizations/invitations/{invitationId}/decline`                  | Declines an organization invitation.                     |
-| `GET`    | `/api/organizations/{organizationId}/invitations`                        | Lists the organization's pending invitations.            |
+| `GET`    | `/api/organizations/{organizationId}/invitations`                        | Lists pending invitations, including expired ones.       |
 | `POST`   | `/api/organizations/{organizationId}/invitations`                        | Creates an organization invitation.                      |
 | `PUT`    | `/api/organizations/{organizationId}/invitations/{invitationId}`         | Changes a pending invitation.                            |
-| `POST`   | `/api/organizations/{organizationId}/invitations/{invitationId}/cancel`  | Cancels a pending invitation.                            |
+| `POST`   | `/api/organizations/{organizationId}/invitations/{invitationId}/cancel`  | Cancels a pending invitation, even after expiry.          |
 
 </details>
 
@@ -521,6 +521,10 @@ New invitations without an explicit `expiresAt` (Cloud API) or `expires_at` (Ten
 use `ORGANIZATION_INVITATION_TTL_SECONDS`, defaulting to `604800` (seven days).
 Changing this deployment setting leaves existing deadlines unchanged; see
 [invitation link lifetime](./infra/docs/configuration.md#invitation-link-lifetime).
+
+Expired pending invitations can be cancelled but cannot be accepted. The Cloud API
+organization listing retains them for console removal or resending; the Tenant API
+and personal incoming-invitation listings return only unexpired pending invitations.
 
 | Method   | Path                                                   | What it does                                                        |
 | -------- | ------------------------------------------------------ | ------------------------------------------------------------------- |

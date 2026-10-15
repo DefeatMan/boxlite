@@ -141,6 +141,9 @@ const OrganizationSettings: React.FC = () => {
   return (
     <div className="px-4 py-6 sm:px-6 lg:px-10">
       <h1 className="font-display text-2xl font-semibold leading-none tracking-tight">Organization</h1>
+      <p aria-label="Current organization" className="mt-2 text-sm text-muted-foreground">
+        {getOrganizationDisplayName(selectedOrganization.name)}
+      </p>
       <Tabs
         value={tab}
         onValueChange={(value) => {

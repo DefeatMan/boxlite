@@ -170,7 +170,7 @@ paths:
     delete:
       operationId: cancelInvitation
       summary: Cancel a pending invitation
-      description: Requires the `owner` role.
+      description: Requires the `owner` role. Expired pending invitations can also be cancelled.
       tags: [Invitations]
       responses:
         "204":
@@ -182,7 +182,7 @@ paths:
         "404":
           $ref: "./box.openapi.yaml#/components/responses/NotFoundError"
         "409":
-          description: The invitation is no longer pending (accepted, declined, cancelled or expired)
+          description: The invitation is no longer pending (accepted, declined or cancelled)
           content:
             application/json:
               schema:
