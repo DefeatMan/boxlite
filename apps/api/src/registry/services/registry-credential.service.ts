@@ -10,6 +10,7 @@ import { Box } from '../../box/entities/box.entity'
 import { BoxDesiredState } from '../../box/enums/box-desired-state.enum'
 import { RegistryCredential } from '../entities/registry-credential.entity'
 import { credentialedRegistryHosts, registryProxyHost } from '../utils/registry-proxy.util'
+import { matchingCredential } from '../utils/matching-credential'
 
 @Injectable()
 export class RegistryCredentialService {
@@ -50,21 +51,7 @@ export class RegistryCredentialService {
     repository: string,
   ): Promise<RegistryCredential | null> {
     const candidates = await this.credentials.find({ where: { organizationId, registryHost } })
-
-    // A prefix is whole path segments ending in '/', so the repository is
-    // compared with one appended: `acme/app/` then covers `acme/app` itself,
-    // and `acme/` still cannot match `acme-other/app`.
-    const path = `${repository}/`
-    let longest: RegistryCredential | null = null
-    for (const candidate of candidates) {
-      if (!path.startsWith(candidate.repositoryPrefix)) {
-        continue
-      }
-      if (!longest || candidate.repositoryPrefix.length > longest.repositoryPrefix.length) {
-        longest = candidate
-      }
-    }
-    return longest
+    return matchingCredential(candidates, repository)
   }
 
   /**

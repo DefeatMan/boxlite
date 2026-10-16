@@ -13,7 +13,7 @@ import {
 } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { randomUUID } from 'node:crypto'
-import { Repository } from 'typeorm'
+import { EntityManager, Repository } from 'typeorm'
 import { Box } from '../../box/entities/box.entity'
 import { BoxDesiredState } from '../../box/enums/box-desired-state.enum'
 import { parseImageRef, upstreamRefOf } from '../../image/utils/image-ref.util'
@@ -21,8 +21,8 @@ import { CreateRegistryCredentialDto } from '../dto/registry-credential.dto'
 import { RegistryCredential } from '../entities/registry-credential.entity'
 import { RegistryCredentialKind } from '../enums/registry-credential-kind.enum'
 import { SecretStore } from '../stores/secret.store'
+import { matchingCredential } from '../utils/matching-credential'
 import { registryProxyHost } from '../utils/registry-proxy.util'
-import { RegistryCredentialService } from './registry-credential.service'
 
 /** The injection token the module binds `createSecretStore`'s answer to. */
 export const SECRET_STORE = Symbol('SECRET_STORE')
@@ -44,11 +44,8 @@ export class RegistriesService {
   constructor(
     @InjectRepository(RegistryCredential)
     private readonly credentials: Repository<RegistryCredential>,
-    @InjectRepository(Box)
-    private readonly boxes: Repository<Box>,
     @Inject(SECRET_STORE)
     private readonly store: SecretStore | null,
-    private readonly lookup: RegistryCredentialService,
   ) {}
 
   list(organizationId: string): Promise<RegistryCredential[]> {
@@ -83,9 +80,12 @@ export class RegistriesService {
       // the API holds no permission to delete one.
       await this.destroyQuietly(secretVersion)
       if ((error as { code?: string }).code === PG_UNIQUE_VIOLATION) {
-        throw new ConflictException(
-          `A credential for ${request.registryHost}/${repositoryPrefix} already exists; remove it before adding another`,
-        )
+        // The code names the conflict for an SDK, which would otherwise read a
+        // bare 409 as a resource in the wrong state, as a delete's refusal is.
+        throw new ConflictException({
+          message: `A credential for ${request.registryHost}/${repositoryPrefix} already exists; remove it before adding another`,
+          code: 'already_exists',
+        })
       }
       throw error
     }
@@ -104,27 +104,41 @@ export class RegistriesService {
    * with nothing listing it.
    */
   async delete(organizationId: string, id: string): Promise<void> {
-    const credential = await this.credentials.findOneBy({ id, organizationId })
-    if (!credential) {
-      throw new NotFoundException(`Registry credential ${id} not found`)
+    try {
+      await this.credentials.manager.transaction('READ COMMITTED', async (manager) => {
+        // Box insertion holds a shared lock through commit. Do not wait on
+        // that work, or let a new insert race the secret-store operation.
+        const credential = await manager.findOne(RegistryCredential, {
+          where: { id, organizationId },
+          lock: { mode: 'pessimistic_write', onLocked: 'nowait' },
+        })
+        if (!credential) {
+          throw new NotFoundException(`Registry credential ${id} not found`)
+        }
+        const inUse = await this.boxesPullingThrough(credential, manager)
+        if (inUse.length > 0) {
+          throw new ConflictException(
+            `Registry credential ${id} cannot be removed while ${inUse.length} box(es) pull through it: ${inUse.join(', ')}`,
+          )
+        }
+        await this.enabledStore().destroy(credential.secretVersion)
+        await manager.delete(RegistryCredential, { id, organizationId })
+      })
+    } catch (error) {
+      if ((error as { code?: string }).code === '55P03') {
+        throw new ConflictException(`Registry credential ${id} is in use by another request; retry removal`)
+      }
+      throw error
     }
-    const inUse = await this.boxesPullingThrough(credential)
-    if (inUse.length > 0) {
-      throw new ConflictException(
-        `Registry credential ${id} cannot be removed while ${inUse.length} box(es) pull through it: ${inUse.join(', ')}`,
-      )
-    }
-
-    await this.enabledStore().destroy(credential.secretVersion)
-    await this.credentials.delete({ id, organizationId })
   }
 
-  private async boxesPullingThrough(credential: RegistryCredential): Promise<string[]> {
+  private async boxesPullingThrough(credential: RegistryCredential, manager: EntityManager): Promise<string[]> {
     const proxyHost = registryProxyHost()
     if (!proxyHost) {
       return []
     }
-    const candidates = await this.boxes
+    const candidates = await manager
+      .getRepository(Box)
       .createQueryBuilder('box')
       .where('box.organizationId = :organizationId', { organizationId: credential.organizationId })
       .andWhere('box.desiredState != :destroyed', { destroyed: BoxDesiredState.DESTROYED })
@@ -136,10 +150,14 @@ export class RegistriesService {
       .select(['box.id', 'box.image'])
       .getMany()
 
+    if (candidates.length === 0) return []
+    const credentials = await manager.getRepository(RegistryCredential).find({
+      where: { organizationId: credential.organizationId, registryHost: credential.registryHost },
+    })
     const inUse: string[] = []
     for (const box of candidates) {
-      const { host, repository } = parseImageRef(upstreamRefOf(box.image as string))
-      const picked = await this.lookup.findForRepository(credential.organizationId, host, repository)
+      const { repository } = parseImageRef(upstreamRefOf(box.image as string))
+      const picked = matchingCredential(credentials, repository)
       if (picked?.id === credential.id) {
         inUse.push(box.id)
       }
@@ -150,11 +168,14 @@ export class RegistriesService {
   /**
    * The store, or a 501 when this deployment keeps none: without it there is
    * nowhere to put a password, and without the proxy nothing would present
-   * one.
+   * one. The code lets an SDK read it as unsupported rather than a fault.
    */
   private enabledStore(): SecretStore {
     if (!this.store || !registryProxyHost()) {
-      throw new NotImplementedException('Private registries are not enabled in this deployment')
+      throw new NotImplementedException({
+        message: 'Private registries are not enabled in this deployment',
+        code: 'unsupported',
+      })
     }
     return this.store
   }

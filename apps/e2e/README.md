@@ -126,6 +126,10 @@ export BOXLITE_E2E_PROFILE=p1
 export BOXLITE_E2E_CLI=/path/to/boxlite   # CLI binary built with REST support
 ```
 
+Private-image cleanup keeps its login record until deletion succeeds. If the
+removal step fails, teardown retries that login; a transient failure must not
+leave an untracked credential that prevents the next run.
+
 Then run the profile into `~/.boxlite/credentials.toml` so the CLI
 picks it up (one-time per machine):
 
@@ -217,7 +221,7 @@ apps/e2e/
     ├── test_go_entry.py             # Go SDK smoke
     ├── test_go_coverage.py          # Go SDK exec options, copy, errors
     ├── test_images_catalog.py       # Image catalog via rt.images: booting records it, remove drops it, admission refuses bad hosts
-    ├── test_images_private.py       # Private image through a login registered over HTTP
+    ├── test_images_private.py       # Private image through a login added with rt.registries
     ├── test_c_entry.py              # C SDK smoke
     └── test_c_coverage.py           # C SDK exec, errors
 ```

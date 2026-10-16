@@ -4,12 +4,11 @@
  */
 
 import { ConflictException, NotFoundException, NotImplementedException } from '@nestjs/common'
-import { Repository } from 'typeorm'
+import { EntityManager, Repository } from 'typeorm'
 import { Box } from '../../box/entities/box.entity'
 import { RegistryCredential } from '../entities/registry-credential.entity'
 import { SecretStore } from '../stores/secret.store'
 import { RegistriesService } from './registries.service'
-import { RegistryCredentialService } from './registry-credential.service'
 
 const PROXY = 'registry-proxy-abc.a.run.app'
 const ORG = '0aaa0000-0000-4000-8000-000000000001'
@@ -17,7 +16,13 @@ const REQUEST = { registryHost: 'ghcr.io', repositoryPrefix: 'acme/', username: 
 
 function build({
   store = { put: jest.fn(async () => 'version-1'), destroy: jest.fn(async () => undefined) },
-  row = { id: 'credential-1', organizationId: ORG, registryHost: 'ghcr.io', secretVersion: 'version-1' },
+  row = {
+    id: 'credential-1',
+    organizationId: ORG,
+    registryHost: 'ghcr.io',
+    repositoryPrefix: 'acme/',
+    secretVersion: 'version-1',
+  },
   boxes = [] as Partial<Box>[],
   picked = 'credential-1' as string | null,
 } = {}) {
@@ -27,7 +32,10 @@ function build({
     findOneByOrFail: jest.fn(async () => ({ ...row })),
     findOneBy: jest.fn(async () => row),
     delete: jest.fn(async () => calls.push('delete')),
-    find: jest.fn(async () => [row]),
+    find: jest.fn(async () =>
+      picked === row.id ? [row] : picked ? [{ ...row, id: picked, repositoryPrefix: 'acme/app/' }] : [],
+    ),
+    manager: {} as EntityManager,
   }
   const builder = {
     where: jest.fn(() => builder),
@@ -35,17 +43,22 @@ function build({
     select: jest.fn(() => builder),
     getMany: jest.fn(async () => boxes),
   }
-  const lookup = { findForRepository: jest.fn(async () => (picked ? { id: picked } : null)) }
+  const manager = {
+    findOne: jest.fn(async () => credentials.findOneBy()),
+    delete: jest.fn(async () => credentials.delete()),
+    getRepository: jest.fn((entity) =>
+      entity === RegistryCredential ? credentials : { createQueryBuilder: () => builder },
+    ),
+  }
+  credentials.manager.transaction = jest.fn(async (_isolation, callback) => callback(manager)) as never
   store.destroy.mockImplementation(async () => {
     calls.push('destroy')
   })
   const service = new RegistriesService(
     credentials as unknown as Repository<RegistryCredential>,
-    { createQueryBuilder: () => builder } as unknown as Repository<Box>,
     store as unknown as SecretStore,
-    lookup as unknown as RegistryCredentialService,
   )
-  return { service, credentials, store, builder, calls, lookup }
+  return { service, credentials, store, builder, calls }
 }
 
 describe('RegistriesService', () => {
@@ -79,6 +92,21 @@ describe('RegistriesService', () => {
       expect(store.destroy).toHaveBeenCalledWith('version-1')
     })
 
+    it('codes the refusal of a second login already_exists, so an SDK can tell it from a delete refusal', async () => {
+      const { service, credentials } = build()
+      credentials.insert.mockRejectedValue(Object.assign(new Error('duplicate'), { code: '23505' }))
+
+      const refusal = await service.create(ORG, 'user-1', REQUEST).then(
+        () => fail('a second login for the same prefix was stored'),
+        (error: ConflictException) => error,
+      )
+
+      expect(refusal.getResponse()).toMatchObject({
+        code: 'already_exists',
+        message: expect.stringContaining('ghcr.io/acme/ already exists'),
+      })
+    })
+
     it('destroys the password on any other failure to record it, and reports that failure', async () => {
       const { service, credentials, store } = build()
       credentials.insert.mockRejectedValue(new Error('connection reset'))
@@ -91,14 +119,18 @@ describe('RegistriesService', () => {
       delete process.env.REGISTRY_PROXY_HOST
       const { service, store } = build()
 
-      await expect(service.create(ORG, 'user-1', REQUEST)).rejects.toBeInstanceOf(NotImplementedException)
+      const refused = service.create(ORG, 'user-1', REQUEST)
+
+      await expect(refused).rejects.toBeInstanceOf(NotImplementedException)
+      // Coded, so an SDK reads it as unsupported rather than a server fault.
+      await expect(refused).rejects.toMatchObject({ response: { code: 'unsupported' } })
       expect(store.put).not.toHaveBeenCalled()
     })
   })
 
   describe('delete', () => {
     it('refuses with the ids of the boxes still pulling through it', async () => {
-      const { service, store, builder, lookup } = build({
+      const { service, store, builder, credentials } = build({
         boxes: [
           { id: 'box-1', image: `${PROXY}/${ORG}/ghcr.io/acme/app:1` },
           { id: 'box-2', image: `${PROXY}/${ORG}/ghcr.io/acme/tool@sha256:${'a'.repeat(64)}` },
@@ -117,9 +149,8 @@ describe('RegistriesService', () => {
       expect(builder.andWhere).toHaveBeenCalledWith('box.image LIKE :through', {
         through: `${PROXY}/${ORG}/ghcr.io/%`,
       })
-      // And each one is matched by its upstream repository, not the proxy ref.
-      expect(lookup.findForRepository).toHaveBeenCalledWith(ORG, 'ghcr.io', 'acme/app')
-      expect(lookup.findForRepository).toHaveBeenCalledWith(ORG, 'ghcr.io', 'acme/tool')
+      expect(credentials.find).toHaveBeenCalledTimes(1)
+      expect(credentials.find).toHaveBeenCalledWith({ where: { organizationId: ORG, registryHost: 'ghcr.io' } })
     })
 
     it('lets a login go when a longer one is what its boxes pull through', async () => {
