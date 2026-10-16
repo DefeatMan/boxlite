@@ -84,7 +84,7 @@ import { Region } from '../../region/entities/region.entity'
 import { BoxActivityService } from './box-activity.service'
 import { assertWithinPerBoxLimits } from './per-box-limits'
 import { requiresFreshBox } from '../utils/warm-pool-eligibility.util'
-import { isCuratedSelector } from '../../image/utils/image-ref.util'
+import { isCuratedSelector, withoutRegistryProxy } from '../../image/utils/image-ref.util'
 import {
   AUTO_DELETE_DISABLED,
   AUTO_STOP_DISABLED,
@@ -247,7 +247,9 @@ export class BoxService {
       // anything else is looked up in this organization's catalog — pinned to
       // the digest it first resolved to if the catalog knows it, passed through
       // as typed if it does not, which is how an image gets pulled the first
-      // time.
+      // time. A repository the organization registered a login for is handed
+      // over either way as a registry proxy ref, so that is what `box.image`
+      // records for a private image.
       const resolvedImage = await this.imageResolverService.resolve(organization, createBoxDto.image)
       const image = resolvedImage.ref
       const needsFreshBox = requiresFreshBox(createBoxDto, organization, resolvedImage)
@@ -1523,7 +1525,8 @@ export class BoxService {
     }
 
     if (errorReason !== undefined) {
-      updateData.errorReason = errorReason
+      // The runner's words, which can name the registry proxy ref it pulled.
+      updateData.errorReason = withoutRegistryProxy(errorReason)
       if (newState === BoxState.ERROR) {
         updateData.recoverable = recoverable
       }

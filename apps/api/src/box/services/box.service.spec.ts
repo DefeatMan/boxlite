@@ -17,6 +17,7 @@ import { Image } from '../../image/entities/image.entity'
 import { ImageVersion } from '../../image/entities/image-version.entity'
 import { ImageAdmissionService } from '../../image/services/image-admission.service'
 import { ImageResolverService } from '../../image/services/image-resolver.service'
+import { RegistryCredentialService } from '../../registry/services/registry-credential.service'
 import { CreateBoxDto as RestCreateBoxDto } from '../../boxlite-rest/dto/create-box.dto'
 import { createBoxToCreateBox } from '../../boxlite-rest/mappers/box-to-box.mapper'
 import { Context } from '../../common/context/context'
@@ -406,6 +407,31 @@ describe('BoxService image reporting', () => {
   })
 
   /**
+   * A runner may report why a box failed, and for a private image that reason
+   * names the registry proxy ref it pulled. What is stored is what the tenant
+   * reads, so it names the upstream image they asked for.
+   */
+  it('stores a reported reason with the upstream image in place of the registry proxy ref', async () => {
+    const proxy = 'registry-proxy-abc.a.run.app'
+    process.env.REGISTRY_PROXY_HOST = proxy
+    try {
+      const { service } = makeService(BoxState.STARTED)
+      const proxied = `${proxy}/0aaa0000-0000-4000-8000-000000000001/ghcr.io/acme/app:1`
+
+      await service.updateState('box-1', BoxState.ERROR, false, `Failed to pull image '${proxied}'`)
+
+      expect((service as any).boxRepository.updateWhere).toHaveBeenCalledWith(
+        'box-1',
+        expect.objectContaining({
+          updateData: expect.objectContaining({ errorReason: "Failed to pull image 'ghcr.io/acme/app:1'" }),
+        }),
+      )
+    } finally {
+      delete process.env.REGISTRY_PROXY_HOST
+    }
+  })
+
+  /**
    * The state update is what the control plane acts on; a lost registration
    * only costs the next create one re-resolution.
    */
@@ -492,7 +518,11 @@ describe('BoxService public defaults', () => {
       },
     } as unknown as Repository<ImageVersion>
     const { service, boxRepository } = makeCreateService({
-      imageResolverService: new ImageResolverService(repository),
+      imageResolverService: new ImageResolverService(repository, {
+        routesThroughProxy: () => {
+          throw new Error('a curated selector must not ask about registered logins')
+        },
+      } as unknown as RegistryCredentialService),
     })
 
     await service.create({ name: 'curated-box', image: 'python' } as any, { id: 'org-1' } as any, Context.user())
@@ -620,6 +650,7 @@ describe('BoxService public defaults', () => {
         imageAdmissionService: new ImageAdmissionService(
           redis as unknown as Redis,
           images as unknown as Repository<Image>,
+          { routesThroughProxy: jest.fn().mockResolvedValue(false) } as unknown as RegistryCredentialService,
         ),
         imageResolverService: { resolve: jest.fn().mockResolvedValue(resolved) },
         ...overrides,
