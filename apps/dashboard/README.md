@@ -105,6 +105,16 @@ opens. A second entry point to the same guide is a bug, not a convenience —
 mounting one twice has already caused duplicate API keys to be minted
 (issue #1491).
 
+## Private registries are a tab of Images
+
+Someone who needs a private image is already on the Images page, so the
+credentials that let a box pull one are its second tab, not a top-level item.
+That is also how the API nests them (`/api/images/registries`). Each tab is its
+own route, `/dashboard/images` and `/dashboard/images/registries`, so a box's
+pull error can link straight to the second; the old `/dashboard/registries`
+redirects there. The static `registries` segment is routed before `:idOrRef`,
+as the API orders its routes, or it would read as an image named "registries".
+
 ## A list with no create says how its rows arrive
 
 The API has no create for an image: one enters the catalog when a box first
@@ -123,6 +133,21 @@ behind "Show the SDK call" for readers who will paste it rather than click.
 Built-in images sit apart from the table. They are operator configuration with
 no versions, size or recorded starts, so a row for them would be a line of
 dashes, and a "never" under last started would be false.
+
+## A state the API records once is told in the past tense
+
+Some fields are set once and never cleared. `upstreamMissingAt` is written the
+first time a pull finds a digest gone from its registry, and nothing resets it
+if the registry gets it back. The image page therefore says "Gone upstream 5h
+ago", with "BoxLite's copy still starts boxes" on hover, rather than a present
+tense "Missing" that would turn false the moment the registry recovered.
+Likewise the pin history says "unpins are not recorded", because the API
+writes no event when a tag is unpinned, and a history that dropped a tag
+without saying so would look like a bug.
+
+The same page lists every box that still references the image, stopped ones
+included: those are exactly the boxes that block its removal. And who pinned a
+tag is a member's name, or "first pull", never an identity-provider id.
 
 ## A failure carries the way to its fix
 
