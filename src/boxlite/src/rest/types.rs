@@ -538,12 +538,12 @@ pub(crate) struct ListVolumesResponse {
 // Images
 // ============================================================================
 
-/// When the server recorded something; now when the time does not parse,
-/// matching how a volume's creation time is read.
+/// When the server recorded something; epoch when the time does not parse,
+/// matching the local image cache's deterministic fallback.
 fn recorded_time(raw: &str) -> chrono::DateTime<chrono::Utc> {
     chrono::DateTime::parse_from_rfc3339(raw)
         .map(|time| time.with_timezone(&chrono::Utc))
-        .unwrap_or_else(|_| chrono::Utc::now())
+        .unwrap_or(chrono::DateTime::<chrono::Utc>::UNIX_EPOCH)
 }
 
 /// One reference, as `GET /v1/{prefix}/images` lists it.
@@ -579,7 +579,16 @@ pub(crate) struct ListImagesResponse {
     pub images: Vec<ImageInfoResponse>,
 }
 
-/// One build, as `GET /v1/{prefix}/images/{name}` lists it.
+/// A time the server may leave out; `None` when it does, or when it does not
+/// parse, rather than a time nobody observed.
+fn optional_time(raw: Option<&str>) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(raw?)
+        .ok()
+        .map(|time| time.with_timezone(&chrono::Utc))
+}
+
+/// One build, as `GET /v1/{prefix}/images/{name}` lists it. The fields after
+/// `recorded_at` default, so a server that predates them still reads.
 #[derive(Debug, Deserialize)]
 pub(crate) struct ImageVersionResponse {
     pub digest: String,
@@ -587,34 +596,75 @@ pub(crate) struct ImageVersionResponse {
     pub size_bytes: Option<u64>,
     pub source_ref: String,
     pub recorded_at: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub last_used_at: Option<String>,
+    #[serde(default)]
+    pub upstream_missing_at: Option<String>,
 }
 
-/// Response for `GET /v1/{prefix}/images/{name}`.
+/// One alias history entry, including bindings recorded by pulls.
+#[derive(Debug, Deserialize)]
+pub(crate) struct ImageAliasEventResponse {
+    pub alias: String,
+    #[serde(default)]
+    pub from_digest: Option<String>,
+    pub to_digest: String,
+    #[serde(default)]
+    pub actor: Option<String>,
+    pub recorded_at: String,
+}
+
+/// Response for `GET /v1/{prefix}/images/{name}` and for alias creation.
 #[derive(Debug, Deserialize)]
 pub(crate) struct ImageDetailResponse {
     pub name: String,
     #[serde(default)]
-    pub tags: Vec<String>,
+    pub aliases: Vec<String>,
     #[serde(default)]
     pub curated: bool,
     #[serde(default)]
     pub versions: Vec<ImageVersionResponse>,
+    #[serde(default)]
+    pub history: Vec<ImageAliasEventResponse>,
+}
+
+/// Body for `POST /v1/{prefix}/images/{name}/aliases`.
+#[derive(Debug, Serialize)]
+pub(crate) struct CreateAliasRequest<'a> {
+    pub alias: &'a str,
+    pub digest: &'a str,
 }
 
 impl ImageDetailResponse {
     pub fn into_image_detail(self) -> crate::runtime::types::ImageDetail {
         crate::runtime::types::ImageDetail {
             name: self.name,
-            tags: self.tags,
+            aliases: self.aliases,
             curated: self.curated,
             versions: self
                 .versions
                 .into_iter()
                 .map(|version| crate::runtime::types::ImageVersion {
                     recorded_at: recorded_time(&version.recorded_at),
+                    last_used_at: optional_time(version.last_used_at.as_deref()),
+                    upstream_missing_at: optional_time(version.upstream_missing_at.as_deref()),
                     digest: version.digest,
                     size_bytes: version.size_bytes,
                     source_ref: version.source_ref,
+                    aliases: version.aliases,
+                })
+                .collect(),
+            history: self
+                .history
+                .into_iter()
+                .map(|event| crate::runtime::types::ImageAliasEvent {
+                    recorded_at: recorded_time(&event.recorded_at),
+                    alias: event.alias,
+                    from_digest: event.from_digest,
+                    to_digest: event.to_digest,
+                    actor: event.actor,
                 })
                 .collect(),
         }
@@ -633,7 +683,7 @@ pub(crate) struct ImageUsageResponse {
 // Registries
 // ============================================================================
 
-/// Body for `POST /v1/{prefix}/registries`. No `Debug`: it holds the password.
+/// Body for `POST /v1/{prefix}/images/registries`. No `Debug`: it holds the password.
 #[derive(Serialize)]
 pub(crate) struct CreateRegistryRequest<'a> {
     pub registry_host: &'a str,
@@ -654,7 +704,7 @@ impl<'a> CreateRegistryRequest<'a> {
     }
 }
 
-/// One login, as `/v1/{prefix}/registries` answers it. There is no password
+/// One login, as `/v1/{prefix}/images/registries` answers it. There is no password
 /// field, so one a server sent back is dropped here.
 #[derive(Debug, Deserialize)]
 pub(crate) struct RegistryCredentialResponse {
@@ -681,7 +731,7 @@ impl RegistryCredentialResponse {
     }
 }
 
-/// Response for `GET /v1/{prefix}/registries`.
+/// Response for `GET /v1/{prefix}/images/registries`.
 #[derive(Debug, Deserialize)]
 pub(crate) struct ListRegistriesResponse {
     pub registries: Vec<RegistryCredentialResponse>,
@@ -891,6 +941,48 @@ fn parse_box_status(status: &str) -> BoxStatus {
 mod tests {
     use super::*;
     use crate::runtime::options::BoxOptions;
+
+    #[test]
+    fn rest_recorded_timestamps_are_stable_across_conversions() {
+        for (raw, seconds) in [
+            ("invalid", 0),
+            ("", 0),
+            ("1970-01-02T02:00:00+02:00", 86_400),
+        ] {
+            let info: ImageInfoResponse = serde_json::from_value(serde_json::json!({
+                "reference": "quay.io/acme/app:latest",
+                "repository": "quay.io/acme/app", "tag": "latest",
+                "id": "sha256:abc", "cached_at": raw
+            }))
+            .unwrap();
+            let detail: ImageDetailResponse = serde_json::from_value(serde_json::json!({
+                "name": "quay.io/acme/app",
+                "versions": [{
+                    "digest": "sha256:abc", "source_ref": "quay.io/acme/app:latest",
+                    "recorded_at": raw
+                }],
+                "history": [{"alias": "latest", "to_digest": "sha256:abc", "recorded_at": raw}]
+            }))
+            .unwrap();
+            let registry: RegistryCredentialResponse = serde_json::from_value(serde_json::json!({
+                "id": "registry-1", "registry_host": "quay.io",
+                "username": "reader", "created_at": raw
+            }))
+            .unwrap();
+            let detail = detail.into_image_detail();
+            let expected = chrono::DateTime::from_timestamp(seconds, 0).unwrap();
+            assert_eq!(
+                [
+                    info.into_image_info().cached_at,
+                    detail.versions[0].recorded_at,
+                    detail.history[0].recorded_at,
+                    registry.into_registry_credential().created_at,
+                ],
+                [expected; 4],
+                "wire timestamp: {raw:?}"
+            );
+        }
+    }
 
     #[test]
     fn test_create_box_request_serialization() {

@@ -14,25 +14,33 @@
 
 
 
-export interface ImageTagEvent {
+export interface ImageAliasEvent {
     /**
-     * The tag that moved
+     * The alias that moved
      */
-    'tagName': string;
+    'aliasName': string;
     /**
-     * Version the tag pointed at before. Null when the tag did not exist yet
+     * Version the alias pointed at before. Null when the alias did not exist yet
      */
     'fromVersionId': string | null;
     /**
-     * Version the tag points at from then on
+     * Previous digest in historical records. Null for alias creation
+     */
+    'fromDigest': string | null;
+    /**
+     * Version selected by the alias
      */
     'toVersionId': string;
     /**
-     * Who moved the tag. Null when a box pulling the image is what recorded it
+     * Digest selected by the alias
+     */
+    'toDigest': string;
+    /**
+     * Who created the alias. Null when a registry pull seeded it
      */
     'actorId': string | null;
     /**
-     * When the tag moved
+     * When the alias was recorded
      */
     'createdAt': string;
 }

@@ -37,6 +37,11 @@ case in this suite is using the same fixtures and the same path.
 
 ## Prereqs
 
+`BOXLITE_E2E_CATALOG_IMAGE` accepts tagged, digest-pinned, and untagged
+references, including registry ports such as `registry.local:5000/acme/app`.
+The catalog tests retain the port when deriving the repository name and the
+deliberately unpullable test image.
+
 Set up via the bootstrap script (one-time per machine):
 
 ```bash
@@ -230,8 +235,8 @@ apps/e2e/
     ├── test_go_entry.py             # Go SDK smoke
     ├── test_go_coverage.py          # Go SDK exec options, copy, errors
     ├── test_images_catalog.py       # Image catalog via rt.images: booting records it, remove drops it, admission refuses bad hosts
-    ├── test_images_private.py       # Private image through a login added with rt.registries
-    ├── test_images_tags.py          # Moving a tag over /api/images: the next box follows, others keep theirs
+    ├── test_images_private.py       # Private image through a login added with rt.images.registries
+    ├── test_images_aliases.py       # Alias creation refuses overwrite; explicit replacement affects new boxes
     ├── test_c_entry.py              # C SDK smoke
     └── test_c_coverage.py           # C SDK exec, errors
 ```

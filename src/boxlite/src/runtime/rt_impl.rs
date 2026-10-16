@@ -1903,6 +1903,24 @@ impl super::images::ImageBackend for LocalRuntime {
                 .into(),
         ))
     }
+
+    async fn create_alias(
+        &self,
+        _name: &str,
+        _alias: &str,
+        _digest: &str,
+    ) -> BoxliteResult<crate::runtime::types::ImageDetail> {
+        Err(BoxliteError::Unsupported(
+            "creating an alias requires a server's catalog; an embedded runtime has a \
+             local cache, which resolves a tag afresh for each new box"
+                .into(),
+        ))
+    }
+    async fn delete_alias(&self, _name: &str, _alias: &str) -> BoxliteResult<()> {
+        Err(BoxliteError::Unsupported(
+            "alias deletion requires a server catalog".into(),
+        ))
+    }
 }
 
 // Named-volume operations (separate from RuntimeBackend). The concrete backend

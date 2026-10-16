@@ -37,7 +37,7 @@ The inventory is implementation-grounded:
 
 `openapi/box.openapi.yaml` also describes portable capabilities that the hosted
 service does not currently register, including snapshots, clone, export,
-import, images, and runtime-wide metrics. They are intentionally absent below;
+import, and runtime-wide metrics. They are intentionally absent below;
 `GET /api/v1/config` reports snapshots, clone, export, and import as disabled.
 
 ## Services at a glance
@@ -203,18 +203,23 @@ serves and the events it emits are catalogued below alongside its routes.
 </details>
 
 <details>
-<summary><b>Image catalog</b> · 5 routes</summary>
+<summary><b>Image catalog</b> · 6 routes</summary>
 
 `upstreamMissingAt` records when a pull first found a version missing upstream.
 `null` means no pull has recorded that observation; it does not confirm current
 registry availability.
 
+List and detail responses expose aliases only for READY versions, matching the
+versions a box can resolve. Aliases of non-ready versions remain stored but are
+omitted from those responses.
+
 | Method   | Path                               | What it does                                                                                                                |
 | -------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `GET`    | `/api/images`                      | Lists the organization's images together with the operator's curated set.                                                   |
 | `GET`    | `/api/images/usage`                | Counts held images against the limit and sums the sizes their versions declared.                                            |
-| `GET`    | `/api/images/{idOrRef}`            | Gets an image, its versions with their tags, last-use and upstream-missing timestamps, and the last 100 tag events. |
-| `PUT`    | `/api/images/{idOrRef}/tags/{tag}` | Points a tag at a ready version and records the move; boxes already created keep their version.                             |
+| `GET`    | `/api/images/{idOrRef}`            | Gets an image, its versions with their aliases, last-use and upstream-missing timestamps, and the last 100 alias events. |
+| `POST` | `/api/images/{idOrRef}/aliases` | Creates an alias for a ready version; existing names return 409, even for the same target. |
+| `DELETE` | `/api/images/{idOrRef}/aliases/{alias}` | Deletes only the alias; versions and existing boxes remain. |
 | `DELETE` | `/api/images/{idOrRef}`            | Removes the catalog entry, not the bytes, unless a box can still boot from it (409 lists the boxes).                        |
 
 </details>
@@ -224,9 +229,9 @@ registry availability.
 
 | Method   | Path                   | What it does                                                                          |
 | -------- | ---------------------- | ------------------------------------------------------------------------------------- |
-| `GET`    | `/api/registries`      | Lists the organization's private registry logins, without passwords.                  |
-| `POST`   | `/api/registries`      | Adds a login; the password is stored where the API cannot read it and never returned. |
-| `DELETE` | `/api/registries/{id}` | Removes a login, unless a box still pulls through it (409 lists the boxes).           |
+| `GET`    | `/api/images/registries`      | Lists the organization's private registry logins, without passwords.                  |
+| `POST`   | `/api/images/registries`      | Adds a login; the password is stored where the API cannot read it and never returned. |
+| `DELETE` | `/api/images/registries/{id}` | Removes a login, unless a box still pulls through it (409 lists the boxes).           |
 
 </details>
 
@@ -238,7 +243,7 @@ registry availability.
 | `GET`    | `/api/runners`                         | Lists runners.                                                 |
 | `POST`   | `/api/runners`                         | Registers a runner.                                            |
 | `GET`    | `/api/runners/me`                      | Returns the authenticated runner's identity and configuration. |
-| `GET`    | `/api/runners/me/registry-credentials` | Internal registry-proxy lookup; excluded from customer OpenAPI and SDKs. |
+| `GET`    | `/api/runners/me/images/registry-credentials` | Internal registry-proxy lookup; excluded from customer OpenAPI and SDKs. |
 | `GET`    | `/api/runners/by-box/{boxId}`          | Resolves the runner assigned to a box.                         |
 | `GET`    | `/api/runners/{id}`                    | Gets a runner by ID.                                           |
 | `GET`    | `/api/runners/{id}/full`               | Gets a runner with its full related data.                      |
@@ -379,13 +384,21 @@ form. The tables write that as `[/{prefix}]`; clients can discover their prefix
 through `GET /api/v1/me`. Except for configuration discovery, these routes use
 combined bearer authentication, then organization authorization.
 
+Image and registry management routes also consume the organization's authenticated
+request quota, shared with `/api/images`, `/api/images/registries`, and other routes using
+that quota. Canonical and prefixed SDK paths use the same counter. After the quota
+is exhausted, requests return HTTP 429 with `Retry-After-authenticated` before
+catalog changes or registry credential operations run; switching API surfaces
+does not reset it.
+
 Resource permissions are enforced per route. A box mutation — create, start,
 stop, exec, signal, resize, execution kill, file transfer, WebSocket attach, and
 the network routes — requires `write:boxes`; deleting a box requires
 `delete:boxes`. Box reads (list, get, head, execution status, metrics) carry no
 permission and are reached by any member, because the model has no `read:boxes`.
 Volume routes require `read:volumes`, `write:volumes`, or `delete:volumes` to
-match, and registry login routes `read:registries`, `write:registries`, or
+match, image routes `read:images`, `write:images`, or `delete:images`, and
+registry login routes `read:registries`, `write:registries`, or
 `delete:registries`. Attaching a managed volume while creating a box is authorized
 independently of `write:boxes`: the caller must also hold `read:volumes` and
 `write:volumes`, so a box-only credential cannot reach another's volume data
@@ -459,15 +472,32 @@ the portable contract, which the runner's own route registration enforces.
 </details>
 
 <details>
+<summary><b>Images</b> · 6 routes</summary>
+
+| Method   | Path                                          | What it does                                                                                           |
+| -------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `GET`    | `/api/v1[/{prefix}]/images`                   | Lists one row per reference the organization can boot from; curated images are left out.               |
+| `GET`    | `/api/v1[/{prefix}]/images/usage`             | Counts held images against the limit and sums the sizes their versions declared.                       |
+| `GET`    | `/api/v1[/{prefix}]/images/{name}`            | Gets an image: its versions with their aliases, last use and upstream state, and the last 100 alias events. |
+| `POST` | `/api/v1[/{prefix}]/images/{name}/aliases` | Creates an alias from `alias` and `digest`; existing names return `already_exists`. |
+| `DELETE` | `/api/v1[/{prefix}]/images/{name}/aliases/{alias}` | Removes only the alias; needs `write:images`. |
+| `DELETE` | `/api/v1[/{prefix}]/images/{name}`            | Removes the catalog entry, not the bytes, unless a box can still boot from it.                         |
+
+The same catalog as `/api/images`, in the box API's snake_case shapes and with
+versions named by digest, for SDK clients.
+
+</details>
+
+<details>
 <summary><b>Registries</b> · 3 routes</summary>
 
 | Method   | Path                                 | What it does                                                                     |
 | -------- | ------------------------------------ | -------------------------------------------------------------------------------- |
-| `GET`    | `/api/v1[/{prefix}]/registries`      | Lists the organization's private registry logins, without passwords.             |
-| `POST`   | `/api/v1[/{prefix}]/registries`      | Adds a login; a second one for the same registry and prefix is `already_exists`. |
-| `DELETE` | `/api/v1[/{prefix}]/registries/{id}` | Removes a login, unless a box still pulls through it (409 lists the boxes).      |
+| `GET`    | `/api/v1[/{prefix}]/images/registries`      | Lists the organization's private registry logins, without passwords.             |
+| `POST`   | `/api/v1[/{prefix}]/images/registries`      | Adds a login; a second one for the same registry and prefix is `already_exists`. |
+| `DELETE` | `/api/v1[/{prefix}]/images/registries/{id}` | Removes a login, unless a box still pulls through it (409 lists the boxes).      |
 
-The same logins as `/api/registries`, in the box API's snake_case shapes, for
+The same logins as `/api/images/registries`, in the box API's snake_case shapes, for
 SDK clients.
 
 Credential deletion and private-image box persistence coordinate in PostgreSQL.

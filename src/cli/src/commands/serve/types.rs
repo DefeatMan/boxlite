@@ -222,15 +222,35 @@ pub(super) struct ImageVersionResponse {
     pub size_bytes: Option<u64>,
     pub source_ref: String,
     pub recorded_at: String,
+    pub aliases: Vec<String>,
+    pub last_used_at: Option<String>,
+    pub upstream_missing_at: Option<String>,
 }
 
-/// Body for `GET /v1/images/{name}`.
+#[derive(Serialize)]
+pub(super) struct ImageAliasEventResponse {
+    pub alias: String,
+    pub from_digest: Option<String>,
+    pub to_digest: String,
+    pub actor: Option<String>,
+    pub recorded_at: String,
+}
+
+/// Body for `GET /v1/images/{name}` and `PUT /v1/images/{name}/aliases/{tag}`.
 #[derive(Serialize)]
 pub(super) struct ImageDetailResponse {
     pub name: String,
-    pub tags: Vec<String>,
+    pub aliases: Vec<String>,
     pub curated: bool,
     pub versions: Vec<ImageVersionResponse>,
+    pub history: Vec<ImageAliasEventResponse>,
+}
+
+/// Body for `PUT /v1/images/{name}/aliases/{tag}`.
+#[derive(Deserialize)]
+pub(super) struct CreateAliasRequest {
+    pub alias: String,
+    pub digest: String,
 }
 
 #[derive(Serialize)]

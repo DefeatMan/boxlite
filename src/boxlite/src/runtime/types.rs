@@ -696,8 +696,8 @@ pub struct ImageDetail {
     /// Registry and repository, without a tag (e.g. "docker.io/library/alpine").
     pub name: String,
 
-    /// Tags held for this name.
-    pub tags: Vec<String>,
+    /// Aliases held for this name.
+    pub aliases: Vec<String>,
 
     /// Provided by the operator rather than pulled by a box. Only a catalog
     /// has these; a local cache never does.
@@ -705,6 +705,11 @@ pub struct ImageDetail {
 
     /// Each build held under the name, newest first.
     pub versions: Vec<ImageVersion>,
+
+    /// Where each tag has pointed, newest first. Only a catalog keeps it, and
+    /// only its most recent moves; a local cache answers it empty.
+    #[serde(default)]
+    pub history: Vec<ImageAliasEvent>,
 }
 
 /// One build of an image.
@@ -720,6 +725,39 @@ pub struct ImageVersion {
     pub source_ref: String,
 
     /// When this build was recorded.
+    pub recorded_at: DateTime<Utc>,
+
+    /// Aliases that point at this build now.
+    #[serde(default)]
+    pub aliases: Vec<String>,
+
+    /// When a box last started from this build, when that is known. Only a
+    /// catalog tracks it.
+    #[serde(default)]
+    pub last_used_at: Option<DateTime<Utc>>,
+
+    /// When a pull first found this build gone from its registry. Runners
+    /// that cached it still start it. Only a catalog records it.
+    #[serde(default)]
+    pub upstream_missing_at: Option<DateTime<Utc>>,
+}
+
+/// A catalog alias registration or a historical binding change.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageAliasEvent {
+    /// The alias that was recorded.
+    pub alias: String,
+
+    /// The build it pointed at before; `None` when the alias did not exist yet.
+    pub from_digest: Option<String>,
+
+    /// The build it points at from then on.
+    pub to_digest: String,
+
+    /// Who recorded it; `None` when a pull recorded it.
+    pub actor: Option<String>,
+
+    /// When the binding was recorded.
     pub recorded_at: DateTime<Utc>,
 }
 

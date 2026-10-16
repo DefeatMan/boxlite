@@ -51,6 +51,7 @@ from catalog_boxes import (
     until_reported,
 )
 from e2e_auth import auth_context, request_json
+from images import repository_name
 
 # Small, public, and on a host the built-in allowlist admits
 # (`docker.io` / `quay.io` / `gcr.io` / `public.ecr.aws` — `ghcr.io` is held
@@ -61,14 +62,14 @@ CATALOG_IMAGE = os.environ.get("BOXLITE_E2E_CATALOG_IMAGE", DEFAULT_CATALOG_IMAG
 
 # `name` in the catalog is the repository without the tag: one row holds every
 # version ever pulled under it.
-CATALOG_NAME = CATALOG_IMAGE.split("@")[0].rsplit(":", 1)[0]
+CATALOG_NAME = repository_name(CATALOG_IMAGE)
 
 # A repository that cannot resolve, on the same allowlisted host so admission
 # passes and the *pull* is what fails. A distinct repository, so a row written
 # for it would show up as a name that was not there before — sharing
 # CATALOG_NAME would make the assertion pass for the wrong reason.
 UNPULLABLE_IMAGE = f"{CATALOG_NAME.rsplit('/', 1)[0]}/boxlite-e2e-does-not-exist:v1"
-UNPULLABLE_NAME = UNPULLABLE_IMAGE.rsplit(":", 1)[0]
+UNPULLABLE_NAME = repository_name(UNPULLABLE_IMAGE)
 
 
 @pytest_asyncio.fixture(scope="module")
@@ -189,7 +190,7 @@ async def test_a_second_box_adds_no_second_version(rt, images):
                 "a second box on the same reference recorded another version; it "
                 "resolved through the registry instead of through the catalog"
             )
-            assert after.tags == before.tags
+            assert after.aliases == before.aliases
 
         await hold_through_report_window(unchanged)
     finally:
