@@ -5,12 +5,15 @@ package controllers
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	sdkboxlite "github.com/boxlite-ai/boxlite/sdks/go"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
@@ -119,5 +122,68 @@ func TestBoxliteBoxAttach_OpenFailureIsNotAnUpgrade(t *testing.T) {
 	}
 	if resp == nil || resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected HTTP 404, got %v", resp)
+	}
+}
+
+// TestBoxliteBoxAttach_FailedUpgradeReleasesTheSlot: the attach slot is
+// claimed before the upgrade, so an upgrade that fails — here a plain GET with
+// no WebSocket handshake — must hand it back. Otherwise every later client
+// would be refused with 409 until the reaper ran.
+func TestBoxliteBoxAttach_FailedUpgradeReleasesTheSlot(t *testing.T) {
+	stub := newStubAttachExec()
+	withStubMainSession(t, "box-1", "main-session-7", stub)
+
+	srv := newBoxAttachServer(t)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/v1/boxes/box-1/attach")
+	if err != nil {
+		t.Fatalf("plain GET: %v", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected the upgrader's 400, got %d", resp.StatusCode)
+	}
+	if stub.connected.Load() || stub.disconnect.Load() != 1 {
+		t.Fatalf("a failed upgrade must release the attach slot once: connected=%v releases=%d",
+			stub.connected.Load(), stub.disconnect.Load())
+	}
+}
+
+// TestBoxliteBoxAttach_OpenFailureStatus: the open error picks the status. A
+// box that has already run to completion is refused the way docker refuses
+// attaching to a stopped container, with a 409 the client can act on. The
+// errors arrive wrapped, as ExecManager.AttachMain returns them.
+func TestBoxliteBoxAttach_OpenFailureStatus(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"stopped", &sdkboxlite.Error{Code: sdkboxlite.ErrStopped, Message: "box stopped"}, http.StatusConflict},
+		{"invalid state", &sdkboxlite.Error{Code: sdkboxlite.ErrInvalidState, Message: "box removing"}, http.StatusConflict},
+		{"anything else", errors.New("runtime unavailable"), http.StatusInternalServerError},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prev := openMainSession
+			openMainSession = func(context.Context, string) (attachExec, string, error) {
+				return nil, "", fmt.Errorf("failed to attach to box box-1 main session: %w", tc.err)
+			}
+			t.Cleanup(func() { openMainSession = prev })
+
+			srv := newBoxAttachServer(t)
+			defer srv.Close()
+
+			conn, resp, err := dialBoxAttach(t, srv, "box-1")
+			if err == nil {
+				conn.Close()
+				t.Fatal("expected the attach to be refused")
+			}
+			if resp == nil || resp.StatusCode != tc.want {
+				t.Fatalf("expected HTTP %d, got %v", tc.want, resp)
+			}
+		})
 	}
 }
