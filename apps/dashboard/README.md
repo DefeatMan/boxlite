@@ -224,13 +224,16 @@ invited email address. The console preserves the link through sign-in and makes
 one acceptance request per visit, including under React effect replay. Expired,
 cancelled, or mismatched invitations show an error and keep the current organization.
 
-Personal incoming invitations remain in the profile menu with a pending count
-and manual accept/decline actions. Successful acceptance refreshes the organization
-list and switches to the joined organization.
+Email links are the only console entry for accepting invitations; there is no
+personal invitation list or pending-count badge. Successful acceptance refreshes
+the organization list, switches to the joined organization, and opens its Member tab.
+Existing emailed URLs remain valid. Opening `/dashboard/user/invitations` without
+an invitation ID redirects to the current organization's Member tab without accepting anything.
 
 The new selection is saved only after membership validation succeeds. If switching
-fails, acceptance still succeeds and the invitation disappears, while the console
-keeps the previous organization both on screen and for the next reload.
+fails, acceptance still succeeds. The page explains that joining succeeded and
+asks the user to switch through the profile menu. The console keeps the previous
+organization both on screen and for the next reload.
 
 ## The organization you pick is the one you come back to
 

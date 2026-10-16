@@ -44,9 +44,6 @@ vi.mock('@/hooks/useSelectedOrganization', () => ({
 vi.mock('@/hooks/useOrganizations', () => ({
   useOrganizations: () => ({ organizations: organizationState.organizations }),
 }))
-vi.mock('@/hooks/useUserOrganizationInvitations', () => ({
-  useUserOrganizationInvitations: () => ({ count: 2 }),
-}))
 
 describe('Sidebar primary navigation', () => {
   let root: Root | null = null
@@ -109,7 +106,7 @@ describe('Sidebar primary navigation', () => {
     expect(entries.find((item) => item.textContent === 'Members')).toBeUndefined()
   })
 
-  it('links the invitations page from the profile menu with the pending count', async () => {
+  it('omits the personal invitations entry from the profile menu', async () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     act(() => {
@@ -128,8 +125,7 @@ describe('Sidebar primary navigation', () => {
     )
 
     const invitations = document.querySelector('a[role="menuitem"][href="/dashboard/user/invitations"]')
-    // The label, then the badge with the pending count.
-    expect(invitations?.textContent).toBe('Invitations2')
+    expect(invitations).toBeNull()
   })
 
   it('lets a user in several organizations switch to another one from the profile menu', async () => {

@@ -7,7 +7,6 @@
 import { NotificationSocketProvider } from '@/providers/NotificationSocketProvider'
 import { OrganizationsProvider } from '@/providers/OrganizationsProvider'
 import { SelectedOrganizationProvider } from '@/providers/SelectedOrganizationProvider'
-import { UserOrganizationInvitationsProvider } from '@/providers/UserOrganizationInvitationsProvider'
 import { initPylon } from '@/vendor/pylon'
 import { usePostHog } from 'posthog-js/react'
 import React, { Suspense, useEffect } from 'react'
@@ -163,15 +162,13 @@ function App() {
             <ApiProvider>
               <OrganizationsProvider>
                 <SelectedOrganizationProvider>
-                  <UserOrganizationInvitationsProvider>
-                    <RegionsProvider>
-                      <NotificationSocketProvider>
-                        <BannerProvider>
-                          <Dashboard />
-                        </BannerProvider>
-                      </NotificationSocketProvider>
-                    </RegionsProvider>
-                  </UserOrganizationInvitationsProvider>
+                  <RegionsProvider>
+                    <NotificationSocketProvider>
+                      <BannerProvider>
+                        <Dashboard />
+                      </BannerProvider>
+                    </NotificationSocketProvider>
+                  </RegionsProvider>
                 </SelectedOrganizationProvider>
               </OrganizationsProvider>
             </ApiProvider>
