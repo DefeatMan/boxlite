@@ -11,12 +11,20 @@ import { Box } from '../../box/entities/box.entity'
 import { BoxDesiredState } from '../../box/enums/box-desired-state.enum'
 import { BadRequestError } from '../../exceptions/bad-request.exception'
 import { Organization } from '../../organization/entities/organization.entity'
-import { ImageDetailDto, ImageDto, ImageUsageDto, ImageVersionDto } from '../dto/image.dto'
+import {
+  IMAGE_HISTORY_LIMIT,
+  ImageDetailDto,
+  ImageDto,
+  ImageTagEventDto,
+  ImageUsageDto,
+  ImageVersionDto,
+} from '../dto/image.dto'
 import { Image } from '../entities/image.entity'
 import { ImageTag } from '../entities/image-tag.entity'
+import { ImageTagEvent } from '../entities/image-tag-event.entity'
 import { ImageVersion } from '../entities/image-version.entity'
 import { ImageVersionState } from '../enums/image-version-state.enum'
-import { catalogNameOf, isCuratedSelector } from '../utils/image-ref.util'
+import { assertTagName, catalogNameOf, isCuratedSelector } from '../utils/image-ref.util'
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -48,7 +56,7 @@ function curatedEntries(): ImageDto[] {
 }
 
 /**
- * Reads and removes catalog entries.
+ * Reads catalog entries, moves their tags, and removes them.
  *
  * Two things share every query here. The first is that an image is soft
  * deleted: `deletedAt` is set and its versions and tags stay behind, because
@@ -67,6 +75,8 @@ export class ImageCatalogService {
     private readonly versionRepository: Repository<ImageVersion>,
     @InjectRepository(ImageTag)
     private readonly tagRepository: Repository<ImageTag>,
+    @InjectRepository(ImageTagEvent)
+    private readonly tagEventRepository: Repository<ImageTagEvent>,
     @InjectRepository(Box)
     private readonly boxRepository: Repository<Box>,
   ) {}
@@ -149,16 +159,111 @@ export class ImageCatalogService {
       throw new NotFoundException(`Image '${idOrRef}' not found`)
     }
 
-    const [versions, tags] = await Promise.all([this.versionsByImage([image.id]), this.tagsByImage([image.id])])
-    const rows = versions.get(image.id) ?? []
+    const [versions, tags, history] = await Promise.all([
+      this.versionsByImage([image.id]),
+      this.tagsByImage([image.id]),
+      this.historyOf(image.id),
+    ])
+    const versionRows = versions.get(image.id) ?? []
+    const tagRows = tags.get(image.id) ?? []
     return {
-      ...toDto(image, rows, tags.get(image.id) ?? []),
-      versions: rows.map(toVersionDto),
-      // S1 records no tag movement: a tag keeps the digest it first resolved
-      // to, so there is no history to report. The field is here because its
-      // absence and its emptiness mean different things to a caller.
-      history: [],
+      ...toDto(image, versionRows, tagRows),
+      versions: versionRows.map((version) =>
+        toVersionDto(
+          version,
+          tagRows.filter((tag) => tag.versionId === version.id),
+        ),
+      ),
+      history: history.map(toTagEventDto),
     }
+  }
+
+  /**
+   * Point a tag at one of the image's versions, creating the tag if it does not
+   * exist, and record where it pointed before.
+   *
+   * Only the catalog changes. A box already created holds the digest-pinned ref
+   * it was resolved to, so nothing running moves with the tag; and the version
+   * was pulled when it was recorded, so nothing is pulled either. What changes
+   * is what the next box created with this tag boots.
+   */
+  async moveTag(
+    organization: Organization,
+    idOrRef: string,
+    tagName: string,
+    versionId: string,
+    actorId: string | null,
+  ): Promise<ImageDetailDto> {
+    if (isCuratedSelector(idOrRef)) {
+      throw new BadRequestError(
+        `Image '${idOrRef}' is provided by the operator, who pins its reference, so it has no tags to move`,
+      )
+    }
+    assertTagName(tagName)
+
+    const image = await this.findRow(organization, idOrRef)
+    if (!image) {
+      throw new NotFoundException(`Image '${idOrRef}' not found`)
+    }
+
+    await this.tagRepository.manager.transaction(async (manager) => {
+      const version = await manager.findOne(ImageVersion, { where: { id: versionId, imageId: image.id } })
+      if (!version) {
+        throw new BadRequestError(`Version '${versionId}' is not a version of image '${image.name}'`)
+      }
+      if (version.state !== ImageVersionState.READY) {
+        throw new BadRequestError(
+          `Version '${versionId}' of image '${image.name}' is ${version.state}; only a ready version can be tagged`,
+        )
+      }
+
+      // A tag that does not exist yet is created here. Two moves racing to
+      // create it are settled by the unique constraint: the loser waits for the
+      // winner to commit and then moves the tag the winner created.
+      const created = await manager
+        .createQueryBuilder()
+        .insert()
+        .into(ImageTag)
+        .values({ imageId: image.id, name: tagName, versionId })
+        .orIgnore()
+        .returning(['id'])
+        .execute()
+      if (created.raw.length > 0) {
+        await manager.insert(ImageTagEvent, {
+          imageId: image.id,
+          tagName,
+          fromVersionId: null,
+          toVersionId: versionId,
+          actorId,
+        })
+        return
+      }
+
+      // Locked, so the version a move records leaving is the one the tag held
+      // when it moved: two concurrent moves record a chain rather than both
+      // claiming the same starting point.
+      const tag = await manager
+        .createQueryBuilder(ImageTag, 'tag')
+        .setLock('pessimistic_write')
+        .where('tag."imageId" = :imageId', { imageId: image.id })
+        .andWhere('tag.name = :name', { name: tagName })
+        .getOneOrFail()
+      if (tag.versionId === versionId) {
+        // Already there: nothing moved, so there is nothing to record.
+        return
+      }
+
+      await manager.update(ImageTag, { id: tag.id }, { versionId })
+      await manager.insert(ImageTagEvent, {
+        imageId: image.id,
+        tagName,
+        fromVersionId: tag.versionId,
+        toVersionId: versionId,
+        actorId,
+      })
+    })
+
+    return this.get(organization, image.id)
   }
 
   /**
@@ -166,8 +271,8 @@ export class ImageCatalogService {
    *
    * It removes the entry, not the bytes: whatever runners already cached stays
    * cached, and using the same reference again pulls it back as a new entry.
-   * That is also what makes this the way to pick up a tag that moved upstream,
-   * since a recorded tag keeps pointing at the digest it first resolved to.
+   * A pull never moves a recorded tag, so this is how to pick up where a tag
+   * points upstream now, rather than move it to a version already recorded.
    */
   async delete(organization: Organization, idOrRef: string): Promise<void> {
     if (isCuratedSelector(idOrRef)) {
@@ -284,8 +389,8 @@ export class ImageCatalogService {
     return grouped
   }
 
-  private async tagsByImage(imageIds: string[]): Promise<Map<string, string[]>> {
-    const grouped = new Map<string, string[]>()
+  private async tagsByImage(imageIds: string[]): Promise<Map<string, ImageTag[]>> {
+    const grouped = new Map<string, ImageTag[]>()
     if (imageIds.length === 0) {
       return grouped
     }
@@ -296,22 +401,31 @@ export class ImageCatalogService {
     for (const tag of tags) {
       const bucket = grouped.get(tag.imageId)
       if (bucket) {
-        bucket.push(tag.name)
+        bucket.push(tag)
       } else {
-        grouped.set(tag.imageId, [tag.name])
+        grouped.set(tag.imageId, [tag])
       }
     }
     return grouped
   }
+
+  /** The most recent tag events, newest first — the index serves this read backwards. */
+  private historyOf(imageId: string): Promise<ImageTagEvent[]> {
+    return this.tagEventRepository.find({
+      where: { imageId },
+      order: { createdAt: 'DESC' },
+      take: IMAGE_HISTORY_LIMIT,
+    })
+  }
 }
 
-function toDto(image: Image, versions: ImageVersion[], tags: string[]): ImageDto {
+function toDto(image: Image, versions: ImageVersion[], tags: ImageTag[]): ImageDto {
   return {
     name: image.name,
     id: image.id,
     curated: false,
     curatedRef: null,
-    tags,
+    tags: tags.map((tag) => tag.name),
     versionCount: versions.length,
     // Per version, so layers two versions share are counted twice. Deliberate:
     // nothing here knows which layers overlap, and a number that pretended to
@@ -322,12 +436,25 @@ function toDto(image: Image, versions: ImageVersion[], tags: string[]): ImageDto
   }
 }
 
-function toVersionDto(version: ImageVersion): ImageVersionDto {
+function toVersionDto(version: ImageVersion, tags: ImageTag[]): ImageVersionDto {
   return {
     id: version.id,
     digest: version.digest,
     sizeBytes: version.sizeBytes,
     sourceRef: version.sourceSpec.sourceRef,
+    tags: tags.map((tag) => tag.name),
+    lastUsedAt: version.lastUsedAt?.toISOString() ?? null,
+    upstreamMissingAt: version.upstreamMissingAt?.toISOString() ?? null,
     createdAt: version.createdAt.toISOString(),
+  }
+}
+
+function toTagEventDto(event: ImageTagEvent): ImageTagEventDto {
+  return {
+    tagName: event.tagName,
+    fromVersionId: event.fromVersionId,
+    toVersionId: event.toVersionId,
+    actorId: event.actorId,
+    createdAt: event.createdAt.toISOString(),
   }
 }

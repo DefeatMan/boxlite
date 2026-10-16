@@ -22,6 +22,7 @@ import { Cron, CronExpression } from '@nestjs/schedule'
 import { BOX_WARM_POOL_UNASSIGNED_ORGANIZATION } from '../constants/box.constants'
 import { ImageAdmissionService } from '../../image/services/image-admission.service'
 import { ImagePreparationService } from '../../image/services/image-preparation.service'
+import { ImagePullFailureService } from '../../image/services/image-pull-failure.service'
 import { ImageResolverService } from '../../image/services/image-resolver.service'
 import { ImageRegistrarService, ReportedImage } from '../../image/services/image-registrar.service'
 import { BoxWarmPoolService } from './box-warm-pool.service'
@@ -135,6 +136,7 @@ export class BoxService {
     private readonly imageResolverService: ImageResolverService,
     private readonly imageRegistrarService: ImageRegistrarService,
     private readonly imagePreparationService: ImagePreparationService,
+    private readonly imagePullFailureService: ImagePullFailureService,
   ) {}
 
   protected getLockKey(id: string): string {
@@ -245,11 +247,11 @@ export class BoxService {
       // Resolution turns what the caller asked for into the ref a runner is
       // given: the curated set answers its own selectors without a query, and
       // anything else is looked up in this organization's catalog — pinned to
-      // the digest it first resolved to if the catalog knows it, passed through
-      // as typed if it does not, which is how an image gets pulled the first
-      // time. A repository the organization registered a login for is handed
-      // over either way as a registry proxy ref, so that is what `box.image`
-      // records for a private image.
+      // the digest its catalog tag points at if the catalog knows it, passed
+      // through as typed if it does not, which is how an image gets pulled the
+      // first time. A repository the organization registered a login for is
+      // handed over either way as a registry proxy ref, so that is what
+      // `box.image` records for a private image.
       const resolvedImage = await this.imageResolverService.resolve(organization, createBoxDto.image)
       const image = resolvedImage.ref
       const needsFreshBox = requiresFreshBox(createBoxDto, organization, resolvedImage)
@@ -1528,6 +1530,7 @@ export class BoxService {
       // The runner's words, which can name the registry proxy ref it pulled.
       updateData.errorReason = withoutRegistryProxy(errorReason)
       if (newState === BoxState.ERROR) {
+        updateData.errorReason = await this.imagePullFailureService.reasonFor(box, updateData.errorReason)
         updateData.recoverable = recoverable
       }
     }

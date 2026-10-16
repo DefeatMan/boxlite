@@ -85,6 +85,7 @@ docs/HealthControllerCheck200Response.md
 docs/HealthControllerCheck200ResponseInfoValue.md
 docs/Image.md
 docs/ImageDetail.md
+docs/ImageTagEvent.md
 docs/ImageUsage.md
 docs/ImageVersion.md
 docs/ImagesApi.md
@@ -96,6 +97,7 @@ docs/LogEntry.md
 docs/MetricDataPoint.md
 docs/MetricSeries.md
 docs/MetricsResponse.md
+docs/MoveImageTag.md
 docs/ObjectStorageApi.md
 docs/OidcConfig.md
 docs/Organization.md
@@ -216,6 +218,7 @@ models/create-volume.ts
 models/health-controller-check200-response-info-value.ts
 models/health-controller-check200-response.ts
 models/image-detail.ts
+models/image-tag-event.ts
 models/image-usage.ts
 models/image-version.ts
 models/image.ts
@@ -227,6 +230,7 @@ models/log-entry.ts
 models/metric-data-point.ts
 models/metric-series.ts
 models/metrics-response.ts
+models/move-image-tag.ts
 models/oidc-config.ts
 models/organization-box-default-limited-network-egress.ts
 models/organization-invitation.ts
