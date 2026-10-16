@@ -52,7 +52,7 @@ export class EmailService {
         html: await renderFile(path.join(__dirname, 'assets/templates/organization-invitation.template.ejs'), {
           organizationName: payload.organizationName,
           invitedBy: payload.invitedBy,
-          logoUrl: new URL('/auth0/boxlite-black-12c2c991.png', this.options.dashboardUrl).href,
+          logoUrl: new URL('/auth0/boxlite-black-3f7875da.png', this.options.dashboardUrl).href,
           // DASHBOARD_URL is the console's origin; the page lives under the /dashboard router.
           invitationLink: `${this.options.dashboardUrl}/dashboard/user/invitations?id=${payload.invitationId}`,
           expiresAt: new Date(payload.expiresAt).toLocaleString('en-US', {
