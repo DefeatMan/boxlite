@@ -17,6 +17,10 @@ jest.mock('ejs', () => {
 
 import { EmailService } from './email.service'
 import { OrganizationInvitationCreatedEvent } from '../../organization/events/organization-invitation-created.event'
+import { existsSync, readFileSync } from 'fs'
+import { resolve } from 'path'
+
+const branding = JSON.parse(readFileSync(resolve(__dirname, '../../../../infra/auth0/branding/tenant.json'), 'utf8'))
 
 async function invitationHtml(dashboardUrl: string): Promise<string> {
   const service = new EmailService({
@@ -55,9 +59,18 @@ describe('EmailService invitation email', () => {
   ])('renders the shared wordmark without distortion for %s', async (dashboardUrl, origin) => {
     const html = await invitationHtml(dashboardUrl)
     const logo = html.match(/<img\b[^>]*alt="BoxLite logo"[^>]*>/)?.[0]
-    expect(logo).toContain(`src="${origin}/auth0/boxlite-black-12c2c991.png"`)
+    expect(logo).toContain(`src="${origin}${branding.picture_url}"`)
     expect(logo).toContain('height="32"')
     expect(logo).toContain('width:auto')
     expect(logo).toContain('height:32px')
+  })
+
+  it('links the invitation logo to an existing dashboard asset', async () => {
+    const html = await invitationHtml('https://console.example.com')
+    const logo = html.match(/<img\b[^>]*alt="BoxLite logo"[^>]*>/)?.[0]
+    const src = logo?.match(/src="([^"]+)"/)?.[1]
+    expect(src).toBeDefined()
+    const assetPath = new URL(src!).pathname
+    expect(existsSync(resolve(__dirname, '../../../../dashboard/public', `.${assetPath}`))).toBe(true)
   })
 })
