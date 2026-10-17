@@ -264,7 +264,7 @@ export class BoxliteBoxController {
     return boxToBoxResponse(dto)
   }
 
-  // The dashboard flips the same `public` flag through
+  // The dashboard changes the same inbound mode through
   // `POST /api/box/:id/public/:isPublic`, which requires WRITE_BOXES. Requiring
   // it here too keeps this from being a weaker route to that operation.
   @Put(':boxId/network/inbound')
@@ -287,8 +287,8 @@ export class BoxliteBoxController {
     @Param('boxId') boxId: string,
     @Body() dto: InboundNetworkSpecDto,
   ): Promise<InboundNetworkSpecDto> {
-    const box = await this.boxService.updatePublicStatus(boxId, dto.mode === 'enabled', authContext.organizationId)
-    return { mode: box.public ? 'enabled' : 'disabled' }
+    const box = await this.boxService.updateInboundEnabled(boxId, dto.mode === 'enabled', authContext.organizationId)
+    return { mode: box.inboundEnabled ? 'enabled' : 'disabled' }
   }
 
   private isStartAlreadyInProgress(box: Box): boolean {

@@ -228,7 +228,7 @@ export class BoxliteProxyController {
     // as public can use a tunnel.
     // A private box should be accessed via the authenticated API, not a
     // tunnel.
-    if (!box.public) {
+    if (!box.inboundEnabled) {
       throw new ConflictException(`Box ${boxId} is not public; set public: true before opening a tunnel`)
     }
 

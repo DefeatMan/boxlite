@@ -550,7 +550,7 @@ export class BoxRepository extends BaseRepository<Box> {
    */
   private emitUpdateEvents(
     updatedBox: Box,
-    previousBox: Pick<Box, 'state' | 'desiredState' | 'public' | 'organizationId'>,
+    previousBox: Pick<Box, 'state' | 'desiredState' | 'inboundEnabled' | 'organizationId'>,
   ): void {
     if (previousBox.state !== updatedBox.state) {
       this.eventEmitter.emit(
@@ -566,10 +566,10 @@ export class BoxRepository extends BaseRepository<Box> {
       )
     }
 
-    if (previousBox.public !== updatedBox.public) {
+    if (previousBox.inboundEnabled !== updatedBox.inboundEnabled) {
       this.eventEmitter.emit(
         BoxEvents.PUBLIC_STATUS_UPDATED,
-        new BoxPublicStatusUpdatedEvent(updatedBox, previousBox.public, updatedBox.public),
+        new BoxPublicStatusUpdatedEvent(updatedBox, previousBox.inboundEnabled, updatedBox.inboundEnabled),
       )
     }
 

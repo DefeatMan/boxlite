@@ -51,7 +51,7 @@ export class TunnelService {
       .andWhere('tunnel.port = :port', { port })
       .andWhere('tunnel.access_mode = :mode', { mode: 'public' })
       .andWhere('tunnel.revoked_at IS NULL')
-      .andWhere('box.public = true')
+      .andWhere('box.inboundEnabled = true')
       .andWhere('box.state NOT IN (:...excluded)', { excluded: ['destroyed', 'destroying', 'archived', 'archiving'] })
       .getExists()
     await this.redis.setex(cacheKey, ACCESS_CACHE_TTL_SECONDS, allowed ? '1' : '0')

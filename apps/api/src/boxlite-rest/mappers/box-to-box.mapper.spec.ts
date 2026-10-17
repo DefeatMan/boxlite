@@ -10,16 +10,40 @@ describe('BoxLite lifecycle policy mapper', () => {
   it.each([
     ['enabled', true],
     ['disabled', false],
-  ])('maps inbound.mode=%s to control-plane public=%s', (mode, expected) => {
+  ] as const)('maps inbound.mode=%s to inbound enabled %s', (mode, expected) => {
     const mapped = createBoxToCreateBox({
       network: {
         outbound: { mode: 'enabled' },
-        inbound: { mode: mode as 'enabled' | 'disabled' },
+        inbound: { mode },
       },
     })
 
-    expect(mapped.public).toBe(expected)
+    expect(mapped.inboundEnabled).toBe(expected)
   })
+
+  it('leaves inbound disabled and outbound to the organization default without a network spec', () => {
+    const mapped = createBoxToCreateBox({})
+
+    expect([mapped.inboundEnabled, mapped.outboundEnabled, mapped.outboundAllowNet]).toEqual([
+      false,
+      undefined,
+      undefined,
+    ])
+  })
+
+  it.each([
+    ['enabled', [' api.openai.com ', '', '10.0.0.0/8'], true, ['api.openai.com', '10.0.0.0/8']],
+    ['enabled', [], true, undefined],
+    ['disabled', ['api.openai.com'], false, undefined],
+  ] as const)(
+    'maps outbound %s with allow_net %j to enabled %s and entries %j',
+    (mode, allowNet, expectedEnabled, expected) => {
+      const mapped = createBoxToCreateBox({ network: { outbound: { mode, allow_net: [...allowNet] } } })
+
+      expect(mapped.outboundEnabled).toBe(expectedEnabled)
+      expect(mapped.outboundAllowNet).toEqual(expected)
+    },
+  )
 
   it('maps second-based create fields into the control-plane DTO', () => {
     const mapped = createBoxToCreateBox({

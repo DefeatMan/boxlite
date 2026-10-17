@@ -431,7 +431,12 @@ export class BoxController {
     @Param('boxIdOrName') boxIdOrName: string,
     @Param('isPublic') isPublic: boolean,
   ): Promise<BoxDto> {
-    const box = await this.boxService.updatePublicStatus(boxIdOrName, isPublic, authContext.organizationId)
+    const box = await this.boxService.updateInboundEnabled(
+      boxIdOrName,
+      // The path segment reaches here as the string 'true' / 'false'.
+      String(isPublic) === 'true',
+      authContext.organizationId,
+    )
     return this.boxService.toBoxDto(box)
   }
 

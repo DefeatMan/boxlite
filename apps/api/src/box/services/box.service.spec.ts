@@ -479,7 +479,7 @@ describe('BoxService image reporting', () => {
   })
 })
 
-describe('BoxService public defaults', () => {
+describe('BoxService inbound defaults', () => {
   function makeCreateService(overrides: Record<string, unknown> = {}) {
     const boxRepository = { insert: jest.fn(async (box: any) => box) } as any
     const warmPoolService = { fetchWarmPoolBox: jest.fn().mockResolvedValue(undefined) }
@@ -767,7 +767,7 @@ describe('BoxService public defaults', () => {
 
     it.each([
       ['a negative auto-stop interval', { autoStop: -5 }],
-      ['a network allow list that is not one', { networkAllowList: 'bad host!' }],
+      ['a network allow list that is not one', { outboundAllowNet: ['bad host!'] }],
     ])('spends none on a create refused for %s', async (_reason, input) => {
       const { service, redis } = withRealAdmission({ ref: 'quay.io/acme/app:v1', isOrgOwned: true })
 
@@ -829,9 +829,10 @@ describe('BoxService public defaults', () => {
   })
 
   it.each([
-    [{ networkBlockAll: true }, { boxLimitedNetworkEgress: false }, { networkBlockAll: true }],
-    [{ networkAllowList: '10.0.0.0/8' }, { boxLimitedNetworkEgress: false }, { networkAllowList: '10.0.0.0/8' }],
-    [{}, { boxLimitedNetworkEgress: true }, { networkBlockAll: true }],
+    [{ outboundEnabled: false }, { boxLimitedNetworkEgress: false }, { outboundEnabled: false }],
+    [{ outboundAllowNet: ['10.0.0.0/8'] }, { boxLimitedNetworkEgress: false }, { outboundAllowNet: ['10.0.0.0/8'] }],
+    [{ outboundEnabled: true }, { boxLimitedNetworkEgress: true }, { outboundEnabled: true }],
+    [{}, { boxLimitedNetworkEgress: true }, { outboundEnabled: false }],
   ])(
     'creates a fresh box instead of claiming a warm box when network policy is required',
     async (request, org, expected) => {
@@ -852,12 +853,15 @@ describe('BoxService public defaults', () => {
   it.each([
     [undefined, false],
     [true, true],
-  ])('defaults a fresh box to public=%s', async (requestedPublic, expectedPublic) => {
+  ])('persists inbound access %s as %s on a fresh box', async (requested, expected) => {
     const { service, boxRepository } = makeCreateService()
 
-    await service.create({ name: 'fresh-box', public: requestedPublic } as any, { id: 'org-1' } as any, Context.user())
+    await service.create({ name: 'fresh-box', inboundEnabled: requested } as any, { id: 'org-1' } as any, Context.user())
 
-    expect(boxRepository.insert).toHaveBeenCalledWith(expect.objectContaining({ public: expectedPublic }), undefined)
+    expect(boxRepository.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ inboundEnabled: expected, outboundEnabled: true }),
+      undefined,
+    )
   })
 
   it.each([
@@ -866,13 +870,31 @@ describe('BoxService public defaults', () => {
     ['nested outbound only', { outbound: { mode: 'enabled' } }, false],
     ['inbound enabled', { inbound: { mode: 'enabled' } }, true],
     ['inbound disabled', { inbound: { mode: 'disabled' } }, false],
-  ])('persists REST %s with the expected public value', async (_label, network, expectedPublic) => {
+  ])('persists REST %s with inbound enabled %s', async (_label, network, expected) => {
     const { service, boxRepository } = makeCreateService()
     const restDto = plainToInstance(RestCreateBoxDto, { name: 'rest-box', image: 'base', network })
 
     await service.create(createBoxToCreateBox(restDto), { id: 'org-1' } as any, Context.user())
 
-    expect(boxRepository.insert).toHaveBeenCalledWith(expect.objectContaining({ public: expectedPublic }), undefined)
+    expect(boxRepository.insert).toHaveBeenCalledWith(expect.objectContaining({ inboundEnabled: expected }), undefined)
+  })
+
+  // The whole outbound policy crosses the REST mapper and the service: the
+  // mode flips polarity and the allowlist is split into entries.
+  it('persists a REST outbound allowlist as policy columns', async () => {
+    const { service, boxRepository } = makeCreateService()
+    const restDto = plainToInstance(RestCreateBoxDto, {
+      name: 'rest-box',
+      image: 'base',
+      network: { outbound: { mode: 'enabled', allow_net: ['api.openai.com', ' 10.0.0.0/8 '] } },
+    })
+
+    await service.create(createBoxToCreateBox(restDto), { id: 'org-1' } as any, Context.user())
+
+    expect(boxRepository.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ outboundEnabled: true, outboundAllowNet: ['api.openai.com', '10.0.0.0/8'] }),
+      undefined,
+    )
   })
 
   it('persists secrets on a freshly created box', async () => {
@@ -909,7 +931,7 @@ describe('BoxService public defaults', () => {
   it.each([
     [undefined, false],
     [true, true],
-  ])('defaults an assigned warm-pool box to public=%s', async (requestedPublic, expectedPublic) => {
+  ])('persists inbound access %s as %s on an assigned warm-pool box', async (requested, expected) => {
     const warmPoolBox = { id: 'warm-box', runnerId: 'runner-1', name: 'warm-box' } as any
     const update = jest.fn().mockResolvedValue(warmPoolBox)
     const service = Object.create(BoxService.prototype) as BoxService
@@ -922,14 +944,14 @@ describe('BoxService public defaults', () => {
 
     await (service as any).assignWarmPoolBox(
       warmPoolBox,
-      { name: 'assigned-box', public: requestedPublic },
+      { name: 'assigned-box', inboundEnabled: requested },
       { id: 'org-1' },
       {},
     )
 
     expect(update).toHaveBeenCalledWith(
       'warm-box',
-      expect.objectContaining({ updateData: expect.objectContaining({ public: expectedPublic }) }),
+      expect.objectContaining({ updateData: expect.objectContaining({ inboundEnabled: expected }) }),
     )
   })
 })

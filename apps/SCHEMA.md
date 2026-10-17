@@ -388,12 +388,20 @@ or `archived`.
 | `env` | `jsonb` | default `{}` |
 | `labels` | `jsonb` | nullable |
 | `volumes` | `jsonb` | array of `{ volumeId, mountPath }` |
-| `public` | `boolean` | default `false` |
-| `networkBlockAll` | `boolean` | default `false` |
-| `networkAllowList` | `character varying` | nullable |
+| `inboundEnabled` | `boolean` | default `false`; `true` lets the proxy serve exposed services without sign-in |
+| `outboundEnabled` | `boolean` | default `true`; `false` blocks all egress |
+| `outboundAllowNet` | `text[]` | nullable egress allowlist (hosts, wildcards, IPv4, CIDRs); null = full egress |
 | `authToken` | `character varying` | `nanoid(32)`, lowercased |
 | `daemonVersion` | `character varying` | nullable |
 | `createdAt` / `updatedAt` | `timestamptz` | |
+
+The network policy columns store the `/v1` NetworkSpec's `enabled` / `disabled`
+modes as booleans (`true` = `enabled`); the API converts `mode` strings at its
+edges, and its internal create input and the runner create and recover bodies
+carry the same `outboundEnabled` / `outboundAllowNet`. The control-plane `Box`
+DTO still presents them as `public`, `networkBlockAll` and a comma-joined
+`networkAllowList` (`box/utils/network-policy.util.ts`) until the dashboard and
+Go clients move (POL-827).
 
 **Unique:** `(organizationId, name)`.
 

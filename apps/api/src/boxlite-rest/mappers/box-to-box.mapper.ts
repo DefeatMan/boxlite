@@ -71,14 +71,13 @@ export function createBoxToCreateBox(dto: RestCreateBoxDto, target?: string): Cr
     hosts: secret.hosts,
     placeholder: secret.placeholder,
   }))
-  // Only an explicit inbound.mode=enabled makes the box public. Omitting
-  // inbound (including the legacy flat network shape) keeps it private.
-  createDto.public = dto.network?.inbound?.mode === 'enabled'
+  // Only an explicit inbound.mode=enabled enables inbound access. Omitting
+  // inbound (including the legacy flat network shape) leaves it disabled.
+  createDto.inboundEnabled = dto.network?.inbound?.mode === 'enabled'
   if (dto.network) {
     const allowNet = dto.network.outbound?.allow_net?.map((entry) => entry.trim()).filter(Boolean)
-    createDto.networkBlockAll = dto.network.outbound?.mode === 'disabled'
-    createDto.networkAllowList =
-      dto.network.outbound?.mode === 'enabled' && allowNet?.length ? allowNet.join(',') : undefined
+    createDto.outboundEnabled = dto.network.outbound?.mode !== 'disabled'
+    createDto.outboundAllowNet = dto.network.outbound?.mode === 'enabled' && allowNet?.length ? allowNet : undefined
   }
   return createDto
 }
