@@ -515,6 +515,12 @@ registry host, then matches each box in memory using the longest repository pref
 Contract: [`openapi/tenant.openapi.yaml`](../openapi/tenant.openapi.yaml), cloud-only and meant for the CLI
 and SDKs, which do not call it yet. Reads need membership; writes need the owner role. Any API key
 of an owner qualifies, whatever permissions it was created with.
+
+Tenant errors use the hosted service's flat JSON response: `statusCode`, `error`
+(an HTTP status phrase), `message`, `path`, and `timestamp`, with an optional
+machine-readable `code`. Validation messages are joined into one string. Clients
+must decode this shape rather than the portable Box API's nested `error` object.
+
 Invitees accept in the console, through `/api/organizations/invitations/{invitationId}/accept`.
 Email links accept automatically after sign-in with the invited email address.
 New invitations without an explicit `expiresAt` (Cloud API) or `expires_at` (Tenant API)
