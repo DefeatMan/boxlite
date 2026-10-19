@@ -462,7 +462,6 @@ export const MOCK_IMAGE_DETAILS: ImageDetail[] = [
   { ...curated('base'), versions: [], history: [] },
   { ...curated('python'), versions: [], history: [] },
   { ...curated('node'), versions: [], history: [] },
-  { ...curated('sandbaseai-hermes'), versions: [], history: [] },
   {
     name: 'docker.io/library/python',
     id: 'img-python',
