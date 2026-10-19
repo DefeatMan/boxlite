@@ -93,8 +93,9 @@ npm run mstage env set -- --stage dev --digest
 npm run mstage env digest -- --stage dev
 ```
 
-After the next API deploy the name stops resolving. Its ref still starts as a tenant image when the
-registry allowlist admits its host, but a warm pool row that names it stops filling.
+After the next API deploy the name no longer selects the image. It goes through tenant admission like
+any other image, read as the Docker Hub ref `docker.io/library/<name>:latest`, and so does the removed
+ref. A warm pool row that names either stops filling.
 
 ## Fingerprints and versions
 
