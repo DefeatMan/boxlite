@@ -77,6 +77,25 @@ An array group makes every key required. An object distinguishes `required` from
 Missing required values fail before deployment. Optional values enable features only when supplied.
 The exact key list lives in the manifest; avoid maintaining a second list in a runbook.
 
+## Built-in images
+
+The curated set is the built-in `base`, `python` and `node` plus each `name=ref` entry in
+`BOXLITE_SYSTEM_IMAGES`. The dashboard lists all of it under Built-in, and every organization may
+start a box from it without admission. Add an entry only for a public image the operator maintains,
+hosted off docker.io. Tenants start any other public image by its ref.
+
+To drop the last entry, remove the key and certify the store again. To keep other entries, `env set`
+the list without it instead of `env del`.
+
+```bash
+npm run mstage env del -- BOXLITE_SYSTEM_IMAGES --stage dev
+npm run mstage env set -- --stage dev --digest
+npm run mstage env digest -- --stage dev
+```
+
+After the next API deploy the name stops resolving. Its ref still starts as a tenant image when the
+registry allowlist admits its host, but a warm pool row that names it stops filling.
+
 ## Fingerprints and versions
 
 `BOXLITE_STAGE_CONFIG_DIGEST` fingerprints the declared `deploy` group. Use `env set --digest`
