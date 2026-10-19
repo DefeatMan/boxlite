@@ -92,6 +92,26 @@ Invalid values stop API startup. Existing invitations retain their stored deadli
 and explicit API `expiresAt` / `expires_at` values override the default. Emails show
 the exact deadline in UTC. Opening the link joins after sign-in with the invited email.
 
+## Built-in images
+
+The curated set is the built-in `base`, `python` and `node` plus each `name=ref` entry in
+`BOXLITE_SYSTEM_IMAGES`. The dashboard lists all of it under Built-in, and every organization may
+start a box from it without admission. Add an entry only for a public image the operator maintains,
+hosted off docker.io. Tenants start any other public image by its ref.
+
+To drop the last entry, remove the key and certify the store again. To keep other entries, `env set`
+the list without it instead of `env del`.
+
+```bash
+npm run mstage env del -- BOXLITE_SYSTEM_IMAGES --stage dev
+npm run mstage env set -- --stage dev --digest
+npm run mstage env digest -- --stage dev
+```
+
+After the next API deploy the name no longer selects the image. It goes through tenant admission like
+any other image, read as the Docker Hub ref `docker.io/library/<name>:latest`, and so does the removed
+ref. A warm pool row that names either stops filling.
+
 ## Fingerprints and versions
 
 `BOXLITE_STAGE_CONFIG_DIGEST` fingerprints the declared `deploy` group. Use `env set --digest`
