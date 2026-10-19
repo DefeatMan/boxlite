@@ -47,11 +47,14 @@ async function invitationHtml(dashboardUrl: string): Promise<string> {
 describe('EmailService invitation email', () => {
   beforeEach(() => jest.clearAllMocks())
 
-  it('links to the invitations page under the dashboard router', async () => {
-    const html = await invitationHtml('https://console.example.com')
-    expect(html).toContain('href="https://console.example.com/dashboard/user/invitations?id=inv-1"')
-    expect(html).toMatch(/12:34:56.*UTC/)
-  })
+  it.each(['https://console.example.com', 'https://console.example.com/'])(
+    'links to the invitations page under the dashboard router from %s',
+    async (dashboardUrl) => {
+      const html = await invitationHtml(dashboardUrl)
+      expect(html).toContain('href="https://console.example.com/dashboard/user/invitations?id=inv-1"')
+      expect(html).toMatch(/12:34:56.*UTC/)
+    },
+  )
 
   it.each([
     ['https://dev.example.com', 'https://dev.example.com'],

@@ -523,6 +523,8 @@ must decode this shape rather than the portable Box API's nested `error` object.
 
 Invitees accept in the console, through `/api/organizations/invitations/{invitationId}/accept`.
 Email links accept automatically after sign-in with the invited email address.
+Links resolve `/dashboard/user/invitations` against `DASHBOARD_URL`, which accepts
+the console origin with or without a trailing slash.
 New invitations without an explicit `expiresAt` (Cloud API) or `expires_at` (Tenant API)
 use `ORGANIZATION_INVITATION_TTL_SECONDS`, defaulting to `604800` (seven days).
 Changing this deployment setting leaves existing deadlines unchanged; see

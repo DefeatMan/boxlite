@@ -45,6 +45,9 @@ export class EmailService {
     }
 
     try {
+      // DASHBOARD_URL is the console's origin; resolve the path even when it ends in a slash.
+      const invitationUrl = new URL('/dashboard/user/invitations', this.options.dashboardUrl)
+      invitationUrl.searchParams.set('id', payload.invitationId)
       await this.transporter.sendMail({
         from: this.options.from,
         to: payload.inviteeEmail,
@@ -53,8 +56,7 @@ export class EmailService {
           organizationName: payload.organizationName,
           invitedBy: payload.invitedBy,
           logoUrl: new URL('/auth0/boxlite-black-3f7875da.png', this.options.dashboardUrl).href,
-          // DASHBOARD_URL is the console's origin; the page lives under the /dashboard router.
-          invitationLink: `${this.options.dashboardUrl}/dashboard/user/invitations?id=${payload.invitationId}`,
+          invitationLink: invitationUrl.href,
           expiresAt: new Date(payload.expiresAt).toLocaleString('en-US', {
             year: 'numeric',
             month: 'long',
