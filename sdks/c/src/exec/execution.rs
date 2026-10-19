@@ -11,7 +11,7 @@
 //! channel inside `ExecStdin::write` and never block on a Tokio worker.
 
 use futures::StreamExt;
-use std::os::raw::{c_int, c_void};
+use std::os::raw::{c_char, c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -41,6 +41,7 @@ use crate::event_queue::{
     CExecutionKillCb, CExecutionResizeCb, CExecutionSignalCb, CExecutionWaitCb, EventQueue,
     RuntimeEvent, push_event,
 };
+use crate::util::c_str_to_string;
 use crate::{CBoxHandle, CBoxliteError, CExecutionHandle};
 
 /// Opaque handle to a running command execution.
@@ -104,28 +105,37 @@ pub unsafe extern "C" fn boxlite_box_exec(
     box_exec(handle, cmd, out_execution, out_error)
 }
 
-/// Attach to the box's main command session — the container's init.
+/// Attach to a session in the box: its main command — the container's init —
+/// when `execution_id` is NULL, or the exec session with that id.
 ///
 /// `run IMAGE COMMAND` runs COMMAND *as* init (docker semantics), so following
 /// it is an attach rather than an exec: there is no command to pass, only a
-/// session to join. The handle that comes back is an ordinary
-/// `CExecutionHandle` — the same stdout/stderr/exit callbacks, stdin, wait,
-/// signal, kill and resize all apply.
+/// session to join. Reattaching to an exec by id is served by a REST runtime
+/// only; a local box offers its main session alone. A non-zero `read_only`
+/// attaches without stdin — docker's `--no-stdin`.
 ///
-/// Attaching boots the box and creates its container but does NOT run init;
-/// `boxlite_start_box` does. Callers therefore go create -> attach -> start, so
-/// a command that finishes instantly cannot outrun the stream and take its
-/// output and exit code with it.
+/// The handle that comes back is an ordinary `CExecutionHandle` — the same
+/// stdout/stderr/exit callbacks, stdin, wait, signal, kill and resize all apply.
 ///
-/// Only the main session is attachable; a running exec keeps the handle it was
-/// created with.
+/// Attaching to the main session boots the box and creates its container but
+/// does NOT run init; `boxlite_start_box` does. Callers therefore go
+/// create -> attach -> start, so a command that finishes instantly cannot
+/// outrun the stream and take its output and exit code with it.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn boxlite_box_attach_main(
+pub unsafe extern "C" fn boxlite_box_attach(
     handle: *mut CBoxHandle,
+    execution_id: *const c_char,
+    read_only: c_int,
     out_execution: *mut *mut CExecutionHandle,
     out_error: *mut CBoxliteError,
 ) -> BoxliteErrorCode {
-    box_attach_main(handle, out_execution, out_error)
+    box_attach(
+        handle,
+        execution_id,
+        read_only != 0,
+        out_execution,
+        out_error,
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -285,8 +295,10 @@ unsafe fn box_exec(
     }
 }
 
-unsafe fn box_attach_main(
+unsafe fn box_attach(
     handle: *mut BoxHandle,
+    execution_id: *const c_char,
+    read_only: bool,
     out_execution: *mut *mut ExecutionHandle,
     out_error: *mut FFIError,
 ) -> BoxliteErrorCode {
@@ -301,6 +313,21 @@ unsafe fn box_attach_main(
         }
         *out_execution = ptr::null_mut();
 
+        let mut options = if execution_id.is_null() {
+            boxlite::AttachOptions::main()
+        } else {
+            match c_str_to_string(execution_id) {
+                Ok(id) => boxlite::AttachOptions::execution(id),
+                Err(e) => {
+                    write_error(out_error, e);
+                    return BoxliteErrorCode::InvalidArgument;
+                }
+            }
+        };
+        if read_only {
+            options = options.read_only();
+        }
+
         let handle_ref = &*handle;
 
         // Synchronous, like box_exec: attach only subscribes to the session's
@@ -308,9 +335,7 @@ unsafe fn box_attach_main(
         // may still need pulling), so this blocks the calling thread for as long
         // as that takes.
         let lite = handle_ref.handle.clone();
-        let result = handle_ref
-            .tokio_rt
-            .block_on(lite.attach(boxlite::AttachOptions::main()));
+        let result = handle_ref.tokio_rt.block_on(lite.attach(options));
 
         match result {
             Ok(execution) => {
@@ -982,13 +1007,15 @@ mod tests {
     }
 
     #[test]
-    fn box_attach_main_rejects_null_handle() {
+    fn box_attach_rejects_null_handle() {
         let mut execution: *mut ExecutionHandle = ptr::null_mut();
         let mut error = FFIError::default();
 
         let code = unsafe {
-            boxlite_box_attach_main(
+            boxlite_box_attach(
                 ptr::null_mut(),
+                ptr::null(),
+                0,
                 &mut execution as *mut _,
                 &mut error as *mut _,
             )

@@ -349,9 +349,10 @@ init, which is what `run IMAGE COMMAND` starts. Pass `execution_id` to
 reattach to an `exec()` session instead.
 
 `attach(stdin=False)` attaches read-only — docker's `--no-stdin`. The returned
-execution exposes no stdin, and against a remote runtime the server refuses
-stdin, `signal` and `resize` sent over that socket. Use it to follow a box's
-output without a keystroke reaching the workload.
+execution exposes no stdin, and the attach asks the server to refuse stdin,
+`signal` and `resize` sent over that socket: `boxlite serve` does, the hosted
+platform does not. Use it to follow a box's output without a keystroke
+reaching the workload.
 
 The guarantee is scoped to the attach stream, as it is in docker: holding a box
 handle still lets you `stop()` it, and `Execution.kill()` / `.signal()` /

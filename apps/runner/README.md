@@ -266,7 +266,7 @@ pkg/boxlite/exec_manager.go
 │  ├─ Start(ctx, bx, ...)                     io.Pipe pair, bx.StartExecution
 │  │  └─ adopt(e, handle, stdin)              records ExitCode/Err, closes Done
 │  ├─ AttachMain(ctx, bx, boxID)              get-or-open the container init's session
-│  │  └─ findMain(boxID) ?: bx.AttachMainSession
+│  │  └─ findMain(boxID) ?: bx.Attach
 │  ├─ Get / WriteStdin / Signal / ResizeTTY / Kill
 │  └─ cleanupLoop(30s)
 │     └─ runCleanupOnce(now)                  snapshot map under RLock
