@@ -1,4 +1,4 @@
-//! `boxlite_box_attach_main` and `boxlite_box_exec` driven through the public
+//! `boxlite_box_attach` and `boxlite_box_exec` driven through the public
 //! FFI the way a C caller drives them, against a loopback box API.
 //!
 //! A REST runtime yields a real box handle with no VM behind it. The server
@@ -31,8 +31,8 @@ enum MainSession {
     Refused,
 }
 
-/// A loopback box API. Each request goes on `requests`, as "METHOD /path",
-/// before it is answered.
+/// A loopback box API. Each request goes on `requests`, as "METHOD target"
+/// with any query string, before it is answered.
 struct BoxApi {
     url: CString,
     requests: Receiver<String>,
@@ -63,9 +63,10 @@ fn answer(mut stream: TcpStream, main: MainSession, seen: &Sender<String>) {
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .expect("set read timeout");
-    let (request, websocket_key) = read_request(&stream);
-    let _ = seen.send(request.clone());
-    match (request.as_str(), main) {
+    let (method, target, websocket_key) = read_request(&stream);
+    let _ = seen.send(format!("{method} {target}"));
+    let path = target.split('?').next().unwrap_or_default();
+    match (format!("{method} {path}").as_str(), main) {
         ("GET /v1/boxes/box1", _) => reply(&mut stream, "200 OK", BOX_JSON),
         ("POST /v1/boxes/box1/exec", _) => {
             reply(&mut stream, "200 OK", r#"{"execution_id":"exec-1"}"#)
@@ -84,16 +85,16 @@ fn answer(mut stream: TcpStream, main: MainSession, seen: &Sender<String>) {
 }
 
 /// Reads one request, body included so closing the socket cannot reset the
-/// client before it reads the answer. Returns "METHOD /path" and the
-/// request's `Sec-WebSocket-Key`, empty when it is not an upgrade.
-fn read_request(stream: &TcpStream) -> (String, String) {
+/// client before it reads the answer. Returns the method, the target with its
+/// query string, and the request's `Sec-WebSocket-Key`, empty when it is not
+/// an upgrade.
+fn read_request(stream: &TcpStream) -> (String, String, String) {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader.read_line(&mut line).expect("read request line");
     let mut words = line.split_whitespace();
-    let method = words.next().unwrap_or_default();
-    let target = words.next().unwrap_or_default();
-    let path = target.split('?').next().unwrap_or_default();
+    let method = words.next().unwrap_or_default().to_owned();
+    let target = words.next().unwrap_or_default().to_owned();
 
     let (mut websocket_key, mut body_len) = (String::new(), 0);
     loop {
@@ -110,7 +111,7 @@ fn read_request(stream: &TcpStream) -> (String, String) {
     }
     let mut body = vec![0; body_len];
     reader.read_exact(&mut body).expect("read body");
-    (format!("{method} {path}"), websocket_key)
+    (method, target, websocket_key)
 }
 
 fn reply(stream: &mut TcpStream, status: &str, body: &str) {
@@ -304,13 +305,14 @@ fn take_message(error: &mut FFIError) -> String {
 }
 
 #[test]
-fn attach_main_streams_the_init_session_to_the_callbacks() {
+fn attach_streams_the_main_session_to_the_callbacks() {
     let api = BoxApi::serve(2, MainSession::Open);
     let rest_box = RestBox::open(&api);
 
     let mut execution: *mut CExecutionHandle = ptr::null_mut();
     let mut error = FFIError::default();
-    let code = unsafe { boxlite_box_attach_main(rest_box.handle, &mut execution, &mut error) };
+    let code =
+        unsafe { boxlite_box_attach(rest_box.handle, ptr::null(), 0, &mut execution, &mut error) };
     assert_eq!(code, BoxliteErrorCode::Ok, "{}", take_message(&mut error));
     assert!(!execution.is_null());
 
@@ -326,13 +328,14 @@ fn attach_main_streams_the_init_session_to_the_callbacks() {
 }
 
 #[test]
-fn attach_main_reports_a_refused_attach_without_a_handle() {
+fn attach_reports_a_refused_attach_without_a_handle() {
     let api = BoxApi::serve(2, MainSession::Refused);
     let rest_box = RestBox::open(&api);
 
     let mut execution: *mut CExecutionHandle = ptr::null_mut();
     let mut error = FFIError::default();
-    let code = unsafe { boxlite_box_attach_main(rest_box.handle, &mut execution, &mut error) };
+    let code =
+        unsafe { boxlite_box_attach(rest_box.handle, ptr::null(), 0, &mut execution, &mut error) };
     let message = take_message(&mut error);
 
     assert_eq!(code, BoxliteErrorCode::AlreadyExists, "{message}");
@@ -347,17 +350,49 @@ fn attach_main_reports_a_refused_attach_without_a_handle() {
 }
 
 #[test]
-fn attach_main_rejects_a_null_out_execution_before_any_request() {
+fn attach_rejects_a_null_out_execution_before_any_request() {
     let api = BoxApi::serve(1, MainSession::Open);
     let rest_box = RestBox::open(&api);
 
     let mut error = FFIError::default();
-    let code = unsafe { boxlite_box_attach_main(rest_box.handle, ptr::null_mut(), &mut error) };
+    let code =
+        unsafe { boxlite_box_attach(rest_box.handle, ptr::null(), 0, ptr::null_mut(), &mut error) };
     let message = take_message(&mut error);
 
     assert_eq!(code, BoxliteErrorCode::InvalidArgument, "{message}");
     assert!(message.contains("out_execution"), "{message}");
     assert_eq!(api.received(), ["GET /v1/boxes/box1"]);
+}
+
+#[test]
+fn attach_reattaches_an_exec_by_id_read_only() {
+    let api = BoxApi::serve(2, MainSession::Open);
+    let rest_box = RestBox::open(&api);
+
+    let mut execution: *mut CExecutionHandle = ptr::null_mut();
+    let mut error = FFIError::default();
+    let code = unsafe {
+        boxlite_box_attach(
+            rest_box.handle,
+            c"exec-1".as_ptr(),
+            1,
+            &mut execution,
+            &mut error,
+        )
+    };
+    assert_eq!(code, BoxliteErrorCode::Ok, "{}", take_message(&mut error));
+
+    let session = rest_box.follow(execution);
+    assert_eq!(session.stdout, b"hi");
+    assert_eq!(session.exit_code, Some(7));
+    assert_eq!(
+        api.received(),
+        [
+            "GET /v1/boxes/box1",
+            "GET /v1/boxes/box1/executions/exec-1/attach?stdin=0",
+        ],
+        "an id reattaches over the exec route, and read-only asks the server to refuse stdin",
+    );
 }
 
 #[test]

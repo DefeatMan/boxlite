@@ -365,8 +365,16 @@ HTTP contract, reconfiguration, disable, and generation semantics.
 | `network` | `fn network(&self) -> NetworkHandle` | Get box-scoped policy and tunnel operations |
 | `start` | `async fn start(&self) -> BoxliteResult<()>` | Start the box |
 | `run` | `async fn run(&self, command: BoxCommand) -> BoxliteResult<Execution>` | Run command |
+| `attach` | `async fn attach(&self, options: AttachOptions) -> BoxliteResult<Execution>` | Follow a running session |
 | `metrics` | `async fn metrics(&self) -> BoxliteResult<BoxMetrics>` | Get box metrics |
 | `stop` | `async fn stop(&self) -> BoxliteResult<()>` | Stop the box |
+
+`attach(AttachOptions::main())` follows the box's main command — the container
+init, which `run IMAGE COMMAND` starts. Attaching boots the box without running
+init, so attach before `start()` to see all of its output.
+`AttachOptions::execution(id)` reattaches to an exec session instead; only the
+REST backend serves that. `.read_only()` attaches without stdin — docker's
+`--no-stdin`.
 
 #### Lifecycle
 

@@ -308,8 +308,18 @@ Handle to a running or stopped box.
 |--------|-----------|-------------|
 | `info()` | `() => Promise<JsBoxInfo>` | Get box metadata |
 | `exec()` | `(cmd, args?, env?, tty?) => Promise<JsExecution>` | Execute command |
+| `attach()` | `(executionId?, stdin?) => Promise<JsExecution>` | Follow a running session |
 | `stop()` | `() => Promise<void>` | Stop the box |
 | `metrics()` | `() => Promise<JsBoxMetrics>` | Get resource metrics |
+
+`attach()` with no argument follows the box's main command — the container
+init, which `run IMAGE COMMAND` starts. Attaching boots the box without running
+init, so attach before `start()` to see all of its output. Pass `executionId` to
+reattach to an `exec()` session instead; only a REST runtime serves that.
+
+`attach(executionId, false)` attaches read-only — docker's `--no-stdin`. The
+returned execution exposes no stdin, and the attach asks the server to refuse
+writes on the socket: `boxlite serve` does, the hosted platform does not.
 
 ---
 

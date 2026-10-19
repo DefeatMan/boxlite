@@ -68,6 +68,28 @@ func main() {
 }
 ```
 
+### Attach
+
+`box.Attach` follows a session already in the box. With no `ExecutionID` it
+joins the box's main command — the container init, which `run IMAGE COMMAND`
+starts. Attaching boots the box without running init, so attach before `Start`
+to see all of its output:
+
+```go
+execution, err := box.Attach(ctx, &boxlite.AttachOptions{Stdout: os.Stdout, Stderr: os.Stderr})
+if err != nil {
+	log.Fatal(err)
+}
+defer execution.Close()
+if err := box.Start(ctx); err != nil {
+	log.Fatal(err)
+}
+exitCode, err := execution.Wait(ctx)
+```
+
+Set `ExecutionID` to reattach to an exec session instead; only a REST runtime
+serves that. `ReadOnly` attaches without stdin — docker's `--no-stdin`.
+
 ### Archive Export and Import
 
 ```go

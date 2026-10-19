@@ -38,12 +38,11 @@ func newSessionServer(t *testing.T, refuse int) *sessionServer {
 }
 
 func (s *sessionServer) serve(w http.ResponseWriter, r *http.Request) {
-	request := r.Method + " " + r.URL.Path
 	s.mu.Lock()
-	s.requests = append(s.requests, request)
+	s.requests = append(s.requests, r.Method+" "+r.URL.RequestURI())
 	s.mu.Unlock()
 
-	switch request {
+	switch r.Method + " " + r.URL.Path {
 	case "GET /v1/boxes/box1":
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{
@@ -69,7 +68,7 @@ func (s *sessionServer) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// received returns the requests the server saw, as "METHOD /path".
+// received returns the requests the server saw, as "METHOD /path?query".
 func (s *sessionServer) received() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -141,24 +140,24 @@ func (b *lockedBuffer) String() string {
 	return b.buf.String()
 }
 
-// TestAttachMainSessionDeliversInitOutputAndExitCode: attaching joins init
-// over the container-attach route, every sink in AttachOptions receives what
-// init wrote, and Wait returns init's exit code.
-func TestAttachMainSessionDeliversInitOutputAndExitCode(t *testing.T) {
+// TestAttachDeliversInitOutputAndExitCode: attaching joins init over the
+// container-attach route, every sink in AttachOptions receives what init
+// wrote, and Wait returns init's exit code.
+func TestAttachDeliversInitOutputAndExitCode(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	server := newSessionServer(t, 0)
 	box := server.box(ctx, t)
 
 	var stdout, stderr, onStdout, onStderr lockedBuffer
-	execution, err := box.AttachMainSession(ctx, &AttachOptions{
+	execution, err := box.Attach(ctx, &AttachOptions{
 		Stdout:   &stdout,
 		Stderr:   &stderr,
 		OnStdout: func(p []byte) { _, _ = onStdout.Write(p) },
 		OnStderr: func(p []byte) { _, _ = onStderr.Write(p) },
 	})
 	if err != nil {
-		t.Fatalf("AttachMainSession: %v", err)
+		t.Fatalf("Attach: %v", err)
 	}
 	defer execution.Close()
 
@@ -189,21 +188,49 @@ func TestAttachMainSessionDeliversInitOutputAndExitCode(t *testing.T) {
 	}
 }
 
-// TestAttachMainSessionReturnsTheRefusal: a refused attach fails at the call,
-// typed so the caller can tell that another client holds the session.
-func TestAttachMainSessionReturnsTheRefusal(t *testing.T) {
+// TestAttachReturnsTheRefusal: a refused attach fails at the call, typed so
+// the caller can tell that another client holds the session.
+func TestAttachReturnsTheRefusal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	server := newSessionServer(t, http.StatusConflict)
 	box := server.box(ctx, t)
 
-	execution, err := box.AttachMainSession(ctx, nil)
+	execution, err := box.Attach(ctx, nil)
 	if err == nil {
 		execution.Close()
 		t.Fatal("expected the refused attach to fail")
 	}
 	if !IsAlreadyExists(err) {
 		t.Fatalf("expected an already-exists error, got %v", err)
+	}
+}
+
+// TestAttachRejoinsAnExecByIDReadOnly: an ExecutionID rejoins that exec over
+// the exec route instead of the main session, and ReadOnly asks the server to
+// refuse stdin rather than trusting the client to leave it alone.
+func TestAttachRejoinsAnExecByIDReadOnly(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	server := newSessionServer(t, 0)
+	box := server.box(ctx, t)
+
+	var stdout lockedBuffer
+	execution, err := box.Attach(ctx, &AttachOptions{ExecutionID: "exec-1", ReadOnly: true, Stdout: &stdout})
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	defer execution.Close()
+
+	code, err := execution.Wait(ctx)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if code != 7 || stdout.String() != "hi" {
+		t.Errorf("got exit %d and stdout %q, want 7 and %q", code, stdout.String(), "hi")
+	}
+	if got := server.received(); !slices.Contains(got, "GET /v1/boxes/box1/executions/exec-1/attach?stdin=0") {
+		t.Errorf("expected a read-only attach on the exec route, got %v", got)
 	}
 }
 

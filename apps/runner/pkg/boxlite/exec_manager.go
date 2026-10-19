@@ -421,7 +421,7 @@ func (m *ExecManager) AttachMain(ctx context.Context, bx *boxlite.Box, boxID str
 	exec := newManagedExec(uuid.New().String(), boxID, false)
 	exec.Main = true
 
-	execution, err := bx.AttachMainSession(ctx, &boxlite.AttachOptions{
+	execution, err := bx.Attach(ctx, &boxlite.AttachOptions{
 		Stdout: exec.stdoutBus,
 		Stderr: exec.stderrBus,
 	})
