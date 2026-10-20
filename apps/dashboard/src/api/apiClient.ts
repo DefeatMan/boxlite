@@ -69,6 +69,9 @@ function clearReauthAttempted(): void {
   }
 }
 
+// Prefer bash when the image has it; every image has sh.
+const LOGIN_SHELL = 'if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh -l; fi'
+
 export class ApiClient {
   private config: Configuration
   private http: AxiosInstance
@@ -237,6 +240,38 @@ export class ApiClient {
       { ...this.v1Config(), params: { port } },
     )
     return response.data.uri
+  }
+
+  /** Starts a login shell on a pseudo-terminal; returns its execution id. */
+  public async startTerminalExec(organizationId: string, boxId: string): Promise<string> {
+    const response = await this.http.post<{ execution_id: string }>(
+      this.v1BoxPath(organizationId, boxId, '/exec'),
+      { command: '/bin/sh', args: ['-c', LOGIN_SHELL], tty: true, env: { TERM: 'xterm-256color' } },
+      this.v1Config(),
+    )
+    return response.data.execution_id
+  }
+
+  /**
+   * The attach WebSocket URL for an execution, carrying a one-time ticket:
+   * a browser cannot send `Authorization` on a WebSocket, so the ticket is
+   * bought from the cloud API with the bearer and spent by the `/v1` upgrade.
+   */
+  public async terminalAttachUrl(organizationId: string, boxId: string, execId: string): Promise<string> {
+    const executionPath = this.v1BoxPath(organizationId, boxId, `/executions/${encodeURIComponent(execId)}`)
+    const { data } = await this._boxApi.createAttachTicket(boxId, { executionId: execId }, organizationId)
+    const url = new URL(`${this.config.basePath}${executionPath}/attach`, window.location.origin)
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+    url.searchParams.set('ticket', data.ticket)
+    return url.toString()
+  }
+
+  /** Ends an execution, so a terminal's shell does not wait for the runner's idle reaper. */
+  public async killTerminalExec(organizationId: string, boxId: string, execId: string): Promise<void> {
+    await this.http.delete(
+      this.v1BoxPath(organizationId, boxId, `/executions/${encodeURIComponent(execId)}`),
+      this.v1Config(),
+    )
   }
 
   private v1BoxPath(organizationId: string, boxId: string, suffix: string): string {

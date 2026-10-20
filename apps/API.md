@@ -160,7 +160,7 @@ serves and the events it emits are catalogued below alongside its routes.
 </details>
 
 <details>
-<summary><b>Boxes and preview access</b> · 21 routes</summary>
+<summary><b>Boxes and preview access</b> · 22 routes</summary>
 
 | Method | Path                                                                    | What it does                                          |
 | ------ | ----------------------------------------------------------------------- | ----------------------------------------------------- |
@@ -179,6 +179,7 @@ serves and the events it emits are catalogued below alongside its routes.
 | `GET`  | `/api/box/{boxIdOrName}/ports/{port}/signed-preview-url`                | Creates a signed preview URL for a box port.          |
 | `POST` | `/api/box/{boxIdOrName}/ports/{port}/signed-preview-url/{token}/expire` | Expires a signed preview URL token.                   |
 | `GET`  | `/api/box/{boxId}/toolbox-proxy-url`                                    | Returns the box toolbox proxy URL.                    |
+| `POST` | `/api/box/{boxIdOrName}/attach-tickets`                                 | Issues a 30-second, single-use ticket for one `/v1` attach upgrade. |
 | `GET`  | `/api/preview/{boxId}/inbound`                                          | Reports a box's inbound mode (`enabled` or `disabled`) to the proxy. |
 | `GET`  | `/api/preview/{boxId}/tunnels/{port}`                                   | Checks an active public tunnel for the proxy.          |
 | `POST` | `/api/preview/{boxId}/ensure-ready`                                     | Wakes a stopped box for the proxy, by auto-resume rules. |
@@ -392,8 +393,8 @@ catalog changes or registry credential operations run; switching API surfaces
 does not reset it.
 
 Resource permissions are enforced per route. A box mutation — create, start,
-stop, exec, signal, resize, execution kill, file transfer, WebSocket attach, and
-the network routes — requires `write:boxes`; deleting a box requires
+stop, exec, signal, resize, execution kill, file transfer, WebSocket attach, an
+attach ticket, and the network routes — requires `write:boxes`; deleting a box requires
 `delete:boxes`. Box reads (list, get, head, execution status, metrics) carry no
 permission and are reached by any member, because the model has no `read:boxes`.
 Volume routes require `read:volumes`, `write:volumes`, or `delete:volumes` to
@@ -407,7 +408,11 @@ are not permission-bounded; every API key is bounded by the permissions it
 carries. The WebSocket `/attach` upgrade enforces `write:boxes` inline — an
 upgrade never passes through the organization guard — using the same admin and
 owner exemptions, so it resolves the caller's system role just as the HTTP path
-does.
+does. A browser, which cannot set `Authorization` on a WebSocket, instead sends a
+`?ticket=` bought from `POST /api/box/{boxIdOrName}/attach-tickets`. Spending it
+re-checks the ticket's credential the same way:
+the API key that bought it, which must still exist and be unexpired, or else
+its user. The attach URL may omit `{prefix}`; the ticket already names the organization.
 `GET /api/v1/me` can return `path_prefix: null` for an authenticated user with no
 organization membership.
 
@@ -444,7 +449,7 @@ organization membership.
 | `POST`   | `/api/v1[/{prefix}]/boxes/{boxId}/exec`                       | Starts a command execution through the assigned runner. |
 | `GET`    | `/api/v1[/{prefix}]/boxes/{boxId}/executions/{execId}`        | Gets execution status and exit information.             |
 | `DELETE` | `/api/v1[/{prefix}]/boxes/{boxId}/executions/{execId}`        | Kills an execution.                                     |
-| `WS`     | `/api/v1[/{prefix}]/boxes/{boxId}/executions/{execId}/attach` | Attaches a bidirectional WebSocket to an execution.     |
+| `WS`     | `/api/v1[/{prefix}]/boxes/{boxId}/executions/{execId}/attach` | Attaches a bidirectional WebSocket to an execution; a browser authenticates with `?ticket=`. |
 | `POST`   | `/api/v1[/{prefix}]/boxes/{boxId}/executions/{execId}/signal` | Sends a signal to an execution.                         |
 | `POST`   | `/api/v1[/{prefix}]/boxes/{boxId}/executions/{execId}/resize` | Resizes an execution's terminal.                        |
 | `PUT`    | `/api/v1[/{prefix}]/boxes/{boxId}/files?path={path}`          | Uploads a tar stream into a box path.                   |
