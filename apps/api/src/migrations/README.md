@@ -196,6 +196,19 @@ Runs only migrations in the `post-deploy/` folder. Use this:
 - **After** the new API version is fully deployed
 - As part of your CI/CD pipeline, after the rolling update completes
 
+## Tenant Scope Regression Coverage
+
+The tenant scope integration spec runs the historical migrations in a temporary
+database, then checks upgrade, repeated upgrade, and rollback for both API-key
+and organization-role permissions. It verifies that upgrade preserves existing
+grants and rollback removes only tenant scopes.
+
+Set `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, and `DB_DATABASE` for a
+test PostgreSQL instance; the user needs permission to create databases.
+From the repository root, run
+`make coverage:api FILTER=AddTenantScopes1792497600000`.
+The spec drops its temporary database after each test and runs in the API CI suite.
+
 ## Reverting Migrations
 
 ```bash
