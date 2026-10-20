@@ -42,14 +42,16 @@ const PG_LOCK_TIMEOUT_CODE = '55P03'
 // boxlite-proxy.controller.ts (PROXY_START_HINT_TIMEOUT_MS).
 const PROXY_START_LOCK_TIMEOUT_MS = 2000
 
-// SERIALIZABLE protects the count-and-write admission decision without a
-// per-organization mutex. PostgreSQL aborts one conflicting transaction with
-// SQLSTATE 40001; retry the whole decision, never only the write.
-const PG_SERIALIZATION_FAILURE_CODE = '40001'
-const CREATION_ADMISSION_MAX_ATTEMPTS = 5
-const CREATION_ADMISSION_BASE_BACKOFF_MS = 5
-const CREATION_ADMISSION_MAX_BACKOFF_MS = 40
-const CREATION_ADMISSION_JITTER_MS = 5
+// Same-organization admissions queue on a transaction-scoped advisory lock
+// keyed by the organization, so a burst waits instead of aborting. The lock
+// must come before the count, under READ COMMITTED: each statement then reads
+// a fresh snapshot that includes the previous holder's committed Box. Cap only
+// the advisory-lock wait, since a queued admission pins a pooled connection;
+// the count and persist keep the default lock_timeout.
+const CREATION_ADMISSION_LOCK_TIMEOUT_MS = 5000
+// First key of the two-key advisory lock: keeps this lock apart from other
+// advisory-lock uses. Each two-key advisory lock use takes its own value.
+export const CREATION_ADMISSION_LOCK_NAMESPACE = 0x424f5841 // 'BOXA'
 const CREATION_ADMISSION_RETRY_AFTER_SECONDS = 5
 
 const BOX_CREATION_LIMIT_EXCLUDED_STATES = [
@@ -204,58 +206,45 @@ export class BoxRepository extends BaseRepository<Box> {
       return this.dataSource.transaction(persist)
     }
 
-    for (let attempt = 0; attempt < CREATION_ADMISSION_MAX_ATTEMPTS; attempt++) {
-      try {
-        return await this.dataSource.transaction('SERIALIZABLE', async (entityManager) => {
-          const currentCount = await entityManager.count(Box, {
-            where: {
-              organizationId,
-              state: Not(In(BOX_CREATION_LIMIT_EXCLUDED_STATES)),
-            },
-          })
-          if (currentCount >= maxCreatedBoxes) {
-            throw new BoxCreationLimitExceededError(currentCount, maxCreatedBoxes)
-          }
+    return this.dataSource.transaction('READ COMMITTED', async (entityManager) => {
+      await this.acquireCreationAdmissionLock(entityManager, organizationId)
 
-          return persist(entityManager)
-        })
-      } catch (error) {
-        if (!this.isSerializationFailure(error)) {
-          throw error
-        }
-        if (attempt === CREATION_ADMISSION_MAX_ATTEMPTS - 1) {
-          throw new BoxCreationAdmissionUnavailableError(
-            'Box creation admission remained contended; retry the request',
-            CREATION_ADMISSION_RETRY_AFTER_SECONDS,
-          )
-        }
-
-        await this.waitBeforeAdmissionRetry(attempt)
+      const currentCount = await entityManager.count(Box, {
+        where: {
+          organizationId,
+          state: Not(In(BOX_CREATION_LIMIT_EXCLUDED_STATES)),
+        },
+      })
+      if (currentCount >= maxCreatedBoxes) {
+        throw new BoxCreationLimitExceededError(currentCount, maxCreatedBoxes)
       }
+
+      return persist(entityManager)
+    })
+  }
+
+  // One statement sets the wait cap, takes the lock, and restores the default,
+  // so only this lock wait can raise the admission 503. This relies on
+  // PostgreSQL evaluating select-list entries in order (ExecBuildProjectionInfo
+  // in src/backend/executor/execExpr.c); the docs leave expression order
+  // unspecified, so the real-Postgres integration spec checks both halves.
+  private async acquireCreationAdmissionLock(entityManager: EntityManager, organizationId: string): Promise<void> {
+    try {
+      await entityManager.query(
+        `SELECT set_config('lock_timeout', $1, true),
+                pg_advisory_xact_lock($2, hashtext($3)),
+                set_config('lock_timeout', (SELECT reset_val FROM pg_settings WHERE name = 'lock_timeout'), true)`,
+        [`${CREATION_ADMISSION_LOCK_TIMEOUT_MS}ms`, CREATION_ADMISSION_LOCK_NAMESPACE, organizationId],
+      )
+    } catch (error) {
+      if ((error as { code?: string }).code === PG_LOCK_TIMEOUT_CODE) {
+        throw new BoxCreationAdmissionUnavailableError(
+          'Box creation admission remained contended; retry the request',
+          CREATION_ADMISSION_RETRY_AFTER_SECONDS,
+        )
+      }
+      throw error
     }
-
-    throw new BoxCreationAdmissionUnavailableError(
-      'Box creation admission remained contended; retry the request',
-      CREATION_ADMISSION_RETRY_AFTER_SECONDS,
-    )
-  }
-
-  private isSerializationFailure(error: unknown): boolean {
-    return (
-      typeof error === 'object' &&
-      error !== null &&
-      'code' in error &&
-      (error as { code?: unknown }).code === PG_SERIALIZATION_FAILURE_CODE
-    )
-  }
-
-  private async waitBeforeAdmissionRetry(attempt: number): Promise<void> {
-    const exponentialBackoff = Math.min(
-      CREATION_ADMISSION_BASE_BACKOFF_MS * 2 ** attempt,
-      CREATION_ADMISSION_MAX_BACKOFF_MS,
-    )
-    const jitter = Math.floor(Math.random() * (CREATION_ADMISSION_JITTER_MS + 1))
-    await new Promise((resolve) => setTimeout(resolve, exponentialBackoff + jitter))
   }
 
   /**
