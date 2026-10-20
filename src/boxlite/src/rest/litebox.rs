@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use reqwest::Method;
+use serde::Serialize;
 use tokio::sync::mpsc;
 
 use boxlite_shared::constants::files::FALLBACK_CAP_BYTES;
@@ -18,7 +19,7 @@ use crate::litebox::copy::CopyOptions;
 use crate::litebox::snapshot_mgr::SnapshotInfo;
 use crate::litebox::{
     AttachOptions, BoxCommand, BoxConnection, BoxTunnel, ExecResult, ExecStderr, ExecStdin,
-    ExecStdout, Execution,
+    ExecStdout, Execution, SshConfig, SshStatus,
 };
 use crate::metrics::BoxMetrics;
 use crate::runtime::backend::{BoxBackend, BoxNetworkBackend, SnapshotBackend};
@@ -118,6 +119,34 @@ impl RestBox {
             Some(ExecStdout::new(stdout_rx)),
             Some(ExecStderr::new(stderr_rx)),
         )
+    }
+}
+
+/// Private REST request; public configuration types do not implement Serialize.
+/// Explicit mapping preserves empty key lists and null CA values.
+#[derive(Serialize)]
+struct SshConfigRequest<'a> {
+    listen_address: &'a str,
+    host_private_key: &'a str,
+    accounts: Vec<serde_json::Value>,
+}
+
+impl<'a> SshConfigRequest<'a> {
+    fn new(config: &'a SshConfig) -> Self {
+        let accounts = config.accounts.iter().map(|account| {
+            serde_json::json!({
+                "login": account.login,
+                "authorized_keys": account.authorized_keys,
+                "ca": account.ca.as_ref().map(|ca| {
+                    serde_json::json!({"public_key": ca.public_key, "principal": ca.principal})
+                }),
+            })
+        });
+        Self {
+            listen_address: &config.listen_address,
+            host_private_key: &config.host_private_key,
+            accounts: accounts.collect(),
+        }
     }
 }
 
@@ -528,6 +557,26 @@ impl BoxBackend for RestBox {
         })?;
 
         Ok(crate::runtime::options::BoxArchive::new(output_path))
+    }
+
+    async fn ssh_configure(&self, config: SshConfig) -> BoxliteResult<SshStatus> {
+        // One request per call: the guest restarts SSH on every configure.
+        let request = SshConfigRequest::new(&config);
+        self.client
+            .post(&format!("/boxes/{}/ssh", self.box_id_str()), &request)
+            .await
+    }
+
+    async fn ssh_status(&self) -> BoxliteResult<SshStatus> {
+        self.client
+            .get(&format!("/boxes/{}/ssh", self.box_id_str()))
+            .await
+    }
+
+    async fn ssh_disable(&self) -> BoxliteResult<SshStatus> {
+        self.client
+            .delete_json(&format!("/boxes/{}/ssh", self.box_id_str()))
+            .await
     }
 }
 
@@ -1412,32 +1461,6 @@ mod tests {
         );
         let resp: BoxResponse = serde_json::from_str(&body).expect("BoxResponse");
         RestBox::new(client_for(port), resp.to_box_info().expect("to_box_info"))
-    }
-
-    /// An owned SSH handle must reject every REST operation even after LiteBox is dropped.
-    #[tokio::test]
-    async fn ssh_control_is_unsupported_on_rest() {
-        let backend = Arc::new(rest_box_for(1, "ssh-test"));
-        let sandbox = crate::LiteBox::new(backend.clone(), backend.clone(), backend);
-        let ssh = sandbox.ssh();
-        drop(sandbox);
-        assert!(matches!(
-            ssh.status().await,
-            Err(BoxliteError::Unsupported(_))
-        ));
-        assert!(matches!(
-            ssh.disable().await,
-            Err(BoxliteError::Unsupported(_))
-        ));
-        assert!(matches!(
-            ssh.configure(crate::SshConfig {
-                listen_address: String::new(),
-                host_private_key: String::new(),
-                accounts: vec![],
-            })
-            .await,
-            Err(BoxliteError::Unsupported(_))
-        ));
     }
 
     /// Send a minimal HTTP/1.1 200 OK with a JSON body.
