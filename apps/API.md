@@ -91,6 +91,13 @@ owners and system admins; broader grants return 403 before a key is created.
 The user's existing grantability checks still apply. An owner using a user JWT
 can create a key with any supported permission.
 
+Both DELETE routes require `write:tenant` when authenticated with an API key,
+including owner/admin keys and revocation of the calling key itself. A
+`read:tenant` key cannot revoke any key. User JWTs retain their existing access:
+members can revoke their own keys; owners and admins can also revoke other users'
+keys within the selected organization. The scope does not bypass these user or
+organization boundaries.
+
 </details>
 
 <details>

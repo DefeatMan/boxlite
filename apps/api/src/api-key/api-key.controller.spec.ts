@@ -20,7 +20,7 @@ import { SystemRole } from '../user/enums/system-role.enum'
 import { ApiKeyController } from './api-key.controller'
 import { ApiKeyService } from './api-key.service'
 
-describe('API key delegation', () => {
+describe('API key authorization', () => {
   let app: INestApplication
   let principal: Record<string, unknown>
   let membership: { role: OrganizationMemberRole; assignedRoles: { permissions: Permission[] }[] }
@@ -28,15 +28,19 @@ describe('API key delegation', () => {
     apiKey: { name, permissions, createdAt: new Date(), keyPrefix: 'blk_test', keySuffix: '123' },
     value: 'test-key',
   }))
+  const deleteApiKey = jest.fn(async () => undefined)
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
       controllers: [ApiKeyController],
       providers: [
         OrganizationResourceActionGuard,
-        { provide: ApiKeyService, useValue: { createApiKey } },
+        { provide: ApiKeyService, useValue: { createApiKey, deleteApiKey } },
         { provide: OrganizationService, useValue: { findOne: async (id: string) => ({ id }) } },
-        { provide: OrganizationUserService, useValue: { findOne: async () => membership } },
+        {
+          provide: OrganizationUserService,
+          useValue: { findOne: async (organizationId: string) => (organizationId === 'org-1' ? membership : null) },
+        },
         { provide: getRedisConnectionToken(), useValue: { get: async () => null, set: async () => 'OK' } },
       ],
     })
@@ -64,7 +68,7 @@ describe('API key delegation', () => {
       userId: 'owner-1',
       organizationId: 'org-1',
       role: SystemRole.USER,
-      apiKey: { organizationId: 'org-1', permissions: [Permission.WRITE_BOXES] },
+      apiKey: { organizationId: 'org-1', name: 'calling-key', permissions: [Permission.WRITE_BOXES] },
     }
   })
 
@@ -129,5 +133,96 @@ describe('API key delegation', () => {
     }
 
     expect((await create([Permission.WRITE_BOXES])).status).toBe(201)
+  })
+
+  describe.each(['/api-keys/target-key', '/api-keys/owner-1/target-key'])('revocation through %s', (path) => {
+    async function revoke(target = path) {
+      const address = app.getHttpServer().address() as AddressInfo
+      return fetch(`http://127.0.0.1:${address.port}${target}`, { method: 'DELETE' })
+    }
+
+    it.each([SystemRole.USER, SystemRole.ADMIN])(
+      'refuses read-only, empty, legacy and box-only %s keys before deletion',
+      async (role) => {
+        principal.role = role
+        for (const permissions of [undefined, [], [Permission.READ_TENANT], [Permission.WRITE_BOXES]]) {
+          principal.apiKey = { organizationId: 'org-1', permissions }
+
+          expect((await revoke()).status).toBe(403)
+          expect(deleteApiKey).not.toHaveBeenCalled()
+        }
+      },
+    )
+
+    it.each([SystemRole.USER, SystemRole.ADMIN])('allows a tenant-write %s key', async (role) => {
+      principal.role = role
+      principal.apiKey = { organizationId: 'org-1', permissions: [Permission.WRITE_TENANT] }
+
+      expect((await revoke()).status).toBe(204)
+      expect(deleteApiKey).toHaveBeenCalledWith('org-1', 'owner-1', 'target-key')
+    })
+
+    it('requires tenant write even to revoke the calling key', async () => {
+      const selfPath = path.replace('target-key', 'calling-key')
+      principal.apiKey = { organizationId: 'org-1', name: 'calling-key', permissions: [Permission.READ_TENANT] }
+
+      expect((await revoke(selfPath)).status).toBe(403)
+      expect(deleteApiKey).not.toHaveBeenCalled()
+
+      principal.apiKey = { organizationId: 'org-1', name: 'calling-key', permissions: [Permission.WRITE_TENANT] }
+      expect((await revoke(selfPath)).status).toBe(204)
+      expect(deleteApiKey).toHaveBeenCalledWith('org-1', 'owner-1', 'calling-key')
+    })
+
+    it.each([OrganizationMemberRole.OWNER, OrganizationMemberRole.MEMBER])(
+      'preserves %s JWT revocation of their own keys',
+      async (role) => {
+        membership.role = role
+        delete principal.apiKey
+
+        expect((await revoke()).status).toBe(204)
+        expect(deleteApiKey).toHaveBeenCalledWith('org-1', 'owner-1', 'target-key')
+      },
+    )
+
+    it('preserves member key revocation within their own account when scoped', async () => {
+      membership.role = OrganizationMemberRole.MEMBER
+      principal.apiKey = { organizationId: 'org-1', permissions: [Permission.WRITE_TENANT] }
+
+      expect((await revoke()).status).toBe(204)
+      expect(deleteApiKey).toHaveBeenCalledWith('org-1', 'owner-1', 'target-key')
+    })
+
+    it('refuses a key without membership in its organization', async () => {
+      principal.organizationId = 'org-2'
+      principal.apiKey = { organizationId: 'org-2', permissions: [Permission.WRITE_TENANT] }
+
+      expect((await revoke()).status).toBe(403)
+      expect(deleteApiKey).not.toHaveBeenCalled()
+    })
+
+    it('refuses a read-only owner key deleting another user key', async () => {
+      principal.apiKey = { organizationId: 'org-1', permissions: [Permission.READ_TENANT] }
+
+      expect((await revoke('/api-keys/other-user/target-key')).status).toBe(403)
+      expect(deleteApiKey).not.toHaveBeenCalled()
+    })
+
+    it.each([false, true])('retains member target-user isolation (JWT: %s)', async (jwt) => {
+      membership.role = OrganizationMemberRole.MEMBER
+      principal.apiKey = { organizationId: 'org-1', permissions: [Permission.WRITE_TENANT] }
+      if (jwt) delete principal.apiKey
+
+      expect((await revoke('/api-keys/other-user/target-key')).status).toBe(403)
+      expect(deleteApiKey).not.toHaveBeenCalled()
+    })
+
+    it.each([false, true])('allows owner revocation of another user key (JWT: %s)', async (jwt) => {
+      principal.apiKey = { organizationId: 'org-1', permissions: [Permission.WRITE_TENANT] }
+      if (jwt) delete principal.apiKey
+
+      expect((await revoke('/api-keys/other-user/target-key')).status).toBe(204)
+      expect(deleteApiKey).toHaveBeenCalledWith('org-1', 'other-user', 'target-key')
+    })
   })
 })

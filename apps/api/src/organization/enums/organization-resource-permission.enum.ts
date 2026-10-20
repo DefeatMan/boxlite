@@ -51,7 +51,7 @@ export enum OrganizationResourcePermission {
   // image still records it without this; what it guards is alias creation and deletion.
   WRITE_IMAGES = 'write:images',
 
-  // Tenant membership and invitation access; appended to match the database enums.
+  // Tenant membership, invitations and key revocation; appended to match the database enums.
   READ_TENANT = 'read:tenant',
   WRITE_TENANT = 'write:tenant',
 }
