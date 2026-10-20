@@ -42,8 +42,13 @@ info:
     ## Roles
 
     Members are `owner` or `member`. Owners invite and remove members. Every
-    invitation created through this API makes the invitee an `owner`. An
-    owner's API key may manage members whatever permissions it was created with.
+    invitation created through this API makes the invitee an `owner`.
+    API keys require `read:tenant` to list members and invitations, and
+    `write:tenant` to create or cancel invitations and remove members. These
+    scopes are independent; write does not imply read. Owner and system-admin
+    keys are also scope-bounded. Existing keys receive no automatic grants.
+    User JWTs retain membership reads and owner writes. Invitees accept through
+    the console using a user JWT, without a tenant scope or prior membership.
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
@@ -75,6 +80,7 @@ paths:
     get:
       operationId: listMembers
       summary: List the organization's members
+      description: Requires organization membership and, for API keys, `read:tenant`.
       tags: [Members]
       responses:
         "200":
@@ -97,7 +103,8 @@ paths:
       operationId: removeMember
       summary: Remove a member from the organization
       description: |
-        Requires the `owner` role, and revokes the member's API keys in this
+        Requires the `owner` role and, for API keys, `write:tenant`.
+        Revokes the member's API keys in this
         organization at once. Removing the last owner, or a user from their own
         personal organization, is refused with 403.
       tags: [Members]
@@ -119,7 +126,8 @@ paths:
       operationId: createInvitation
       summary: Invite a user to the organization by email
       description: |
-        Requires the `owner` role. The invitee accepts in the BoxLite console
+        Requires the `owner` role and, for API keys, `write:tenant`.
+        The invitee accepts in the BoxLite console
         after signing in with the invited address, and joins as an `owner`.
       tags: [Invitations]
       requestBody:
@@ -151,6 +159,7 @@ paths:
     get:
       operationId: listInvitations
       summary: List pending invitations
+      description: Requires organization membership and, for API keys, `read:tenant`.
       tags: [Invitations]
       responses:
         "200":
@@ -172,7 +181,7 @@ paths:
     delete:
       operationId: cancelInvitation
       summary: Cancel a pending invitation
-      description: Requires the `owner` role. Expired pending invitations can also be cancelled.
+      description: Requires the `owner` role and, for API keys, `write:tenant`. Expired pending invitations can also be cancelled.
       tags: [Invitations]
       responses:
         "204":

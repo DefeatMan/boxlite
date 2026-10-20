@@ -196,6 +196,19 @@ their message through the shared interceptor. Panel tests cover the masked
 secret and its cleanup on close, prefix completion, the `?connect=` link,
 duplicates, and refusals named by box.
 
+## Console API keys include tenant access
+
+The key dialog creates a key with the user's available permissions. An owner's
+new key includes `read:tenant` and `write:tenant`, displayed in the Tenant
+permission group. A non-owner's key can include assigned tenant read access,
+but never tenant write. Existing keys receive no additional permissions.
+
+Create restricted keys through the API or SDK by supplying an explicit
+`permissions` array; see [API key delegation and tenant scopes](../API.md).
+The scopes are independent, and an API key can only create keys with the same
+or fewer permissions. Invitation acceptance in the console continues to use
+the signed-in user's JWT.
+
 ## Every invitee joins as an owner
 
 An organization has no finer roles yet, so inviting asks only for an email

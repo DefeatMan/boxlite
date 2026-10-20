@@ -185,6 +185,17 @@ export class ApiKeyController {
     authContext: OrganizationAuthContext,
     requestedPermissions: OrganizationResourcePermission[],
   ): void {
+    if (authContext.apiKey) {
+      const forbiddenPermissions = requestedPermissions.filter(
+        (permission) => !authContext.apiKey.permissions?.includes(permission),
+      )
+      if (forbiddenPermissions.length) {
+        throw new ForbiddenException(
+          `API key cannot delegate permissions it does not hold: ${forbiddenPermissions.join(', ')}`,
+        )
+      }
+    }
+
     if (authContext.role === SystemRole.ADMIN) {
       return
     }

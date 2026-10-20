@@ -32,13 +32,23 @@ const memberships = new Map([
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 // An API-key principal, as ApiKeyStrategy builds it: the key names its organization.
-function apiKeyPrincipal(userId: string, organizationId: string) {
-  return { userId, email: `${userId}@example.com`, role: SystemRole.USER, organizationId, apiKey: { organizationId } }
+function apiKeyPrincipal(
+  userId: string,
+  organizationId: string,
+  permissions: string[] = ['read:tenant', 'write:tenant'],
+) {
+  return {
+    userId,
+    email: `${userId}@example.com`,
+    role: SystemRole.USER,
+    organizationId,
+    apiKey: { organizationId, permissions },
+  }
 }
 
 describe('BoxLite REST members and invitations', () => {
   let app: INestApplication
-  let principal: ReturnType<typeof apiKeyPrincipal>
+  let principal: Record<string, unknown>
   const organizationUserService = {
     findOne: jest.fn(async (organizationId: string, userId: string) => memberships.get(`${organizationId}:${userId}`)),
     findAll: jest.fn(async () => [
@@ -117,7 +127,112 @@ describe('BoxLite REST members and invitations', () => {
     })
   }
 
-  it("lets an owner's API key remove a member", async () => {
+  const operations = [
+    { method: 'GET', path: '/members', scope: 'read:tenant', status: 200 },
+    { method: 'GET', path: '/invitations', scope: 'read:tenant', status: 200 },
+    { method: 'POST', path: '/invitations', scope: 'write:tenant', status: 201 },
+    { method: 'DELETE', path: '/members/user-3', scope: 'write:tenant', status: 204 },
+    {
+      method: 'DELETE',
+      path: '/invitations/6f1c2a4e-0b7d-4c3e-9a5f-2d8e1b7c4a90',
+      scope: 'write:tenant',
+      status: 204,
+    },
+  ]
+
+  function callTenant(method: string, path: string) {
+    return call(method, path, method === 'POST' ? { email: 'new@example.com' } : undefined)
+  }
+
+  function expectNoTenantServiceCalls() {
+    expect(organizationUserService.findAll).not.toHaveBeenCalled()
+    expect(organizationUserService.delete).not.toHaveBeenCalled()
+    expect(organizationInvitationService.findPending).not.toHaveBeenCalled()
+    expect(organizationInvitationService.create).not.toHaveBeenCalled()
+    expect(organizationInvitationService.cancel).not.toHaveBeenCalled()
+  }
+
+  describe.each(['/v1', '/v1/default', '/v1/org-1'])('tenant key scopes on %s', (prefix) => {
+    it.each(operations)('refuses an unscoped owner key for $method $path', async ({ method, path }) => {
+      principal = apiKeyPrincipal('user-1', 'org-1', [])
+
+      expect((await callTenant(method, `${prefix}${path}`)).status).toBe(403)
+      expectNoTenantServiceCalls()
+    })
+
+    it.each(operations)('refuses a box-only key for $method $path', async ({ method, path }) => {
+      principal = apiKeyPrincipal('user-1', 'org-1', ['write:boxes', 'delete:boxes'])
+
+      expect((await callTenant(method, `${prefix}${path}`)).status).toBe(403)
+      expectNoTenantServiceCalls()
+    })
+
+    it.each(operations)(
+      'keeps tenant read and write independent for $method $path',
+      async ({ method, path, scope }) => {
+        principal = apiKeyPrincipal('user-1', 'org-1', [scope === 'read:tenant' ? 'write:tenant' : 'read:tenant'])
+
+        expect((await callTenant(method, `${prefix}${path}`)).status).toBe(403)
+        expectNoTenantServiceCalls()
+      },
+    )
+
+    it.each(operations)(
+      'allows an explicitly scoped owner key for $method $path',
+      async ({ method, path, scope, status }) => {
+        principal = apiKeyPrincipal('user-1', 'org-1', [scope])
+
+        expect((await callTenant(method, `${prefix}${path}`)).status).toBe(status)
+      },
+    )
+  })
+
+  it.each(operations)('bounds an admin API key for $method $path', async ({ method, path }) => {
+    principal = { ...apiKeyPrincipal('user-1', 'org-1', []), role: SystemRole.ADMIN }
+
+    expect((await callTenant(method, `/v1/org-1${path}`)).status).toBe(403)
+    expectNoTenantServiceCalls()
+  })
+
+  it.each(operations)('preserves owner JWT access for $method $path', async ({ method, path, status }) => {
+    principal = apiKeyPrincipal('user-1', 'org-1')
+    delete principal.apiKey
+
+    expect((await callTenant(method, `/v1/org-1${path}`)).status).toBe(status)
+  })
+
+  it.each(operations.filter(({ method }) => method === 'GET'))(
+    'preserves member JWT access for $path',
+    async ({ path }) => {
+      principal = apiKeyPrincipal('user-3', 'org-1')
+      delete principal.apiKey
+
+      expect((await call('GET', `/v1/org-1${path}`)).status).toBe(200)
+    },
+  )
+
+  it.each(operations)('refuses scoped keys from another organization for $method $path', async ({ method, path }) => {
+    principal = apiKeyPrincipal('user-2', 'org-2')
+
+    expect((await callTenant(method, `/v1/org-1${path}`)).status).toBe(403)
+    expectNoTenantServiceCalls()
+  })
+
+  it('refuses a legacy key with no permissions field', async () => {
+    principal = { ...apiKeyPrincipal('user-1', 'org-1'), apiKey: { organizationId: 'org-1' } }
+
+    expect((await call('GET', '/v1/members')).status).toBe(403)
+    expectNoTenantServiceCalls()
+  })
+
+  it.each(['runner', 'proxy', 'health-check'])('refuses %s credentials on tenant routes', async (role) => {
+    principal = { role }
+
+    expect((await call('GET', '/v1/org-1/members')).status).toBe(403)
+    expectNoTenantServiceCalls()
+  })
+
+  it("lets an owner's explicitly scoped API key remove a member", async () => {
     principal = apiKeyPrincipal('user-1', 'org-1')
 
     const response = await call('DELETE', '/v1/org-1/members/user-3')

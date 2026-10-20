@@ -50,4 +50,8 @@ export enum OrganizationResourcePermission {
   // Appended for the same reason, apart from the other image scopes. Using an
   // image still records it without this; what it guards is alias creation and deletion.
   WRITE_IMAGES = 'write:images',
+
+  // Tenant membership and invitation access; appended to match the database enums.
+  READ_TENANT = 'read:tenant',
+  WRITE_TENANT = 'write:tenant',
 }

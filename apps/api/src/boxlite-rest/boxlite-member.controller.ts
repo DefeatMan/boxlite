@@ -13,8 +13,10 @@ import { Audit } from '../audit/decorators/audit.decorator'
 import { AuditAction } from '../audit/enums/audit-action.enum'
 import { AuditTarget } from '../audit/enums/audit-target.enum'
 import { RequiredOrganizationMemberRole } from '../organization/decorators/required-organization-member-role.decorator'
+import { RequiredOrganizationResourcePermissions } from '../organization/decorators/required-organization-resource-permissions.decorator'
 import { OrganizationUserDto } from '../organization/dto/organization-user.dto'
 import { OrganizationMemberRole } from '../organization/enums/organization-member-role.enum'
+import { OrganizationResourcePermission } from '../organization/enums/organization-resource-permission.enum'
 import { OrganizationActionGuard } from '../organization/guards/organization-action.guard'
 import { OrganizationUserService } from '../organization/services/organization-user.service'
 
@@ -34,6 +36,7 @@ export class BoxliteMemberController {
   constructor(private readonly organizationUserService: OrganizationUserService) {}
 
   @Get()
+  @RequiredOrganizationResourcePermissions([OrganizationResourcePermission.READ_TENANT])
   async list(@AuthContext() authContext: OrganizationAuthContext): Promise<{ members: RestMember[] }> {
     const members = await this.organizationUserService.findAll(authContext.organizationId)
     return { members: members.map((member) => this.toResponse(member)) }
@@ -43,6 +46,7 @@ export class BoxliteMemberController {
   @Delete(':userId')
   @HttpCode(204)
   @RequiredOrganizationMemberRole(OrganizationMemberRole.OWNER)
+  @RequiredOrganizationResourcePermissions([OrganizationResourcePermission.WRITE_TENANT])
   @Audit({
     action: AuditAction.DELETE,
     targetType: AuditTarget.ORGANIZATION_USER,

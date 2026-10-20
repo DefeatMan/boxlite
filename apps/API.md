@@ -85,6 +85,12 @@ serves and the events it emits are catalogued below alongside its routes.
 | `DELETE` | `/api/api-keys/{name}`          | Deletes the caller's API key by name.                          |
 | `DELETE` | `/api/api-keys/{userId}/{name}` | Deletes a named API key belonging to a specified user.         |
 
+Key creation takes an explicit `permissions` array. When authenticated with an API key,
+the requested permissions must be a subset of that key's permissions, including for
+owners and system admins; broader grants return 403 before a key is created.
+The user's existing grantability checks still apply. An owner using a user JWT
+can create a key with any supported permission.
+
 </details>
 
 <details>
@@ -513,8 +519,19 @@ registry host, then matches each box in memory using the longest repository pref
 <summary><b>Members and invitations</b> · 5 routes</summary>
 
 Contract: [`openapi/tenant.openapi.yaml`](../openapi/tenant.openapi.yaml), cloud-only and meant for the CLI
-and SDKs, which do not call it yet. Reads need membership; writes need the owner role. Any API key
-of an owner qualifies, whatever permissions it was created with.
+and SDKs, which do not call it yet. Reads need membership; writes need the owner role.
+API keys additionally require `read:tenant` to list members or invitations and
+`write:tenant` to create/cancel invitations or remove members. The scopes are
+independent: write does not imply read. Missing scopes return 403, including for
+owner and system-admin keys, before the operation runs. User JWTs retain the
+existing membership and owner rules.
+
+Existing keys are not granted these scopes automatically. Create a replacement
+with the needed permissions to use these routes. For example, an owner can create
+a read-only key with `{"name":"tenant-reader","permissions":["read:tenant"]}`.
+It can list members and invitations, but cannot invite, remove, or mint a
+replacement key with `write:tenant`. Canonical and prefixed routes enforce the
+same scopes.
 
 Tenant errors use the hosted service's flat JSON response: `statusCode`, `error`
 (an HTTP status phrase), `message`, `path`, and `timestamp`, with an optional
@@ -522,6 +539,7 @@ machine-readable `code`. Validation messages are joined into one string. Clients
 must decode this shape rather than the portable Box API's nested `error` object.
 
 Invitees accept in the console, through `/api/organizations/invitations/{invitationId}/accept`.
+Acceptance remains user-JWT-only; it does not require tenant scopes or prior membership.
 Email links accept automatically after sign-in with the invited email address.
 Links resolve `/dashboard/user/invitations` against `DASHBOARD_URL`, which accepts
 the console origin with or without a trailing slash.

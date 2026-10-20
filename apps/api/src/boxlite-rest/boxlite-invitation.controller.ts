@@ -26,9 +26,11 @@ import { Audit, TypedRequest } from '../audit/decorators/audit.decorator'
 import { AuditAction } from '../audit/enums/audit-action.enum'
 import { AuditTarget } from '../audit/enums/audit-target.enum'
 import { RequiredOrganizationMemberRole } from '../organization/decorators/required-organization-member-role.decorator'
+import { RequiredOrganizationResourcePermissions } from '../organization/decorators/required-organization-resource-permissions.decorator'
 import { OrganizationInvitation } from '../organization/entities/organization-invitation.entity'
 import { OrganizationInvitationStatus } from '../organization/enums/organization-invitation-status.enum'
 import { OrganizationMemberRole } from '../organization/enums/organization-member-role.enum'
+import { OrganizationResourcePermission } from '../organization/enums/organization-resource-permission.enum'
 import { OrganizationActionGuard } from '../organization/guards/organization-action.guard'
 import { OrganizationInvitationService } from '../organization/services/organization-invitation.service'
 import { CreateInvitationDto } from './dto/create-invitation.dto'
@@ -57,6 +59,7 @@ export class BoxliteInvitationController {
   @Post()
   @HttpCode(201)
   @RequiredOrganizationMemberRole(OrganizationMemberRole.OWNER)
+  @RequiredOrganizationResourcePermissions([OrganizationResourcePermission.WRITE_TENANT])
   @Audit({
     action: AuditAction.CREATE,
     targetType: AuditTarget.ORGANIZATION_INVITATION,
@@ -81,6 +84,7 @@ export class BoxliteInvitationController {
   }
 
   @Get()
+  @RequiredOrganizationResourcePermissions([OrganizationResourcePermission.READ_TENANT])
   async list(@AuthContext() authContext: OrganizationAuthContext): Promise<{ invitations: RestInvitation[] }> {
     const invitations = await this.organizationInvitationService.findPending(authContext.organizationId)
     return { invitations: invitations.map((invitation) => this.toResponse(invitation)) }
@@ -89,6 +93,7 @@ export class BoxliteInvitationController {
   @Delete(':invitationId')
   @HttpCode(204)
   @RequiredOrganizationMemberRole(OrganizationMemberRole.OWNER)
+  @RequiredOrganizationResourcePermissions([OrganizationResourcePermission.WRITE_TENANT])
   @Audit({
     action: AuditAction.DELETE,
     targetType: AuditTarget.ORGANIZATION_INVITATION,
