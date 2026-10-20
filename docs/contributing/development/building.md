@@ -21,6 +21,27 @@ make setup
 make dev:python
 ```
 
+## NixOS and Nix
+
+`make setup` does not install packages on NixOS. Use the flake dev shell at the
+repo root instead. It needs [flakes enabled](https://wiki.nixos.org/wiki/Flakes),
+is community-maintained, and is verified on x86_64 NixOS only.
+
+```bash
+nix develop -c make cli
+```
+
+- `flake.lock` pins nixpkgs (`nixos-26.05`), so every host gets the same gcc,
+  musl, glibc, Go, and LLVM. Run `nix flake update` to move the pin.
+- Rust is not pinned by Nix: rustup follows `rust-toolchain.toml`, as on CI.
+- musl comes from `pkgsCross.musl64` as `x86_64-linux-musl-*` and `musl-gcc` on
+  `PATH`; static glibc is on `LIBRARY_PATH` only. Adding either as a shell
+  package breaks dynamic host links.
+- `BOXLITE_LIBRESOLV_DIR` points `libgvproxy-sys` at a directory holding
+  `libresolv.a`, for hosts without `/usr/lib/<triple>` or `/usr/lib64`.
+- After a failed build, remove `src/deps/libkrun-sys/vendor/libkrun/target`
+  before retrying; a stale libkrun build script stays cached there.
+
 ## Makefile targets
 
 | Target             | Description                              |
