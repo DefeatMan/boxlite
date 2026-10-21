@@ -91,78 +91,9 @@ jobs:
             exit 1
           }
 
-          # A PR number needs no SHA-shape check of its own: `gh pr view` is the validation, and
-          # it fails on a nonexistent PR the same way cat-file fails on a nonexistent commit below.
-          # This is the fix for the SHA-first design PR #1148 shipped: that guard took a SHA and
-          # asked the API which PR (if any) it belonged to via /commits/{sha}/pulls, which returns
-          # an empty array for a fork PR's head — confirmed live — so no patch to that lookup could
-          # ever accept a fork. Asking the API for a known PR NUMBER's head, instead, works
-          # unconditionally for same-repo and fork PRs alike; there is no lookup to fail.
+          # Both deploy paths verify the candidate against pinned main/head SHAs.
           if [ -n "$INPUT_PR" ]; then
-            [[ "$INPUT_PR" =~ ^[0-9]+$ ]] || { echo "pr must be a PR number" >&2; exit 1; }
-            pr_json="$(gh pr view "$INPUT_PR" --json state,headRefOid,isCrossRepository,mergeable,potentialMergeCommit)"
-            # The MERGE, not the head. This workflow's definition comes from main while this job
-            # decides what gets checked out, so deploying the head pairs main's YAML with the
-            # tooling the branch happens to carry — which is how a components=api dispatch reached
-            # an apps/infra that could not scope at all. refs/pull/N/merge is main+PR by
-            # construction, so the deployed tree can never be behind main. Resolved before `fork`
-            # below so the conflict refusals stay out of the fork-acceptance path.
-            #
-            # GitHub recomputes this ref whenever main or the head moves, so the SHA is a snapshot
-            # of "this PR against main right now" — pinned once here and consumed by every
-            # downstream job, but not a commit in anyone's history and not necessarily a tree any
-            # CI run built (CI triggers on pull_request, not on every push to the base).
-            #
-            # Mergeability is computed lazily, so UNKNOWN is a "not yet", not a verdict; retry it
-            # rather than failing a dispatch on a cold cache. There is no event to await here —
-            # the answer only exists once GitHub recomputes it — so this polls.
-            #
-            # Every field is read inside the loop, so the verdict below is about the request as it
-            # stands when the loop leaves: one closed while this waited is not a request to roll
-            # out, whatever the first response said.
-            for attempt in 1 2 3 4 5; do
-              state="$(jq -r '.state' <<<"$pr_json")"
-              mergeable="$(jq -r '.mergeable' <<<"$pr_json")"
-              sha="$(jq -r '.potentialMergeCommit.oid // empty' <<<"$pr_json")"
-              if [ "$state" != "OPEN" ]; then break; fi
-              if [ "$mergeable" != "UNKNOWN" ] && [ -n "$sha" ]; then break; fi
-              if [ "$attempt" -eq 5 ]; then break; fi
-              sleep 5
-              pr_json="$(gh pr view "$INPUT_PR" --json state,headRefOid,isCrossRepository,mergeable,potentialMergeCommit)"
-            done
-            [ "$state" = "OPEN" ] || {
-              echo "PR #$INPUT_PR is $state, not open" >&2
-              exit 1
-            }
-            [ "$mergeable" != "CONFLICTING" ] || {
-              echo "PR #$INPUT_PR conflicts with main, so it has no merge commit to deploy." >&2
-              echo "Resolve the conflict and redispatch." >&2
-              exit 1
-            }
-            # MERGEABLE, not "anything but CONFLICTING": UNKNOWN can arrive beside a merge commit
-            # computed before the last push, and deploying that installs a tree neither side has.
-            { [ "$mergeable" = "MERGEABLE" ] && [ -n "$sha" ]; } || {
-              echo "PR #$INPUT_PR has no merge commit this run can trust (mergeable=$mergeable) after 5 attempts." >&2
-              echo "GitHub computes this lazily; open the PR once to force it, then redispatch." >&2
-              exit 1
-            }
-            head_sha="$(jq -r '.headRefOid' <<<"$pr_json")"
-            fork="$(jq -r '.isCrossRepository' <<<"$pr_json")"
-            # $fork is logged for whoever reviews the run below, never gated on: PR #1148 refused a
-            # fork head here deliberately, as its own security boundary. Accepting one is the point
-            # of this change (it's how #1141 becomes deployable) — dispatching this workflow at all
-            # already requires repo write access, and build-api/deploy additionally sit behind the
-            # dev environment's required reviewer before their AWS OIDC role activates, same as for
-            # any ref. That part is unchanged: a fork head reaches those two jobs' secrets no more
-            # easily than a same-repo head always could.
-            #
-            # build-c/build-runner are the honest exception: neither declares an `environment:` or
-            # touches AWS credentials, so a fork's own Cargo/Go/make code now runs on a GitHub-hosted
-            # runner right after resolve-ref, with no second human look and nothing to steal. Risk
-            # there is compute abuse and build-time tampering (e.g. a rewritten .gitmodules URL), not
-            # credential theft — call it out rather than fold it into the build-api/deploy gate above.
-            echo "PR #$INPUT_PR ($([ "$fork" = "true" ] && echo fork || echo same-repo)) head is $head_sha; deploying merge $sha"
-            echo "sha=$sha" >> "$GITHUB_OUTPUT"
+            bash .github/actions/resolve-ref/pull-request.sh "$INPUT_PR"
             exit 0
           fi
 

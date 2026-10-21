@@ -202,91 +202,14 @@ jobs:
           printf 'line=%s\n' "$line" >> "$GITHUB_OUTPUT"
           echo "${STAGE}: ${line}"
 
-      # A pull request becomes the commit it would merge to, not its head.
-      #
-      # `refs/pull/N/merge` is the request's own base plus the request, which
-      # is the tree that would land. A head is the same work missing whatever
-      # its base gained since it was branched, so shaking one out on a stage
-      # answers about a tree nobody will ever merge — and the older the branch,
-      # the further that answer is from the one being asked for.
-      #
-      # It buys no ordering against this file. The definition running here came
-      # from the ref the run was dispatched at, and on the dev path that need
-      # not be the request's base at all; the merge can sit behind it. What the
-      # merge is guaranteed against is the request's base, which is the
-      # comparison that matters for "would this land cleanly and work".
-      # Same API call as `deploy-infra.yml`'s own resolve, which states the
-      # stronger version of this because it runs from main alone.
-      #
-      # The number rather than a SHA: asking the API which PR a commit belongs
-      # to returns nothing for a fork's head, so a SHA-first lookup can never
-      # accept a fork. A known number works for both.
-      #
-      # This replaces the branch check rather than skipping it. A merge commit
-      # sits on no branch, so `--is-ancestor` could only ever refuse it — what
-      # is proved instead is stronger for this purpose: the pull request is open
-      # right now and merges cleanly, and GitHub recomputes the ref whenever
-      # either side moves.
+      # Verify the candidate's main/head parents before any build or stage access.
       - name: Resolve a pull request to the commit it would merge
         id: pr
         if: steps.classify.outputs.pr != ''
         shell: bash
         env:
           PR: ${{ steps.classify.outputs.pr }}
-        run: |
-          set -Eeuo pipefail
-          fields=state,headRefOid,isCrossRepository,mergeable,potentialMergeCommit
-          if ! pr_json="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json "$fields" 2>&1)"; then
-            echo "::error title=pull request::no pull request #$PR in this repository ($pr_json)"
-            exit 1
-          fi
-          # Mergeability is computed lazily, so UNKNOWN is a "not yet" rather
-          # than a verdict. There is no event to await — the answer only exists
-          # once GitHub recomputes it — so this polls rather than failing a
-          # dispatch on a cold cache.
-          #
-          # Every field is read inside the loop, so the verdict below is about
-          # the pull request as it stands when the loop leaves rather than as
-          # the first response found it: one closed while this waited is not a
-          # request to roll out, whatever the first response said.
-          for attempt in 1 2 3 4 5; do
-            state="$(jq -r '.state' <<<"$pr_json")"
-            mergeable="$(jq -r '.mergeable' <<<"$pr_json")"
-            sha="$(jq -r '.potentialMergeCommit.oid // empty' <<<"$pr_json")"
-            if [ "$state" != 'OPEN' ]; then break; fi
-            if [ "$mergeable" != 'UNKNOWN' ] && [ -n "$sha" ]; then break; fi
-            if [ "$attempt" -eq 5 ]; then break; fi
-            sleep 5
-            pr_json="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json "$fields")"
-          done
-          if [ "$state" != 'OPEN' ]; then
-            echo "::error title=pull request::#$PR is $state, not open; a closed pull request names no live ref"
-            exit 1
-          fi
-          if [ "$mergeable" = 'CONFLICTING' ]; then
-            echo "::error title=pull request::#$PR conflicts with its base, so it has no merge commit to deploy; resolve and re-dispatch"
-            exit 1
-          fi
-          # MERGEABLE, not "anything but CONFLICTING": UNKNOWN can arrive
-          # beside a merge commit computed before the last push, and rolling
-          # that out installs a tree neither side of the request has.
-          if [ "$mergeable" != 'MERGEABLE' ] || [ -z "$sha" ]; then
-            echo "::error title=pull request::#$PR has no merge commit this run can trust (mergeable=$mergeable, merge commit ${sha:-none}) after 5 attempts; open it once to force the computation, then re-dispatch"
-            exit 1
-          fi
-          # Logged, never gated on. Dispatching this workflow already needs
-          # write access, and every job that reaches a cloud role sits behind
-          # its stage's Environment — a fork's merge reaches those no more
-          # easily than a same-repo one. What an approver should know is that
-          # `build-runner` and mbuild's publish compile this tree, so the
-          # approval that releases them is what stands between a fork's build
-          # code and this stage's credentials. It is a person unblocking a
-          # run, not a reading of the diff; `apps/infra/mdeploy/README.md`
-          # says what that is and is not worth.
-          fork="$(jq -r '.isCrossRepository' <<<"$pr_json")"
-          head="$(jq -r '.headRefOid' <<<"$pr_json")"
-          echo "#$PR ($([ "$fork" = 'true' ] && echo fork || echo same-repo)) head is $head; deploying merge $sha"
-          printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"
+        run: bash .github/actions/resolve-ref/pull-request.sh "$PR"
 
       # A tag is not a release. The runner binary a release-path deploy installs
       # is an asset on the GitHub Release — `stack/runner-binary.ts:270` composes

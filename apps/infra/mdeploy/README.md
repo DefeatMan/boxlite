@@ -58,7 +58,9 @@ There is no repository-wide cloud default. Read the separate [GCP](../docs/gcp/a
 its artifacts exist, checks the stage digest, then previews or applies. Its `components` input
 selects artifact preparation; it is not a promise that the resource graph targets only those services.
 
-A commit or open PR merge commit is accepted for `dev`. `prod` requires a published release;
+A commit or verified merge of an open PR targeting `main` is accepted for `dev`.
+The [PR snapshot checks](../docs/deployment.md#deploy-through-github-actions) compare both merge
+parents with the selected main/head SHAs and refuse stale candidates. `prod` requires a published release;
 release dispatches run from `main`. The reusable image workflow and runner build job bind the stage's
 GitHub Environment. Check actual environment reviewers and branch protections separately: source
 configuration is not evidence of the live GitHub settings.

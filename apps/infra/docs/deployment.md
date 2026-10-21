@@ -42,6 +42,17 @@ A fresh PR ref can resolve to a different merge commit; pin the reviewed SHA whe
 | Full SHA or open PR `#number` | `dev` | Ensure commit images and runner build exist |
 | Published `vX.Y.Z` release | `dev`, `prod` | Version-qualified images and published runner release |
 
+PRs must target `main`. Both current and legacy deployment workflows pin the remote main SHA
+and PR head when resolving the request. They accept GitHub's test merge only when its two
+parents exactly match those selected SHAs; `MERGEABLE` alone does not establish freshness.
+The resolver logs main, head and merge SHAs, and all build jobs consume that verified merge.
+
+A stale or unavailable merge is checked up to five times, with five seconds between observations.
+Exhaustion stops before builds or deployment and reports the expected and observed parents.
+A closed, conflicting or retargeted PR, or a change to its selected head, also stops resolution. Redispatch after
+GitHub has refreshed the merge or the PR has been corrected. Later main pushes require a
+new dispatch; they do not silently change an already selected deployment snapshot.
+
 Release dispatches run from `main`. Production accepts releases only. For a protected production apply:
 
 ```bash
