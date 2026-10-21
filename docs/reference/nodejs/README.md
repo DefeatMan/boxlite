@@ -323,6 +323,10 @@ reattach to an `exec()` session instead; only a REST runtime serves that.
 returned execution exposes no stdin, and the attach asks the server to refuse
 writes on the socket: `boxlite serve` does, the hosted platform does not.
 
+Dropping a writable attach closes the session's stdin, as in every SDK
+([#2045](https://github.com/boxlite-ai/boxlite/issues/2045)); attach with
+`stdin` false to follow a command that reads stdin without ending it.
+
 ---
 
 ### `JsBoxInfo`

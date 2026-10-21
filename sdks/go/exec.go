@@ -287,7 +287,11 @@ type AttachOptions struct {
 // `run IMAGE COMMAND` runs COMMAND *as* init (docker semantics), which is why
 // following it is an attach rather than an exec. The returned *Execution is an
 // ordinary one: Wait, Signal, Kill, ResizeTTY and Stdin all behave as they do
-// for StartExecution.
+// for StartExecution. Close does not: it detaches without killing the session,
+// where closing a StartExecution kills a command still running. A writable
+// attach still closes the session's stdin on the way out, as in every SDK
+// (#2045), so attach ReadOnly to leave a command that reads stdin undisturbed.
+// The connection stays open until the session ends or the runtime is closed.
 //
 // Attaching to the main session boots the box and creates its container but
 // does not run init — Box.Start does. Callers go create → attach → start so a
@@ -318,7 +322,8 @@ func (b *Box) Attach(_ context.Context, opts *AttachOptions) (*Execution, error)
 
 // wireExecution registers the stream callbacks on a freshly returned C handle
 // and wraps it as an *Execution. Shared by StartExecution and Attach — past the
-// C call the two are the same object with the same lifecycle.
+// C call the two are the same object; only Close differs, a teardown the C
+// handle decides (see Attach).
 func (b *Box) wireExecution(handle *C.CExecutionHandle, state *executionStreamState) (*Execution, error) {
 	streamHandle := cgo.NewHandle(state)
 

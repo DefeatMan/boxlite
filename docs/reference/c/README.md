@@ -880,7 +880,12 @@ REST runtime serves that.
 A non-zero `read_only` attaches without stdin — docker's `--no-stdin` — and
 asks the server to refuse writes on the socket: `boxlite serve` does, the
 hosted platform does not. The returned handle takes the same output and exit
-callbacks, wait, kill and free as an exec's.
+callbacks, wait and kill as an exec's. Freeing it detaches without killing the
+session, where freeing an exec's handle kills a process still running. A
+writable attach still closes the session's stdin on the way out, as in every
+SDK ([#2045](https://github.com/boxlite-ai/boxlite/issues/2045)), so attach
+read-only to leave a command that reads stdin undisturbed; the connection stays
+open until the session ends or the runtime is freed.
 
 ---
 

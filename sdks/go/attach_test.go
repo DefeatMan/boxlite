@@ -7,9 +7,11 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,15 +25,22 @@ import (
 type sessionServer struct {
 	*httptest.Server
 	// refuse, when non-zero, is the status the main-session upgrade is refused
-	// with. Fixed before the server starts, so handlers read it unlocked.
+	// with; hold keeps the main session running past its first output. Both
+	// are fixed before the server starts, so handlers read them unlocked.
 	refuse   int
+	hold     bool
 	mu       sync.Mutex
 	requests []string
 }
 
 func newSessionServer(t *testing.T, refuse int) *sessionServer {
 	t.Helper()
-	s := &sessionServer{refuse: refuse}
+	return startSessionServer(t, &sessionServer{refuse: refuse})
+}
+
+// startSessionServer serves s until the test ends.
+func startSessionServer(t *testing.T, s *sessionServer) *sessionServer {
+	t.Helper()
 	s.Server = httptest.NewServer(http.HandlerFunc(s.serve))
 	t.Cleanup(s.Close)
 	return s
@@ -55,6 +64,10 @@ func (s *sessionServer) serve(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(s.refuse)
 			_, _ = io.WriteString(w, `{"error":{"message":"main session already has an attached client","code":"already_exists"}}`)
+			return
+		}
+		if s.hold {
+			playHeldSession(w, r, "X-Boxlite-Execution-Id: init-1\r\n")
 			return
 		}
 		playSession(w, r, "X-Boxlite-Execution-Id: init-1\r\n")
@@ -91,20 +104,51 @@ func (s *sessionServer) box(ctx context.Context, t *testing.T) *Box {
 	return box
 }
 
-// playSession upgrades the request, sends the session, and holds the
-// connection until the client hangs up, which it does on the exit frame.
-// extraHeaders is raw header lines added to the 101.
-func playSession(w http.ResponseWriter, r *http.Request, extraHeaders string) {
+// upgrade completes the WebSocket handshake by hand, extraHeaders raw header
+// lines on the 101, and returns the hijacked connection, or ok false once it
+// has answered with an error instead.
+func upgrade(w http.ResponseWriter, r *http.Request, extraHeaders string) (conn net.Conn, rw *bufio.ReadWriter, ok bool) {
 	accept := sha1.Sum([]byte(r.Header.Get("Sec-WebSocket-Key") + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
 	conn, rw, err := w.(http.Hijacker).Hijack()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return nil, nil, false
+	}
+	_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+		"Sec-WebSocket-Accept: " + base64.StdEncoding.EncodeToString(accept[:]) + "\r\n" + extraHeaders + "\r\n")
+	return conn, rw, true
+}
+
+// playHeldSession plays a session that is still running when the client gets
+// it: "hi", then the exit only once the client hangs up or two seconds pass.
+// The bound keeps a client that waits for the exit from hanging the test.
+func playHeldSession(w http.ResponseWriter, r *http.Request, extraHeaders string) {
+	conn, rw, ok := upgrade(w, r, extraHeaders)
+	if !ok {
 		return
 	}
 	defer conn.Close()
 
-	_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
-		"Sec-WebSocket-Accept: " + base64.StdEncoding.EncodeToString(accept[:]) + "\r\n" + extraHeaders + "\r\n")
+	writeServerFrame(rw, 0x2, []byte("\x01hi"))
+	if rw.Flush() != nil {
+		return
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, _ = io.Copy(io.Discard, rw)
+	writeServerFrame(rw, 0x1, []byte(`{"type":"exit","exit_code":7}`))
+	_ = rw.Flush()
+}
+
+// playSession upgrades the request, sends the session, and holds the
+// connection until the client hangs up, which it does on the exit frame.
+// extraHeaders is raw header lines added to the 101.
+func playSession(w http.ResponseWriter, r *http.Request, extraHeaders string) {
+	conn, rw, ok := upgrade(w, r, extraHeaders)
+	if !ok {
+		return
+	}
+	defer conn.Close()
+
 	writeServerFrame(rw, 0x2, []byte("\x01hi"))
 	writeServerFrame(rw, 0x2, []byte("\x02oops"))
 	writeServerFrame(rw, 0x1, []byte(`{"type":"exit","exit_code":7}`))
@@ -203,6 +247,30 @@ func TestAttachReturnsTheRefusal(t *testing.T) {
 	}
 	if !IsAlreadyExists(err) {
 		t.Fatalf("expected an already-exists error, got %v", err)
+	}
+}
+
+// TestCloseDetachesWithoutKillingTheSession: an attach joins a session the box
+// owns, so closing the handle while that session still runs must let go of it
+// rather than end it — no kill reaches the server.
+func TestCloseDetachesWithoutKillingTheSession(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	server := startSessionServer(t, &sessionServer{hold: true})
+	box := server.box(ctx, t)
+
+	execution, err := box.Attach(ctx, nil)
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	if err := execution.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	for _, request := range server.received() {
+		if strings.HasPrefix(request, "DELETE ") {
+			t.Fatalf("closing an attach must not kill the session, got %v", server.received())
+		}
 	}
 }
 
