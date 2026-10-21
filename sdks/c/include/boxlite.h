@@ -630,6 +630,9 @@ typedef struct VolumeHandle CBoxliteVolumeHandle;
 // Runtime shutdown completion.
 typedef void (*CRuntimeShutdownCb)(CBoxliteError*, void*);
 
+// Snapshot JSON completion. Caller frees the owned result string.
+typedef void (*CBoxSnapshotCb)(char*, CBoxliteError*, void*);
+
 // C ABI representation of volume metadata.
 //
 // `id` and `created_at` are non-null, heap-owned C strings. A standalone value
@@ -1542,6 +1545,16 @@ void boxlite_runtime_free(CBoxliteRuntime *runtime);
 //
 // Returns the number of dispatched events, or `-1` on error.
 int boxlite_runtime_drain(CBoxliteRuntime *runtime, int timeout_ms, CBoxliteError *out_error);
+
+// Submit create/get/list/remove/restore using a JSON request with `operation`,
+// `name` (except list), and optional `snapshot_type` (default filesystem).
+// The callback owns the JSON result string; release with boxlite_free_string.
+// Inputs are copied before returning. Cancellation does not abort disk capture.
+enum BoxliteErrorCode boxlite_box_snapshot(CBoxHandle *handle,
+                                           const char *request_json,
+                                           CBoxSnapshotCb cb,
+                                           void *user_data,
+                                           CBoxliteError *out_error);
 
 void boxlite_free_string(char *s);
 

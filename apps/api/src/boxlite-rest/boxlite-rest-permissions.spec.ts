@@ -40,6 +40,7 @@ const EXPECTED: Record<string, OrganizationResourcePermission[] | null> = {
   updateInboundNetwork: [WRITE_BOXES],
   // proxy controller
   createSnapshot: [WRITE_BOXES],
+  restoreSnapshot: [WRITE_BOXES],
   listSnapshots: null,
   getSnapshot: null,
   deleteSnapshot: [WRITE_BOXES],
