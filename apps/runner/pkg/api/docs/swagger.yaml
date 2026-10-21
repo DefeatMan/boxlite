@@ -689,6 +689,10 @@ paths:
       responses:
         '101':
           description: Switching Protocols
+          headers:
+            X-Boxlite-Execution-Id:
+              description: The main session's execution id
+              type: string
         '404':
           description: box not found
           schema:
