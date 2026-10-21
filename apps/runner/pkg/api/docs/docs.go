@@ -584,7 +584,13 @@ const docTemplate = `{
                 ],
                 "responses": {
                     "101": {
-                        "description": "Switching Protocols"
+                        "description": "Switching Protocols",
+                        "headers": {
+                            "X-Boxlite-Execution-Id": {
+                                "type": "string",
+                                "description": "The main session's execution id"
+                            }
+                        }
                     },
                     "404": {
                         "description": "box not found",

@@ -63,8 +63,9 @@ var openMainSession = func(ctx context.Context, boxId string) (attachExec, strin
 //	@Tags		boxlite
 //	@Param		boxId	path	string	true	"Box ID"
 //	@Success	101
-//	@Failure	404	{object}	map[string]string	"box not found"
-//	@Failure	409	{object}	map[string]string	"already attached, or the box cannot be attached to"
+//	@Header		101	{string}	X-Boxlite-Execution-Id	"The main session's execution id"
+//	@Failure	404	{object}	map[string]string		"box not found"
+//	@Failure	409	{object}	map[string]string		"already attached, or the box cannot be attached to"
 //	@Router		/v1/boxes/{boxId}/attach [get]
 func BoxliteBoxAttach(ctx *gin.Context) {
 	boxId := ctx.Param("boxId")
