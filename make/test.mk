@@ -574,6 +574,18 @@ test\:apps\:api: _ensure-apps-deps
 	@echo "🧪 Running API unit tests..."
 	@cd apps && yarn nx run api:test --runInBand $(if $(FILTER),--testNamePattern '$(FILTER)',)
 
+PHONY_TARGETS += test\:apps\:runner test\:snapshot-contract
+PHONY_TARGETS += test\:unit\:reference-server
+
+test\:unit\:reference-server:
+	@.venv/bin/python -m unittest discover -s openapi/reference-server/tests -p 'test_*.py' -v $(if $(FILTER),-k '$(FILTER)',)
+
+test\:apps\:runner: dev\:go
+	@cd apps/runner && go test -tags boxlite_dev -count=1 $(GOTEST_FILTER) ./pkg/api/controllers ./pkg/boxlite
+
+test\:snapshot-contract:
+	@.venv/bin/python -m pytest -v sdks/python/tests/test_memory_snapshot_contract.py
+
 test\:apps: _ensure-apps-deps dev\:go
 	@echo "🧪 Running apps workspace test matrix..."
 	@$(MAKE) test:apps:infra

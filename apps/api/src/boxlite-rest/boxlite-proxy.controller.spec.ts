@@ -25,15 +25,13 @@ const activeAuth = {
 
 function makeHarness() {
   const boxService = {
-    findOneByIdOrName: jest
-      .fn()
-      .mockResolvedValue({
-        id: 'box-uuid',
-        runnerId: 'runner-1',
-        autoResume: true,
-        state: 'started',
-        inboundEnabled: true,
-      }),
+    findOneByIdOrName: jest.fn().mockResolvedValue({
+      id: 'box-uuid',
+      runnerId: 'runner-1',
+      autoResume: true,
+      state: 'started',
+      inboundEnabled: true,
+    }),
     updateLastActivityAt: jest.fn().mockResolvedValue(undefined),
     getNetworkTunnelUrl: jest.fn().mockResolvedValue('https://3000-box.proxy.test'),
   }
@@ -56,6 +54,36 @@ function makeHarness() {
 describe('BoxliteProxyController', () => {
   beforeEach(() => jest.clearAllMocks())
   afterEach(() => jest.useRealTimers())
+
+  it('routes memory snapshot operations to the owning runner without starting the source', async () => {
+    jest.mocked(createProxyMiddleware).mockReturnValue(jest.fn() as never)
+    const { controller, boxService, autoResume } = makeHarness()
+    const request = { body: { name: 'checkpoint', snapshot_type: 'memory' } }
+    await controller.createSnapshot(activeAuth as never, 'source', request as never, {} as never, jest.fn())
+    await controller.getSnapshot(activeAuth as never, 'source', 'checkpoint', request as never, {} as never, jest.fn())
+    await controller.createBoxFromSnapshot(
+      activeAuth as never,
+      'source',
+      'checkpoint',
+      request as never,
+      {} as never,
+      jest.fn(),
+    )
+    const paths = jest
+      .mocked(createProxyMiddleware)
+      .mock.calls.map(([options]) => (options.pathRewrite as (path: string, req: unknown) => string)('', request))
+    expect(paths).toEqual([
+      '/v1/boxes/box-uuid/snapshots',
+      '/v1/boxes/box-uuid/snapshots/checkpoint',
+      '/v1/boxes/box-uuid/snapshots/checkpoint/boxes',
+    ])
+    expect(boxService.findOneByIdOrName).toHaveBeenCalledWith('source', 'org-1')
+    expect(autoResume.ensureReady).not.toHaveBeenCalled()
+    const reflector = new Reflector()
+    expect(
+      reflector.get(RequiredOrganizationResourcePermissions, BoxliteProxyController.prototype.createBoxFromSnapshot),
+    ).toEqual([OrganizationResourcePermission.WRITE_BOXES])
+  })
 
   it('requires box write permission to declare a public port', () => {
     const reflector = new Reflector()
@@ -148,9 +176,9 @@ describe('BoxliteProxyController', () => {
     const { controller, boxService, tunnelService } = makeHarness()
     tunnelService.declarePublic.mockRejectedValue(new Error('database unavailable'))
 
-    await expect(
-      controller.proxyNetworkTunnel(activeAuth as never, 'public-box', 3000),
-    ).rejects.toThrow('database unavailable')
+    await expect(controller.proxyNetworkTunnel(activeAuth as never, 'public-box', 3000)).rejects.toThrow(
+      'database unavailable',
+    )
     expect(boxService.getNetworkTunnelUrl).toHaveBeenCalledWith('public-box', 'org-1', 3000)
   })
 
@@ -158,9 +186,9 @@ describe('BoxliteProxyController', () => {
     const { controller, boxService, tunnelService } = makeHarness()
     boxService.getNetworkTunnelUrl.mockRejectedValue(new Error('region unavailable'))
 
-    await expect(
-      controller.proxyNetworkTunnel(activeAuth as never, 'public-box', 3000),
-    ).rejects.toThrow('region unavailable')
+    await expect(controller.proxyNetworkTunnel(activeAuth as never, 'public-box', 3000)).rejects.toThrow(
+      'region unavailable',
+    )
     expect(tunnelService.declarePublic).not.toHaveBeenCalled()
   })
 
@@ -174,9 +202,7 @@ describe('BoxliteProxyController', () => {
       inboundEnabled: false,
     })
 
-    await expect(
-      controller.proxyNetworkTunnel(activeAuth as never, 'public-box', 3000),
-    ).rejects.toMatchObject({
+    await expect(controller.proxyNetworkTunnel(activeAuth as never, 'public-box', 3000)).rejects.toMatchObject({
       status: 409,
     })
     expect(boxService.getNetworkTunnelUrl).not.toHaveBeenCalled()
@@ -192,9 +218,7 @@ describe('BoxliteProxyController', () => {
       inboundEnabled: true,
     })
 
-    await expect(
-      controller.proxyNetworkTunnel(activeAuth as never, 'public-box', 3000),
-    ).rejects.toMatchObject({
+    await expect(controller.proxyNetworkTunnel(activeAuth as never, 'public-box', 3000)).rejects.toMatchObject({
       status: 409,
       // Pin the reason: without inboundEnabled: true this 409s at the visibility
       // gate instead, and the state policy under test never runs.
@@ -243,9 +267,9 @@ describe('BoxliteProxyController', () => {
       inboundEnabled: false,
     })
 
-    await expect(
-      controller.proxyNetworkTunnel(activeAuth as never, 'public-box', 3000),
-    ).rejects.toMatchObject({ status: 409 })
+    await expect(controller.proxyNetworkTunnel(activeAuth as never, 'public-box', 3000)).rejects.toMatchObject({
+      status: 409,
+    })
     expect(boxService.updateLastActivityAt).not.toHaveBeenCalled()
   })
 
@@ -263,9 +287,9 @@ describe('BoxliteProxyController', () => {
         inboundEnabled: true,
       })
 
-      await expect(
-        controller.proxyNetworkTunnel(activeAuth as never, 'public-box', 3000),
-      ).rejects.toMatchObject({ status: 409 })
+      await expect(controller.proxyNetworkTunnel(activeAuth as never, 'public-box', 3000)).rejects.toMatchObject({
+        status: 409,
+      })
       expect(autoResume.ensureReady).not.toHaveBeenCalled()
       expect(boxService.getNetworkTunnelUrl).not.toHaveBeenCalled()
     },
@@ -302,9 +326,7 @@ describe('BoxliteProxyController', () => {
         inboundEnabled: true,
       })
 
-      await expect(
-        controller.proxyNetworkTunnel(activeAuth as never, 'public-box', 3000),
-      ).rejects.toMatchObject({
+      await expect(controller.proxyNetworkTunnel(activeAuth as never, 'public-box', 3000)).rejects.toMatchObject({
         status: 409,
         message: expect.stringContaining('is not running'),
       })

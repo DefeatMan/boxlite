@@ -521,6 +521,8 @@ export interface JsExecution {
 }
 
 export interface JsSnapshotInfo {
+  snapshotType: "filesystem" | "memory";
+  isMock: boolean;
   id: string;
   boxId: string;
   name: string;
@@ -529,9 +531,12 @@ export interface JsSnapshotInfo {
   sizeBytes: number;
 }
 
-export type JsSnapshotOptions = Record<string, never>;
+export interface JsSnapshotOptions {
+  snapshotType?: "filesystem" | "memory";
+}
 
 export interface JsSnapshotHandle {
+  createBox(snapshot: string, name?: string | null): Promise<JsBox>;
   create(
     name: string,
     options?: JsSnapshotOptions | null,

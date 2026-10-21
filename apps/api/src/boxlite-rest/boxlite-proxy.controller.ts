@@ -35,10 +35,7 @@ import { AuthContext } from '../common/decorators/auth-context.decorator'
 import { OrganizationAuthContext } from '../common/interfaces/auth-context.interface'
 import { BoxService } from '../box/services/box.service'
 import { RunnerService } from '../box/services/runner.service'
-import {
-  AUTO_RESUMABLE_STATES,
-  BoxAutoResumeService,
-} from '../box/services/box-auto-resume.service'
+import { AUTO_RESUMABLE_STATES, BoxAutoResumeService } from '../box/services/box-auto-resume.service'
 import { BoxState } from '../box/enums/box-state.enum'
 import { TunnelService } from '../box/services/tunnel.service'
 
@@ -72,14 +69,91 @@ export class BoxliteProxyController {
     @Res() res: Response,
     @Next() next: NextFunction,
   ) {
+    return this.proxyToRunner(authContext, boxId, (id) => `/v1/boxes/${id}/exec`, req, res, next, USER_OPERATION)
+  }
+
+  @Post(':boxId/snapshots')
+  @RequiredOrganizationResourcePermissions([OrganizationResourcePermission.WRITE_BOXES])
+  async createSnapshot(
+    @AuthContext() auth: OrganizationAuthContext,
+    @Param('boxId') id: string,
+    @Req() req: Request,
+    @Res() res: Response,
+    @Next() next: NextFunction,
+  ) {
+    return this.proxyToRunner(auth, id, (box) => `/v1/boxes/${box}/snapshots`, req, res, next, OBSERVATION_ONLY)
+  }
+
+  @Get(':boxId/snapshots')
+  async listSnapshots(
+    @AuthContext() auth: OrganizationAuthContext,
+    @Param('boxId') id: string,
+    @Req() req: Request,
+    @Res() res: Response,
+    @Next() next: NextFunction,
+  ) {
+    return this.proxyToRunner(auth, id, (box) => `/v1/boxes/${box}/snapshots`, req, res, next, OBSERVATION_ONLY)
+  }
+
+  @Get(':boxId/snapshots/:snapshot')
+  async getSnapshot(
+    @AuthContext() auth: OrganizationAuthContext,
+    @Param('boxId') id: string,
+    @Param('snapshot') snapshot: string,
+    @Req() req: Request,
+    @Res() res: Response,
+    @Next() next: NextFunction,
+  ) {
     return this.proxyToRunner(
-      authContext,
-      boxId,
-      (runnerBoxId) => `/v1/boxes/${runnerBoxId}/exec`,
+      auth,
+      id,
+      (box) => `/v1/boxes/${box}/snapshots/${encodeURIComponent(snapshot)}`,
       req,
       res,
       next,
-      USER_OPERATION,
+      OBSERVATION_ONLY,
+    )
+  }
+
+  @Delete(':boxId/snapshots/:snapshot')
+  @RequiredOrganizationResourcePermissions([OrganizationResourcePermission.WRITE_BOXES])
+  async deleteSnapshot(
+    @AuthContext() auth: OrganizationAuthContext,
+    @Param('boxId') id: string,
+    @Param('snapshot') snapshot: string,
+    @Req() req: Request,
+    @Res() res: Response,
+    @Next() next: NextFunction,
+  ) {
+    return this.proxyToRunner(
+      auth,
+      id,
+      (box) => `/v1/boxes/${box}/snapshots/${encodeURIComponent(snapshot)}`,
+      req,
+      res,
+      next,
+      OBSERVATION_ONLY,
+    )
+  }
+
+  @Post(':boxId/snapshots/:snapshot/boxes')
+  @RequiredOrganizationResourcePermissions([OrganizationResourcePermission.WRITE_BOXES])
+  async createBoxFromSnapshot(
+    @AuthContext() authContext: OrganizationAuthContext,
+    @Param('boxId') boxId: string,
+    @Param('snapshot') snapshot: string,
+    @Req() req: Request,
+    @Res() res: Response,
+    @Next() next: NextFunction,
+  ) {
+    return this.proxyToRunner(
+      authContext,
+      boxId,
+      (runnerBoxId) => `/v1/boxes/${runnerBoxId}/snapshots/${encodeURIComponent(snapshot)}/boxes`,
+      req,
+      res,
+      next,
+      OBSERVATION_ONLY,
     )
   }
 
@@ -245,10 +319,7 @@ export class BoxliteProxyController {
     // Refuse at once a box the CONNECT could never wake. A box it can wake
     // gets its URI as it is: the proxy wakes it on the CONNECT, and waits for
     // the service to listen, so waking it here would only hold the caller.
-    if (
-      box.state !== BoxState.STARTED &&
-      (!box.autoResume || !AUTO_RESUMABLE_STATES.includes(box.state))
-    ) {
+    if (box.state !== BoxState.STARTED && (!box.autoResume || !AUTO_RESUMABLE_STATES.includes(box.state))) {
       throw new ConflictException(`Box ${boxId} is not running (state: ${box.state})`)
     }
 
