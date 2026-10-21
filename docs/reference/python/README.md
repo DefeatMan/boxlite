@@ -358,6 +358,10 @@ The guarantee is scoped to the attach stream, as it is in docker: holding a box
 handle still lets you `stop()` it, and `Execution.kill()` / `.signal()` /
 `.resize_tty()` go over their own routes rather than this socket.
 
+Dropping a writable attach closes the session's stdin, as in every SDK
+([#2045](https://github.com/boxlite-ai/boxlite/issues/2045)); attach with
+`stdin=False` to follow a command that reads stdin without ending it.
+
 ---
 
 ### `boxlite.BoxInfo`

@@ -374,7 +374,9 @@ init, which `run IMAGE COMMAND` starts. Attaching boots the box without running
 init, so attach before `start()` to see all of its output.
 `AttachOptions::execution(id)` reattaches to an exec session instead; only the
 REST backend serves that. `.read_only()` attaches without stdin — docker's
-`--no-stdin`.
+`--no-stdin`. Dropping a writable attach's `Execution` closes the session's
+stdin, as in every SDK ([#2045](https://github.com/boxlite-ai/boxlite/issues/2045));
+a read-only one leaves it alone.
 
 #### Lifecycle
 

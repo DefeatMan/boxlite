@@ -895,6 +895,12 @@ enum BoxliteErrorCode boxlite_box_exec(CBoxHandle *handle,
 //
 // The handle that comes back is an ordinary `CExecutionHandle` — the same
 // stdout/stderr/exit callbacks, stdin, wait, signal, kill and resize all apply.
+// Freeing it is the one difference: it detaches without killing the session,
+// where freeing an exec's handle kills a process still running. A writable
+// attach still closes the session's stdin on the way out, as every SDK's
+// does (#2045), so attach read-only to leave a command that reads stdin
+// undisturbed. The connection stays open until the session ends or the
+// runtime is freed.
 //
 // Attaching to the main session boots the box and creates its container but
 // does NOT run init; `boxlite_start_box` does. Callers therefore go

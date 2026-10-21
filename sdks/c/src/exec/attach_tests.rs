@@ -2,9 +2,10 @@
 //! FFI the way a C caller drives them, against a loopback box API.
 //!
 //! A REST runtime yields a real box handle with no VM behind it. The server
-//! answers the box lookup, `POST /exec` and both attach upgrades, and every
-//! session it accepts plays "hi" on stdout, "oops" on stderr, then exit code
-//! 7. It serves one connection per request the test makes, then exits.
+//! answers the box lookup, `POST /exec` and both attach upgrades, and a session
+//! it accepts plays "hi" on stdout, "oops" on stderr, then exit code 7 — or,
+//! held, stops after "hi" so the client gets a session still running. It
+//! serves one connection per request the test makes, then exits.
 
 use crate::*;
 use std::ffi::{CStr, CString};
@@ -23,12 +24,18 @@ const BOX_JSON: &str = r#"{"box_id":"box1","name":null,"status":"running","creat
 const REFUSAL_JSON: &str =
     r#"{"error":{"message":"another client is attached","code":"already_exists"}}"#;
 const NO_ROUTE_JSON: &str = r#"{"error":{"message":"no route","code":"not_found"}}"#;
+const EXIT_FRAME: &str = r#"{"type":"exit","exit_code":7}"#;
+const SESSION_ENDED: &str = "session ended";
 
-/// How the server answers the main-session upgrade.
+/// How the server plays the sessions it accepts.
 #[derive(Clone, Copy)]
-enum MainSession {
+enum Sessions {
+    /// Every session plays to its exit.
     Open,
+    /// The main-session upgrade is refused; an exec still plays to its exit.
     Refused,
+    /// Every session is still running when the client gets it.
+    Held,
 }
 
 /// A loopback box API. Each request goes on `requests`, as "METHOD target"
@@ -39,13 +46,17 @@ struct BoxApi {
 }
 
 impl BoxApi {
-    fn serve(connections: usize, main: MainSession) -> Self {
+    fn serve(connections: usize, sessions: Sessions) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
         let address = listener.local_addr().expect("loopback listener address");
         let (seen, requests) = mpsc::channel();
         thread::spawn(move || {
+            // One thread per connection, so a request made while a session is
+            // held open — a kill, say — is answered and seen at once.
             for stream in listener.incoming().take(connections) {
-                answer(stream.expect("accept connection"), main, &seen);
+                let stream = stream.expect("accept connection");
+                let seen = seen.clone();
+                thread::spawn(move || answer(stream, sessions, &seen));
             }
         });
         Self {
@@ -57,28 +68,46 @@ impl BoxApi {
     fn received(&self) -> Vec<String> {
         self.requests.try_iter().collect()
     }
+
+    /// Everything seen up to and including the end of a held session, so a
+    /// control message the client sends after the test's last call is counted.
+    fn received_until_session_ends(&self) -> Vec<String> {
+        let mut seen = Vec::new();
+        while let Ok(entry) = self.requests.recv_timeout(Duration::from_secs(10)) {
+            let ended = entry == SESSION_ENDED;
+            seen.push(entry);
+            if ended {
+                break;
+            }
+        }
+        seen
+    }
 }
 
-fn answer(mut stream: TcpStream, main: MainSession, seen: &Sender<String>) {
+fn answer(mut stream: TcpStream, sessions: Sessions, seen: &Sender<String>) {
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .expect("set read timeout");
     let (method, target, websocket_key) = read_request(&stream);
     let _ = seen.send(format!("{method} {target}"));
     let path = target.split('?').next().unwrap_or_default();
-    match (format!("{method} {path}").as_str(), main) {
+    match (format!("{method} {path}").as_str(), sessions) {
         ("GET /v1/boxes/box1", _) => reply(&mut stream, "200 OK", BOX_JSON),
         ("POST /v1/boxes/box1/exec", _) => {
             reply(&mut stream, "200 OK", r#"{"execution_id":"exec-1"}"#)
         }
-        ("GET /v1/boxes/box1/attach", MainSession::Refused) => {
+        ("GET /v1/boxes/box1/attach", Sessions::Refused) => {
             reply(&mut stream, "409 Conflict", REFUSAL_JSON)
         }
-        ("GET /v1/boxes/box1/attach", MainSession::Open) => {
-            play_session(stream, &websocket_key, "x-boxlite-execution-id: init-1\r\n")
-        }
+        ("GET /v1/boxes/box1/attach", _) => serve_session(
+            stream,
+            &websocket_key,
+            "x-boxlite-execution-id: init-1\r\n",
+            sessions,
+            seen,
+        ),
         ("GET /v1/boxes/box1/executions/exec-1/attach", _) => {
-            play_session(stream, &websocket_key, "")
+            serve_session(stream, &websocket_key, "", sessions, seen)
         }
         _ => reply(&mut stream, "404 Not Found", NO_ROUTE_JSON),
     }
@@ -125,9 +154,15 @@ fn reply(stream: &mut TcpStream, status: &str, body: &str) {
         .expect("write response");
 }
 
-/// Completes the upgrade, plays the session, then holds the connection until
-/// the client hangs up, which it does on the exit frame.
-fn play_session(mut stream: TcpStream, websocket_key: &str, extra_headers: &str) {
+/// Completes the upgrade, `extra_headers` on the 101, and plays the session
+/// the way `sessions` says.
+fn serve_session(
+    mut stream: TcpStream,
+    websocket_key: &str,
+    extra_headers: &str,
+    sessions: Sessions,
+    seen: &Sender<String>,
+) {
     let accept = derive_accept_key(websocket_key.as_bytes());
     write!(
         stream,
@@ -135,14 +170,43 @@ fn play_session(mut stream: TcpStream, websocket_key: &str, extra_headers: &str)
          Sec-WebSocket-Accept: {accept}\r\n{extra_headers}\r\n"
     )
     .expect("write upgrade");
-    let mut ws = WebSocket::from_raw_socket(stream, Role::Server, None);
+    let ws = WebSocket::from_raw_socket(stream, Role::Server, None);
+    match sessions {
+        Sessions::Held => play_held_session(ws, seen),
+        Sessions::Open | Sessions::Refused => play_session(ws),
+    }
+}
+
+/// Plays the whole session, then holds the connection until the client hangs
+/// up, which it does on the exit frame.
+fn play_session(mut ws: WebSocket<TcpStream>) {
     ws.send(Message::Binary(b"\x01hi".to_vec()))
         .expect("send stdout");
     ws.send(Message::Binary(b"\x02oops".to_vec()))
         .expect("send stderr");
-    ws.send(Message::Text(r#"{"type":"exit","exit_code":7}"#.into()))
+    ws.send(Message::Text(EXIT_FRAME.into()))
         .expect("send exit");
     while ws.read().is_ok() {}
+}
+
+/// Plays a session that is still running when the client gets it: "hi", then
+/// the exit only once the client hangs up or two seconds pass. The bound keeps
+/// a client that waits for the exit from hanging the test. Every control
+/// message the client sends goes on `seen` as "WS <text>", and
+/// `SESSION_ENDED` once the session is over.
+fn play_held_session(mut ws: WebSocket<TcpStream>, seen: &Sender<String>) {
+    ws.get_mut()
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("set read timeout");
+    ws.send(Message::Binary(b"\x01hi".to_vec()))
+        .expect("send stdout");
+    while let Ok(message) = ws.read() {
+        if let Message::Text(text) = message {
+            let _ = seen.send(format!("WS {text}"));
+        }
+    }
+    let _ = ws.send(Message::Text(EXIT_FRAME.into()));
+    let _ = seen.send(SESSION_ENDED.to_string());
 }
 
 /// A box as a C caller holds it, on a REST runtime. Dropping it frees both.
@@ -292,6 +356,21 @@ extern "C" fn on_exit(exit_code: c_int, user_data: *mut c_void) {
     unsafe { (*user_data.cast::<Session>()).exit_code = Some(exit_code) };
 }
 
+/// A command with no arguments, environment or options.
+fn bare_command(program: &'static CStr) -> BoxliteCommand {
+    BoxliteCommand {
+        command: program.as_ptr(),
+        args: ptr::null(),
+        argc: 0,
+        env_pairs: ptr::null(),
+        env_count: 0,
+        workdir: ptr::null(),
+        user: ptr::null(),
+        timeout_secs: 0.0,
+        tty: 0,
+    }
+}
+
 /// Takes the message out of `error`, freeing it.
 fn take_message(error: &mut FFIError) -> String {
     if error.message.is_null() {
@@ -306,7 +385,7 @@ fn take_message(error: &mut FFIError) -> String {
 
 #[test]
 fn attach_streams_the_main_session_to_the_callbacks() {
-    let api = BoxApi::serve(2, MainSession::Open);
+    let api = BoxApi::serve(2, Sessions::Open);
     let rest_box = RestBox::open(&api);
 
     let mut execution: *mut CExecutionHandle = ptr::null_mut();
@@ -329,7 +408,7 @@ fn attach_streams_the_main_session_to_the_callbacks() {
 
 #[test]
 fn attach_reports_a_refused_attach_without_a_handle() {
-    let api = BoxApi::serve(2, MainSession::Refused);
+    let api = BoxApi::serve(2, Sessions::Refused);
     let rest_box = RestBox::open(&api);
 
     let mut execution: *mut CExecutionHandle = ptr::null_mut();
@@ -351,7 +430,7 @@ fn attach_reports_a_refused_attach_without_a_handle() {
 
 #[test]
 fn attach_rejects_a_null_out_execution_before_any_request() {
-    let api = BoxApi::serve(1, MainSession::Open);
+    let api = BoxApi::serve(1, Sessions::Open);
     let rest_box = RestBox::open(&api);
 
     let mut error = FFIError::default();
@@ -366,7 +445,7 @@ fn attach_rejects_a_null_out_execution_before_any_request() {
 
 #[test]
 fn attach_reattaches_an_exec_by_id_read_only() {
-    let api = BoxApi::serve(2, MainSession::Open);
+    let api = BoxApi::serve(2, Sessions::Open);
     let rest_box = RestBox::open(&api);
 
     let mut execution: *mut CExecutionHandle = ptr::null_mut();
@@ -397,20 +476,10 @@ fn attach_reattaches_an_exec_by_id_read_only() {
 
 #[test]
 fn exec_streams_its_session_to_the_callbacks() {
-    let api = BoxApi::serve(3, MainSession::Open);
+    let api = BoxApi::serve(3, Sessions::Open);
     let rest_box = RestBox::open(&api);
 
-    let command = BoxliteCommand {
-        command: c"true".as_ptr(),
-        args: ptr::null(),
-        argc: 0,
-        env_pairs: ptr::null(),
-        env_count: 0,
-        workdir: ptr::null(),
-        user: ptr::null(),
-        timeout_secs: 0.0,
-        tty: 0,
-    };
+    let command = bare_command(c"true");
     let mut execution: *mut CExecutionHandle = ptr::null_mut();
     let mut error = FFIError::default();
     let code = unsafe { boxlite_box_exec(rest_box.handle, &command, &mut execution, &mut error) };
@@ -427,5 +496,55 @@ fn exec_streams_its_session_to_the_callbacks() {
             "POST /v1/boxes/box1/exec",
             "GET /v1/boxes/box1/executions/exec-1/attach",
         ],
+    );
+}
+
+#[test]
+fn freeing_an_attach_detaches_without_killing_the_session() {
+    // One connection to spare, so a kill would be served and recorded.
+    let api = BoxApi::serve(3, Sessions::Held);
+    let rest_box = RestBox::open(&api);
+
+    let mut execution: *mut CExecutionHandle = ptr::null_mut();
+    let mut error = FFIError::default();
+    let code =
+        unsafe { boxlite_box_attach(rest_box.handle, ptr::null(), 0, &mut execution, &mut error) };
+    assert_eq!(code, BoxliteErrorCode::Ok, "{}", take_message(&mut error));
+
+    // The box's command is still running; this client only joined it.
+    unsafe { boxlite_execution_free(execution) };
+
+    // Like every SDK's attach, a writable one closes stdin on the way out
+    // (#2045); what it must never do is kill the session it joined.
+    assert_eq!(
+        api.received_until_session_ends(),
+        [
+            "GET /v1/boxes/box1",
+            "GET /v1/boxes/box1/attach",
+            r#"WS {"type":"stdin_eof"}"#,
+            SESSION_ENDED
+        ],
+        "freeing an attach must not kill the session it joined",
+    );
+}
+
+#[test]
+fn freeing_an_exec_still_kills_its_running_process() {
+    let api = BoxApi::serve(4, Sessions::Held);
+    let rest_box = RestBox::open(&api);
+
+    let command = bare_command(c"sleep");
+    let mut execution: *mut CExecutionHandle = ptr::null_mut();
+    let mut error = FFIError::default();
+    let code = unsafe { boxlite_box_exec(rest_box.handle, &command, &mut execution, &mut error) };
+    assert_eq!(code, BoxliteErrorCode::Ok, "{}", take_message(&mut error));
+
+    // This handle started the process, so letting go must not leak it.
+    unsafe { boxlite_execution_free(execution) };
+
+    let requests = api.received_until_session_ends();
+    assert!(
+        requests.contains(&"DELETE /v1/boxes/box1/executions/exec-1".to_string()),
+        "freeing an exec still running must kill it, got {requests:?}",
     );
 }
