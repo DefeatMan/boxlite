@@ -97,7 +97,11 @@ fmt\:check\:c:
 # (nx run-many format + root-level prettier over TS/JSON/YAML).
 fmt\:apps: _ensure-apps-deps
 	@echo "🔧 Formatting apps workspace..."
+ifneq ($(FMT_FILES),)
+	@cd apps && yarn prettier --write $(patsubst apps/%,%,$(FMT_FILES))
+else
 	@cd apps && yarn format
+endif
 
 # apps/ has no `format:check` script; prettier --check over the same TS globs
 # `lint:ts` uses is the check counterpart.

@@ -365,6 +365,8 @@ export interface ContainerCapabilities {
 }
 
 export interface AdvancedBoxOptions {
+  /** Guest privilege; requires privileged_enabled from a REST server. */
+  privileged?: boolean;
   capabilities?: ContainerCapabilities;
 }
 
@@ -527,6 +529,7 @@ export class SimpleBox {
       user: options.user,
       advanced: options.advanced
         ? {
+            privileged: options.advanced.privileged,
             capabilities: options.advanced.capabilities
               ? {
                   add: [...(options.advanced.capabilities.add ?? [])],

@@ -28,6 +28,16 @@ import { isValidNetworkAllowEntry, MAX_NETWORK_ALLOW_LIST_ENTRIES } from '../../
 
 const logger = new Logger('CreateBoxDto')
 
+export class AdvancedBoxOptionsDto {
+  @IsOptional()
+  @IsBoolean()
+  privileged?: boolean
+
+  @ValidateIf((_, value) => value !== undefined)
+  @IsIn([undefined], { message: 'capability policies are not supported for cloud boxes' })
+  capabilities?: never
+}
+
 @ValidatorConstraint({ name: 'isNetworkAllowEntry', async: false })
 class IsNetworkAllowEntryConstraint implements ValidatorConstraintInterface {
   validate(value: unknown): boolean {
@@ -329,12 +339,10 @@ export class CreateBoxDto {
   })
   rootfs_path?: never
 
-  // advanced.capabilities is implemented by `boxlite serve` and the reference
-  // server; the runner has no path for it yet. Lift this once the runner
-  // forwards a capability policy.
-  @ValidateIf((_, value) => value !== undefined)
-  @IsIn([undefined], {
-    message: 'advanced options are not supported for cloud boxes',
-  })
-  advanced?: never
+  // Only guest privilege is configurable. Host sandbox policy remains local.
+  @IsOptional()
+  @IsObject()
+  @ValidateNested()
+  @Type(() => AdvancedBoxOptionsDto)
+  advanced?: AdvancedBoxOptionsDto
 }
