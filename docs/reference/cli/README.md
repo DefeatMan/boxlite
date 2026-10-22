@@ -34,6 +34,7 @@ For a quick start, see [`src/cli/README.md`](../../../src/cli/README.md).
   - [`boxlite logs`](#boxlite-logs)
   - [`boxlite stats`](#boxlite-stats)
   - [`boxlite network tunnel`](#boxlite-network-tunnel)
+  - [`boxlite network inbound / outbound`](#boxlite-network-inbound--outbound)
   - [`boxlite serve`](#boxlite-serve)
   - [`boxlite volume`](#boxlite-volume)
   - [`boxlite completion`](#boxlite-completion)
@@ -649,6 +650,34 @@ Display resource usage statistics for a box.
 
 ---
 
+### `boxlite network inbound / outbound`
+
+```text
+boxlite network inbound BOX MODE
+boxlite network outbound BOX MODE [--allow-net RULE]...
+```
+
+`BOX` is an ID or name; `MODE` is required and accepts `enabled` or `disabled`.
+Each invocation replaces the selected direction. `inbound` accepts no allowlist.
+
+```bash
+boxlite network inbound mybox enabled
+boxlite network outbound mybox enabled --allow-net '*.example.com' --allow-net 10.0.0.0/8
+boxlite network outbound mybox enabled  # default empty list: unrestricted
+boxlite network outbound mybox disabled
+boxlite inspect mybox
+```
+
+`--allow-net` takes one hostname, wildcard hostname, IPv4 address or CIDR.
+Repeat it for multiple rules; comma-separated values and empty rules such as
+`''` are invalid, as they are at create. Omit `--allow-net` for the default
+empty list, which removes restrictions when enabled. Disabled mode accepts no
+`--allow-net`. No previous allowlist is retained or restored.
+
+Outbound updates require a running box with an existing NIC. Local inbound
+updates are unsupported; cloud inbound uses the proxy's existing visibility
+contract. See [runtime behavior and persistence](../../guides/networking.md#updating-a-running-box).
+
 ### `boxlite network tunnel`
 
 **Synopsis:** `boxlite network tunnel BOX GUEST_PORT [--listen ADDRESS | --revoke]`
@@ -837,7 +866,7 @@ Used by `run` and `create` (defined in `src/cli/src/cli.rs`).
 | Flag | Description |
 |------|-------------|
 | `--network <enabled\|disabled>` | Outbound mode; default `enabled`. Disabled mode creates no network interface. |
-| `--allow-net HOST` | Restrict TCP/UDP egress to exact hosts, `*.example.com`, IPs, or CIDRs; repeatable, implies enabled networking, and is incompatible with `--network disabled`. Hostname-only rules deny UDP unless an IP/CIDR is also allowed. |
+| `--allow-net HOST` | Restrict TCP/UDP egress to exact hosts, `*.example.com`, IPv4 addresses, or IPv4 CIDRs; repeatable, implies enabled networking, and is incompatible with `--network disabled`. Hostname-only rules deny UDP unless an IP/CIDR is also allowed. |
 | `--inbound <enabled\|disabled>` | Inbound mode; default `disabled` (services exposed by the box are unreachable from outside). |
 | `--net-tx-kbps KBPS` | Cap what the box sends (guest to internet), in kilobits/sec. `0` or unset leaves it uncapped. |
 | `--net-rx-kbps KBPS` | Cap what reaches the box (internet to guest), in kilobits/sec. `0` or unset leaves it uncapped. |
