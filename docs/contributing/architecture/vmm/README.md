@@ -312,11 +312,19 @@ today.
   `write(&mut self, offset: u64, data: &[u8])`. These are the most common
   shapes among seven surveyed VMMs: `Bus` in six, `BusDevice` in four, and
   offset-based access in all seven.
-- **Registration.** `insert` rejects overlapping ranges with `Overlap`.
-  Devices register while the VM is built; M6 and M7 change the guest without
-  adding bus devices.
+- **Registration.** `Bus::insert` rejects a range that overlaps a registered
+  one and names that range's owner. A range can also reserve a window the host
+  serves in the kernel, which no device may claim. Devices register while the
+  VM is built; M6 and M7 change the guest without adding bus devices.
+- **Dispatch.** `Buses::dispatch` serves MMIO and port exits and returns every
+  other exit to the vCPU loop. An access must lie entirely inside one range,
+  as in Firecracker's bus. Any other access reads `0xFF`, drops its write and
+  is counted, as on a PC bus with nothing driving it. A claimed read reaches
+  the device zero-filled, so stale `kvm_run` bytes never leak to the guest.
 - **Locking.** A vCPU thread holds a device's lock for one register access and
-  hands anything that can block to the device's worker.
+  hands anything that can block to the device's worker. A lock that an
+  earlier panic poisoned stops the next access too, as Firecracker and
+  cloud-hypervisor do: the panic was a VMM bug, never guest input.
 
 ### Interrupts
 
@@ -328,7 +336,11 @@ today.
 - **Raising an interrupt.** Devices raise their lines from their own threads
   through the VMM's interrupt path, which calls `Vm::set_irq_line` and then
   unparks halted vCPUs.
-- **Naming.** M1 names the type devices hold. The survey found no dominant
+- **Naming.** Devices hold an `IrqLine`, which is not `Clone`, so a device
+  cannot share its line. `pulse` raises an edge and `set_level` holds a level,
+  skipping a repeated one; as with OpenVMM's `LineInterrupt`, dropping a line
+  held high lowers it. It calls the object-safe `IrqChip` trait, which every
+  host VM implements through `Vm::set_irq_line`. The survey found no dominant
   name: `VirtioInterrupt`, `InterruptSourceGroup` and `IrqSender` each appear
   once or twice.
 

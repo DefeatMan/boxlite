@@ -17,6 +17,7 @@ inspect the error's host cause.
 ```text
 boxlite-vmm
 ├── boxlite-hypervisor
+├── mio (the event loop's poller)
 ├── vm-memory
 └── linux-loader (Linux x86_64 ELF loading and boot parameters)
 ```
@@ -30,8 +31,9 @@ boxlite-vmm
 | `memory` | `GuestRam`: owned guest RAM, the RAM layout, and the registration lifetime rules |
 | `cpu_features` | x86_64 guest CPUID for each vCPU and the boot MSRs |
 | `vcpu` | Worker threads, stop coordination, and exit handling |
-| `irq` | Device interrupt assignment and routing; HVF and KVM provide the controller, WHP (M10) only local APICs |
-| `bus` | Address-range registration and device I/O dispatch |
+| `bus` | `Bus`, `BusRange` and `BusDevice`, and `Buses::dispatch`, which serves the MMIO and port exits of a vCPU |
+| `irq` | `IrqChip`, the host interrupt controller as devices see it, and `IrqLine`, one device line; HVF and KVM provide the controller, WHP (M10) only local APICs |
+| `events` | `Event`, which ends the VM, `EventSender`, and `EventLoop`, the poller that waits for the first event |
 
 Backend implementation and guest boot follow in M1. Virtio devices, the BoxLite
 engine adapter, engine selection, and `native` feature wiring follow in M2.
@@ -238,6 +240,36 @@ write-back default; KVM already creates the other boot MSRs as zero. The
 local APIC keeps its KVM reset state, with LINT0 in ExtINT mode on the boot
 vCPU; Linux programs LINT1 itself.
 
+## Buses, lines and events
+
+These are the pieces devices are built from; no device uses them yet.
+
+- **Buses.** `bus::Bus` maps non-overlapping `BusRange`s, each named by its
+  owner, to a `BusDevice` and the register offset the device sees at the
+  range base, so the i8042 can claim port `0x60` as register 0 and port
+  `0x64` as register 4. `insert` fails with the owner of the range a new one
+  overlaps. A range without a device reserves a window the host serves in
+  the kernel. The bus holds the devices' strong references and never changes
+  once built, so lookups take no lock.
+- **Dispatch.** `Buses::dispatch` serves `MmioRead`, `MmioWrite`, `IoIn` and
+  `IoOut` and returns every other exit. An access must lie entirely inside one
+  range. An access no device holds, or one that crosses a range end, reads
+  `0xFF`, drops its write and is counted by `Bus::unclaimed`; Linux probes
+  port `0x87` once at boot and takes `0xFF` as no ISA DMA controller. Reads
+  reach a device zero-filled. A device whose lock an earlier panic poisoned
+  stops the next access too.
+- **Lines.** `irq::IrqLine` drives one line through `IrqChip`, which every
+  host VM implements with `Vm::set_irq_line`. It is not `Clone`. `pulse`
+  raises an edge; `set_level` holds a level, makes no host call for a repeated
+  level and keeps the old level when the host call fails, so the next call
+  retries. Dropping a line held high lowers it.
+- **Events.** A device ends the VM by sending `Event::GuestReset` or
+  `Event::DeviceFailed` through an `EventSender`, which never blocks or
+  panics and wakes the `EventLoop`'s `mio` poller. `EventLoop::wait` returns
+  the oldest event, or `None` at its timeout, and rechecks the queue every
+  second in case a wake-up was lost. Every event ends the VM; the VMM never
+  restarts a guest.
+
 ## Build
 
 `make vmm:boot` builds the pinned x86_64 ELF kernel (`vmlinux`) inside a pinned
@@ -261,8 +293,12 @@ reports it on port `0x3f8`. A 64-bit guest entered through
 segments from the GDT in RAM, reads markers at RSI and at the top of RAM, and
 stores RFLAGS, CR0, CR3, CR4, EFER, CPUID leaves 1 and 0xB, MISC_ENABLE and
 MTRRdefType for the test to compare. The 3 GiB allocation is `MAP_NORESERVE`, so only the touched
-pages are committed; a host with `vm.overcommit_memory=2` refuses it. CI runs
-the same tests through `make coverage:vmm:kvm`.
+pages are committed; a host with `vm.overcommit_memory=2` refuses it. The
+[bus](#buses-lines-and-events) tests in `tests::kvm` modules need 2 MiB: a
+flat 32-bit guest writes and reads a test device on the port bus at its
+register offset, and an `IrqLine` sets GSI 4 and 5 through `KVM_IRQ_LINE`,
+skipping a repeated level. CI runs the same tests through
+`make coverage:vmm:kvm`.
 
 With the corresponding Rust targets installed, the crate can also be compiled
 for each host with a backend module without booting a VM:
