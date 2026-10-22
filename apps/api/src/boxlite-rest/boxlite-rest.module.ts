@@ -9,6 +9,8 @@ import { TypeOrmModule } from '@nestjs/typeorm'
 import { FilesystemSnapshot } from './snapshot.entity'
 import { SnapshotService } from './snapshot.service'
 import { BoxliteSnapshotController } from './boxlite-snapshot.controller'
+import { BoxliteCacheController } from './boxlite-cache.controller'
+import { RegionModule } from '../region/region.module'
 import { BoxModule } from '../box/box.module'
 import { AuthModule } from '../auth/auth.module'
 import { ApiKeyModule } from '../api-key/api-key.module'
@@ -28,6 +30,7 @@ import { CommerceBoxLimitService } from './commerce-box-limit.service'
 
 @Module({
   imports: [
+    RegionModule,
     BoxModule,
     AuthModule,
     ApiKeyModule,
@@ -38,6 +41,7 @@ import { CommerceBoxLimitService } from './commerce-box-limit.service'
     TypeOrmModule.forFeature([FilesystemSnapshot]),
   ],
   controllers: [
+    BoxliteCacheController,
     BoxliteMeController,
     BoxliteSnapshotController,
     BoxliteConfigController,
