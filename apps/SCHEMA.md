@@ -372,7 +372,7 @@ or `archived`.
 | `runnerId` | `uuid` | nullable |
 | `prevRunnerId` | `uuid` | nullable; the runner to revert to if reassignment fails |
 | `class` | `enum` | `small` \| `medium` \| `large`, default `small` |
-| `state` | `enum` | 13 values, default `unknown` |
+| `state` | `enum` | 15 values, default `unknown` |
 | `desiredState` | `enum` | `started` \| `stopped` \| `destroyed` \| `resized` |
 | `pending` | `boolean` | default `false` |
 | `recoverable` | `boolean` | default `false` |
@@ -629,7 +629,7 @@ A unit of work handed to exactly one runner. Optimistic-locked through
 | ------ | ---- | ----- |
 | `id` | `uuid` | primary key |
 | `version` | `integer` | TypeORM `@VersionColumn` |
-| `type` | `character varying` | 9 values; see below |
+| `type` | `character varying` | 11 values; see below |
 | `status` | `enum` | `PENDING` \| `IN_PROGRESS` \| `COMPLETED` \| `FAILED` |
 | `runnerId` | `character varying` | |
 | `resourceType` | `enum` | `BOX` \| `ARTIFACT` \| `BACKUP` |
@@ -644,7 +644,12 @@ A unit of work handed to exactly one runner. Optimistic-locked through
 
 Job types: `CREATE_BOX`, `START_BOX`, `STOP_BOX`, `DESTROY_BOX`, `EXPORT_BOX`,
 `IMPORT_BOX`, `ROLLBACK_EXPORT_BOX`, `ROLLBACK_IMPORT_BOX`,
-`DISCARD_EXPORTED_BOX`.
+`DISCARD_EXPORTED_BOX`, `CREATE_SNAPSHOT`, `RESTORE_SNAPSHOT`. The two snapshot
+jobs, like a migration's, take the `BACKUP` slot keyed by the box, so a box's
+`DESTROY_BOX` can run beside them.
+
+A running job reporting `IN_PROGRESS` again refreshes `updatedAt`, which is
+how a long snapshot job stays clear of the ten-minute stale-job sweep.
 
 **Partial unique:** `(resourceType, resourceId, runnerId)` where
 `completedAt IS NULL` — history accumulates freely, but at most one job per
