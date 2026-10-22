@@ -45,13 +45,13 @@ pub(crate) struct EventSender {
 
 impl EventSender {
     /// Queues `event` and wakes the loop. An event sent after the loop is
-    /// dropped is discarded: the VM has already ended. Only a broken host
-    /// fails the wake-up; the failure is logged, and [`EventLoop::wait`]
-    /// still finds the event at its next recheck.
+    /// dropped is logged and discarded: the VM has already ended. Only a
+    /// broken host fails the wake-up; the failure is logged, and
+    /// [`EventLoop::wait`] still finds the event at its next recheck.
     pub(crate) fn send(&self, event: Event) {
-        if self.events.send(event).is_ok()
-            && let Err(error) = self.waker.wake()
-        {
+        if let Err(mpsc::SendError(event)) = self.events.send(event) {
+            tracing::debug!(?event, "event sent after the VM ended; discarded");
+        } else if let Err(error) = self.waker.wake() {
             tracing::warn!(%error, "event loop wake-up failed; the event waits for the next recheck");
         }
     }

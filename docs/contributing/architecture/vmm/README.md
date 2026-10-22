@@ -312,10 +312,13 @@ today.
   `write(&mut self, offset: u64, data: &[u8])`. These are the most common
   shapes among seven surveyed VMMs: `Bus` in six, `BusDevice` in four, and
   offset-based access in all seven.
-- **Registration.** `Bus::insert` rejects a range that overlaps a registered
-  one and names that range's owner. A range can also reserve a window the host
-  serves in the kernel, which no device may claim. Devices register while the
-  VM is built; M6 and M7 change the guest without adding bus devices.
+- **Registration.** Devices register through `chipset::ChipsetBuilder`, the
+  one registry of port ranges, MMIO ranges and interrupt lines, as in
+  OpenVMM's chipset builder. Platform code reserves the windows the host
+  serves in the kernel and adds each device by name with the ranges and lines
+  it claims. `build` reports every conflict at once, naming the claimant and
+  the owner, or returns an immutable `Chipset` that owns the devices. Devices register while
+  the VM is built; M6 and M7 change the guest without adding bus devices.
 - **Dispatch.** `Buses::dispatch` serves MMIO and port exits and returns every
   other exit to the vCPU loop. An access must lie entirely inside one range,
   as in Firecracker's bus. Any other access reads `0xFF`, drops its write and
@@ -331,7 +334,7 @@ today.
 - **No emulated controller.** HVF and KVM provide in-kernel interrupt
   controllers, so the VMM emulates none. WHP (M10) emulates only local APICs.
 - **Line assignment.** The VMM gives each device a line when it builds the
-  machine. It declares virtio-mmio interrupts edge-triggered, as Firecracker,
+  machine, and the chipset builder rejects a second claim of a line. It declares virtio-mmio interrupts edge-triggered, as Firecracker,
   libkrun and dragonball do.
 - **Raising an interrupt.** Devices raise their lines from their own threads
   through the VMM's interrupt path, which calls `Vm::set_irq_line` and then

@@ -16,12 +16,12 @@ use crate::error::Result;
 /// wrapper can add behaviour, such as counting or waking parked vCPUs.
 pub(crate) trait IrqChip: Send + Sync {
     /// Sets interrupt `line`, a GSI on x86_64 or an SPI on arm64, to `level`.
-    fn set_irq_line(&self, line: u32, level: bool) -> boxlite_hypervisor::Result<()>;
+    fn set_line(&self, line: u32, level: bool) -> Result<()>;
 }
 
 impl<V: boxlite_hypervisor::Vm> IrqChip for V {
-    fn set_irq_line(&self, line: u32, level: bool) -> boxlite_hypervisor::Result<()> {
-        boxlite_hypervisor::Vm::set_irq_line(self, line, level)
+    fn set_line(&self, line: u32, level: bool) -> Result<()> {
+        Ok(self.set_irq_line(line, level)?)
     }
 }
 
@@ -52,9 +52,9 @@ impl IrqLine {
         if before == level {
             return Ok(());
         }
-        if let Err(error) = self.chip.set_irq_line(self.line, level) {
+        if let Err(error) = self.chip.set_line(self.line, level) {
             self.high.store(before, Ordering::SeqCst);
-            return Err(error.into());
+            return Err(error);
         }
         Ok(())
     }
@@ -62,9 +62,9 @@ impl IrqLine {
     /// Raises an edge: sets the line, then clears it. A failed set skips the
     /// clear; a failed clear leaves the line set, which drop then lowers.
     pub(crate) fn pulse(&self) -> Result<()> {
-        self.chip.set_irq_line(self.line, true)?;
+        self.chip.set_line(self.line, true)?;
         self.high.store(true, Ordering::SeqCst);
-        self.chip.set_irq_line(self.line, false)?;
+        self.chip.set_line(self.line, false)?;
         self.high.store(false, Ordering::SeqCst);
         Ok(())
     }
@@ -74,8 +74,10 @@ impl Drop for IrqLine {
     fn drop(&mut self) {
         if *self.high.get_mut() {
             // The device is gone, so nothing will clear the line; the VM is
-            // ending as well, so a failure here has nowhere to go.
-            let _ = self.chip.set_irq_line(self.line, false);
+            // ending as well, so a failure can only be logged.
+            if let Err(error) = self.chip.set_line(self.line, false) {
+                tracing::warn!(line = self.line, %error, "lowering a dropped interrupt line failed");
+            }
         }
     }
 }

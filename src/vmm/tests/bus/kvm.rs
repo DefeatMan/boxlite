@@ -77,8 +77,8 @@ struct Recording {
 }
 
 impl IrqChip for Recording {
-    fn set_irq_line(&self, line: u32, level: bool) -> boxlite_hypervisor::Result<()> {
-        boxlite_hypervisor::Vm::set_irq_line(&*self.vm, line, level)?;
+    fn set_line(&self, line: u32, level: bool) -> crate::error::Result<()> {
+        self.vm.set_irq_line(line, level)?;
         self.calls.lock().unwrap().push((line, level));
         Ok(())
     }

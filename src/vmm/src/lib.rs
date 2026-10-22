@@ -19,6 +19,11 @@ mod boot;
 mod bus;
 #[cfg_attr(
     not(test),
+    expect(dead_code, reason = "No platform builds a chipset yet.")
+)]
+mod chipset;
+#[cfg_attr(
+    not(test),
     expect(dead_code, reason = "Only the unwired Vm::new uses it.")
 )]
 mod config;

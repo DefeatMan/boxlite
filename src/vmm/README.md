@@ -31,6 +31,7 @@ boxlite-vmm
 | `memory` | `GuestRam`: owned guest RAM, the RAM layout, and the registration lifetime rules |
 | `cpu_features` | x86_64 guest CPUID for each vCPU and the boot MSRs |
 | `vcpu` | Worker threads, stop coordination, and exit handling |
+| `chipset` | `ChipsetBuilder`, the one registry of ranges and interrupt lines, and `Chipset`, the read-only machine it builds |
 | `bus` | `Bus`, `BusRange` and `BusDevice`, and `Buses::dispatch`, which serves the MMIO and port exits of a vCPU |
 | `irq` | `IrqChip`, the host interrupt controller as devices see it, and `IrqLine`, one device line; HVF and KVM provide the controller, WHP (M10) only local APICs |
 | `events` | `Event`, which ends the VM, `EventSender`, and `EventLoop`, the poller that waits for the first event |
@@ -258,17 +259,49 @@ These are the pieces devices are built from; no device uses them yet.
   port `0x87` once at boot and takes `0xFF` as no ISA DMA controller. Reads
   reach a device zero-filled. A device whose lock an earlier panic poisoned
   stops the next access too.
-- **Lines.** `irq::IrqLine` drives one line through `IrqChip`, which every
-  host VM implements with `Vm::set_irq_line`. It is not `Clone`. `pulse`
-  raises an edge; `set_level` holds a level, makes no host call for a repeated
-  level and keeps the old level when the host call fails, so the next call
-  retries. Dropping a line held high lowers it.
+- **Lines.** `irq::IrqLine` drives one line through `IrqChip::set_line`,
+  which every host VM implements with `Vm::set_irq_line`; the distinct name
+  keeps the two traits from colliding where both are in scope. It is not
+  `Clone`. `pulse` raises an edge; `set_level` holds a level, makes no host
+  call for a repeated level and keeps the old level when the host call fails,
+  so the next call retries. Dropping a line held high lowers it and logs a
+  failure to do so.
 - **Events.** A device ends the VM by sending `Event::GuestReset` or
   `Event::DeviceFailed` through an `EventSender`, which never blocks or
-  panics and wakes the `EventLoop`'s `mio` poller. `EventLoop::wait` returns
+  panics and wakes the `EventLoop`'s `mio` poller. An event sent after the
+  loop is gone is logged at debug level and discarded. `EventLoop::wait` returns
   the oldest event, or `None` at its timeout, and rechecks the queue every
   second in case a wake-up was lost. Every event ends the VM; the VMM never
   restarts a guest.
+
+## Chipset
+
+`chipset::ChipsetBuilder` is the one registry of port ranges, MMIO ranges and
+interrupt lines, like OpenVMM's chipset builder. Platform code reserves the
+windows the host serves in the kernel, then adds each device by name with a
+closure that claims the device's resources from a `Resources` handle and
+returns the device. `build` reports every conflict at once, naming the
+claimant and the owner, or returns an immutable `Chipset` that owns the
+devices:
+
+```text
+5 chipset conflict(s): intruder claims port range 0x3fe+0x4, held by com1; intruder claims port range 0x42+0x1, held by in-kernel PIT; intruder claims MMIO range 0xfee00800+0x10, held by in-kernel local APIC; intruder claims MMIO range 0x1000+0x0, which is empty or wraps; intruder claims interrupt line 4, held by com1;
+```
+
+- **Claims.** A claim never fails: `Resources` records it, so the closure
+  always finishes and every later claim is still checked. A rejected claim
+  leaves the range or line with its first owner, so every later conflict
+  names that owner. `pio_with_offset` sets the device offset a range's first
+  port reaches, for a controller whose ports are split across several ranges.
+- **Constructors.** A constructor only claims resources and builds state; a
+  device that needs a thread starts it after `build`. A line from
+  `Resources::line` is not armed until `build` succeeds: using it earlier
+  fails with `Error::LineNotArmed` and makes no host call, so a device that a
+  conflict discards never raised anything. On a conflict, every device drops
+  without having run.
+- **Dispatch.** `Chipset::dispatch` hands a vCPU exit to the buses and
+  returns every exit that is not MMIO or port I/O. The chipset never changes
+  after the build, so every vCPU thread shares it without a lock of its own.
 
 ## Build
 
@@ -294,10 +327,12 @@ segments from the GDT in RAM, reads markers at RSI and at the top of RAM, and
 stores RFLAGS, CR0, CR3, CR4, EFER, CPUID leaves 1 and 0xB, MISC_ENABLE and
 MTRRdefType for the test to compare. The 3 GiB allocation is `MAP_NORESERVE`, so only the touched
 pages are committed; a host with `vm.overcommit_memory=2` refuses it. The
-[bus](#buses-lines-and-events) tests in `tests::kvm` modules need 2 MiB: a
-flat 32-bit guest writes and reads a test device on the port bus at its
-register offset, and an `IrqLine` sets GSI 4 and 5 through `KVM_IRQ_LINE`,
-skipping a repeated level. CI runs the same tests through
+[bus](#buses-lines-and-events) and [chipset](#chipset) tests in `tests::kvm`
+modules need 2 MiB: a flat 32-bit guest writes and reads a test device on the
+port bus at its register offset, and an `IrqLine` sets GSI 4 and 5 through
+`KVM_IRQ_LINE`, skipping a repeated level. Another flat guest reads a claimed
+and an unclaimed port of a built chipset, and the device's line, armed by the
+build, reaches KVM. CI runs the same tests through
 `make coverage:vmm:kvm`.
 
 With the corresponding Rust targets installed, the crate can also be compiled

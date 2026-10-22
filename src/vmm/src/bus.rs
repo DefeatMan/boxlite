@@ -57,7 +57,7 @@ impl BusRange {
 }
 
 /// A device behind a range, and the register offset it sees at the range base.
-type Target = (Arc<Mutex<dyn BusDevice>>, u64);
+pub(crate) type Target = (Arc<Mutex<dyn BusDevice>>, u64);
 
 /// One registered range: a device window, or a window the host serves in the
 /// kernel, which no device may claim and which never reaches the bus.
