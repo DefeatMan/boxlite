@@ -259,13 +259,27 @@ export class BoxService {
       const needsFreshBox = requiresFreshBox(createBoxDto, organization, resolvedImage)
 
       if (createBoxDto.volumes && createBoxDto.volumes.length > 0) {
-        const volumeIdOrNames = createBoxDto.volumes.map((v) => v.volumeId)
+        for (const volume of createBoxDto.volumes) {
+          if (volume.type !== undefined && volume.type !== 'volume' && volume.type !== 'cache') {
+            throw new BadRequestError('Unknown volume type')
+          }
+          if (
+            volume.type === 'cache' &&
+            (typeof volume.volumeId !== 'string' ||
+              !/^[A-Za-z0-9_-]{1,64}$/.test(volume.volumeId) ||
+              volume.subpath !== undefined)
+          ) {
+            throw new BadRequestError('Cache requires a simple 1..64 character ID and no subpath')
+          }
+        }
+        const volumeIdOrNames = createBoxDto.volumes.filter((v) => v.type !== 'cache').map((v) => v.volumeId)
         const canonical = await this.volumeService.validateVolumes(organization.id, volumeIdOrNames)
         // Replace the caller's selector with the id it resolved to inside this
         // organization. A name is only unique per organization, but everything
         // downstream (the runner, the `boxlite-volume-<id>` bucket) reads this
         // field as a global id - see VolumeService.validateVolumes.
         createBoxDto.volumes = createBoxDto.volumes.map((volume) => {
+          if (volume.type === 'cache') return volume
           const canonicalId = canonical.get(volume.volumeId)
           if (!canonicalId) {
             // validateVolumes keys every selector or throws, so this is
@@ -313,6 +327,7 @@ export class BoxService {
       // a default here would hand every box a USER override its image may not
       // define — which is exactly what 16d9248bb removed.
       box.runAsUser = createBoxDto.runAsUser
+      box.privileged = createBoxDto.privileged ?? false
       box.workingDir = createBoxDto.workingDir
       box.entrypoint = createBoxDto.entrypoint
       box.cmd = createBoxDto.cmd

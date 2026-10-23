@@ -30,6 +30,9 @@ import { BoxliteBoxSnapshotController } from './boxlite-box-snapshot.controller'
 import { BoxSnapshotService } from '../box/services/box-snapshot.service'
 import { BoxliteSnapshotController } from './boxlite-snapshot.controller'
 import { BoxliteRestModule } from './boxlite-rest.module'
+import { BoxliteCacheController } from './boxlite-cache.controller'
+import { RunnerService } from '../box/services/runner.service'
+import { RegionService } from '../region/services/region.service'
 
 jest.mock('http-proxy-middleware', () => ({
   createProxyMiddleware: jest.fn(),
@@ -401,6 +404,7 @@ describe('BoxLite REST routing', () => {
     const boxService = {
       findAllDeprecated: jest.fn().mockResolvedValue([]),
       toBoxDtos: jest.fn().mockResolvedValue([]),
+      findOneByIdOrName: jest.fn().mockResolvedValue({ id: 'box-caches' }),
     }
     const volumeService = { findAll: jest.fn().mockResolvedValue([]) }
     const snapshotService = {
@@ -417,7 +421,14 @@ describe('BoxLite REST routing', () => {
       }),
     }
     await startApp(
-      inModuleOrder(BoxliteBoxController, BoxliteSnapshotController, BoxliteVolumeController, BoxliteImageController),
+      inModuleOrder(
+        BoxliteBoxController,
+        BoxliteBoxSnapshotController,
+        BoxliteSnapshotController,
+        BoxliteVolumeController,
+        BoxliteCacheController,
+        BoxliteImageController,
+      ),
       [
         { provide: ImageCatalogService, useValue: catalog },
         { provide: BoxService, useValue: boxService },
@@ -425,6 +436,8 @@ describe('BoxLite REST routing', () => {
         { provide: CommerceBoxLimitService, useValue: {} },
         { provide: VolumeService, useValue: volumeService },
         { provide: BoxSnapshotService, useValue: snapshotService },
+        { provide: RunnerService, useValue: {} },
+        { provide: RegionService, useValue: {} },
       ],
     )
 
@@ -434,6 +447,9 @@ describe('BoxLite REST routing', () => {
     }
     expect((await get('/api/v1/snapshots/images')).status).toBe(200)
     expect(snapshotService.findOne).toHaveBeenCalledWith('org-123', 'images')
+    // v1/:prefix/caches/:runnerId/:cacheId fits this too; a box named caches keeps it.
+    expect((await get('/api/v1/boxes/caches/snapshots/s1')).status).toBe(200)
+    expect(snapshotService.findOne).toHaveBeenLastCalledWith('org-123', 's1', { sourceBoxId: 'box-caches' })
     expect(boxService.findAllDeprecated).not.toHaveBeenCalled()
     expect(volumeService.findAll).not.toHaveBeenCalled()
     expect(snapshotService.list).not.toHaveBeenCalled()

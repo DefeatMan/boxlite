@@ -117,6 +117,8 @@ func (a *ApiServer) Start(ctx context.Context) error {
 
 	protected := a.router.Group("/")
 	protected.Use(middlewares.AuthMiddleware(a.apiToken))
+	protected.GET("/v1/caches/:tenant/:cache", controllers.BoxliteCache)
+	protected.DELETE("/v1/caches/:tenant/:cache", controllers.BoxliteCache)
 
 	metricsController := protected.Group("/metrics")
 	{

@@ -218,7 +218,14 @@ export interface JsEnvVar {
   value: string;
 }
 
-export type JsVolumeSpec = JsManagedVolumeSpec | JsHostPathVolumeSpec;
+export type JsVolumeSpec = JsManagedVolumeSpec | JsHostPathVolumeSpec | JsCacheVolumeSpec;
+
+export interface JsCacheVolumeSpec {
+  /** Runner-local logical cache ID. Contents are independent on each runner. */
+  cacheVolume: string;
+  guestPath: string;
+  readOnly?: false;
+}
 
 export interface JsManagedVolumeSpec {
   /** Managed volume, by server-assigned id or by name — the server resolves either. */
@@ -304,6 +311,8 @@ export interface JsContainerCapabilities {
 }
 
 export interface JsAdvancedBoxOptions {
+  /** Guest privilege; does not relax the runner's sandbox. */
+  privileged?: boolean;
   capabilities?: JsContainerCapabilities;
 }
 

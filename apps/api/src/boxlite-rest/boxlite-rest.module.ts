@@ -5,6 +5,8 @@
  */
 
 import { Controller, Module, Type } from '@nestjs/common'
+import { BoxliteCacheController } from './boxlite-cache.controller'
+import { RegionModule } from '../region/region.module'
 import { BoxModule } from '../box/box.module'
 import { AuthModule } from '../auth/auth.module'
 import { ApiKeyModule } from '../api-key/api-key.module'
@@ -47,16 +49,27 @@ const unprefixedMounts = [
   unprefixed(BoxliteBoxSnapshotController, 'v1/boxes'),
   unprefixed(BoxliteProxyController, 'v1/boxes'),
   unprefixed(BoxliteVolumeController, 'v1/volumes'),
+  unprefixed(BoxliteCacheController, 'v1/caches'),
   unprefixed(BoxliteRegistryController, 'v1/images/registries'),
   unprefixed(BoxliteImageController, 'v1/images'),
 ]
 
 @Module({
-  imports: [BoxModule, AuthModule, ApiKeyModule, OrganizationModule, UserModule, ImageModule, RegistryModule],
+  imports: [
+    RegionModule,
+    BoxModule,
+    AuthModule,
+    ApiKeyModule,
+    OrganizationModule,
+    UserModule,
+    ImageModule,
+    RegistryModule,
+  ],
   controllers: [
     BoxliteMeController,
     BoxliteConfigController,
     ...unprefixedMounts,
+    BoxliteCacheController,
     BoxliteBoxController,
     BoxliteBoxSnapshotController,
     BoxliteSnapshotController,

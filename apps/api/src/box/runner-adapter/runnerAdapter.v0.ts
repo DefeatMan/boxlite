@@ -256,6 +256,7 @@ export class RunnerAdapterV0 implements RunnerAdapter {
   ): Promise<StartBoxResponse | undefined> {
     const response = await this.boxApiClient.create({
       id: box.id,
+      volumes: box.volumes,
       image,
       osUser: box.osUser,
       cpuQuota: box.cpu,
@@ -264,6 +265,7 @@ export class RunnerAdapterV0 implements RunnerAdapter {
       storageQuota: box.disk,
       env: box.env,
       runAsUser: box.runAsUser,
+      privileged: box.privileged,
       workingDir: box.workingDir,
       entrypoint: box.entrypoint,
       cmd: box.cmd,
@@ -344,6 +346,7 @@ export class RunnerAdapterV0 implements RunnerAdapter {
         placeholder: secret.placeholder,
       })),
       volumes: box.volumes?.map((volume) => ({
+        type: volume.type,
         volumeId: volume.volumeId,
         mountPath: volume.mountPath,
         subpath: volume.subpath,

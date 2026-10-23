@@ -125,6 +125,9 @@ export class Box {
   @Column({ nullable: true })
   runAsUser?: string
 
+  @Column({ default: false })
+  privileged: boolean
+
   @Column({ nullable: true })
   workingDir?: string
 

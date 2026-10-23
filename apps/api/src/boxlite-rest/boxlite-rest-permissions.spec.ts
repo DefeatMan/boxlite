@@ -29,6 +29,9 @@ const reflector = new Reflector()
 // `null` means intentionally open: a read a plain org member may perform. There
 // is no `read:boxes` permission, so reads are gated by membership alone.
 const EXPECTED: Record<string, OrganizationResourcePermission[] | null> = {
+  // cache controller
+  getCache: [OrganizationResourcePermission.READ_VOLUMES],
+  removeCache: [OrganizationResourcePermission.DELETE_VOLUMES],
   // box controller
   createBox: [WRITE_BOXES],
   listBoxes: null,
@@ -79,12 +82,14 @@ function routeMethods(controller: Controller): string[] {
   return [...methods]
 }
 
-describe('REST box/proxy/snapshot permission coverage (GHSA-2qqv-7cwv-mj8h)', () => {
-  // Every controller the REST module mounts under a box or snapshot path, so a
-  // new one is audited without being listed here.
+describe('REST box/proxy/snapshot/cache permission coverage (GHSA-2qqv-7cwv-mj8h)', () => {
+  // Every controller the REST module mounts under a box, snapshot or cache
+  // path, so a new one is audited without being listed here.
   const controllers = (Reflect.getMetadata(MODULE_METADATA.CONTROLLERS, BoxliteRestModule) as Controller[]).filter(
     (controller) =>
-      [Reflect.getMetadata(PATH_METADATA, controller)].flat().some((path: string) => /boxes|snapshots/.test(path)),
+      [Reflect.getMetadata(PATH_METADATA, controller)]
+        .flat()
+        .some((path: string) => /boxes|snapshots|caches/.test(path)),
   )
   const handlers = controllers.flatMap((controller) =>
     routeMethods(controller).map((method) => [`${controller.name}.${method}`, controller, method] as const),

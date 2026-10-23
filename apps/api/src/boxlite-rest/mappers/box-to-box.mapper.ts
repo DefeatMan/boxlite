@@ -49,6 +49,7 @@ export function createBoxToCreateBox(dto: RestCreateBoxDto, target?: string): Cr
   // image's own USER directive stands.
   createDto.user = dto.user
   createDto.runAsUser = dto.user
+  createDto.privileged = dto.advanced?.privileged ?? false
   createDto.workingDir = dto.working_dir
   createDto.entrypoint = dto.entrypoint
   createDto.cmd = dto.cmd
@@ -63,7 +64,8 @@ export function createBoxToCreateBox(dto: RestCreateBoxDto, target?: string): Cr
   createDto.volumes = dto.volumes?.map((volume) => ({
     // `volumeId` is the internal DTO's name for what the volume service looks
     // up by id *or* by name (see VolumeService.validateVolumes).
-    volumeId: volume.managed_volume,
+    volumeId: volume.cache_volume ?? volume.managed_volume,
+    ...(volume.cache_volume !== undefined ? { type: 'cache' as const } : {}),
     mountPath: volume.guest_path,
     // Left undefined when omitted so a row written before this field and an
     // explicit false stay distinguishable in the persisted jsonb.

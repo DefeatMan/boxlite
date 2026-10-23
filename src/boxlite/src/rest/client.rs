@@ -556,6 +556,15 @@ impl ApiClient {
         )
     }
 
+    pub async fn require_privileged_enabled(&self) -> BoxliteResult<()> {
+        // Recheck before every create: cached support may outlive a rollback.
+        let config = self.fetch_config().await?;
+        ensure_capability(
+            "guest privileged",
+            config.capabilities.and_then(|caps| caps.privileged_enabled),
+        )
+    }
+
     pub async fn require_clone_enabled(&self) -> BoxliteResult<()> {
         let config = self.get_config().await?;
         let capabilities = config.capabilities.ok_or_else(|| {
@@ -564,6 +573,16 @@ impl ApiClient {
             )
         })?;
         ensure_capability("clone", capabilities.clone_enabled)
+    }
+
+    pub async fn require_cache_volumes_enabled(&self) -> BoxliteResult<()> {
+        let config = self.fetch_config().await?;
+        if config.capabilities.is_some_and(|c| c.cache_volumes_enabled) {
+            return Ok(());
+        }
+        Err(BoxliteError::Unsupported(
+            "Remote server did not advertise runner-local cache volumes".into(),
+        ))
     }
 
     pub async fn require_export_enabled(&self) -> BoxliteResult<()> {

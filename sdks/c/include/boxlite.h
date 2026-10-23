@@ -723,6 +723,12 @@ enum BoxliteErrorCode boxlite_advanced_options_set_capabilities_drop(CAdvancedBo
                                                                      const char *const *capabilities,
                                                                      int count);
 
+// Enable full capabilities and writable kernel mounts inside the guest only.
+// Runner sandbox security is unchanged. Returns InvalidArgument for a null
+// handle or a conflicting explicit capability policy.
+enum BoxliteErrorCode boxlite_advanced_options_set_privileged(CAdvancedBoxOptions *opts,
+                                                              int enabled);
+
 // Submit a box export.
 //
 // On success, the callback owns the returned path and must release it with

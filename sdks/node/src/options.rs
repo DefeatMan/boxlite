@@ -263,6 +263,8 @@ pub struct JsEnvVar {
 #[napi(object)]
 #[derive(Clone, Debug)]
 pub struct JsVolumeSpec {
+    /// Tenant-scoped cache ID resolved on the selected runner.
+    pub cache_volume: Option<String>,
     /// Managed volume, by server-assigned id **or** by name — the server
     /// resolves either.
     pub managed_volume: Option<String>,
@@ -281,6 +283,16 @@ impl TryFrom<JsVolumeSpec> for VolumeSpec {
     type Error = boxlite_shared::errors::BoxliteError;
 
     fn try_from(v: JsVolumeSpec) -> Result<Self, Self::Error> {
+        if let Some(id) = v.cache_volume {
+            if v.managed_volume.is_some() || v.host_path.is_some() || v.read_only.unwrap_or(false) {
+                return Err(Self::Error::InvalidArgument(
+                    "cacheVolume requires an exclusive writable origin".into(),
+                ));
+            }
+            let spec = VolumeSpec::cache_volume(id, v.guest_path);
+            spec.validate()?;
+            return Ok(spec);
+        }
         let spec = match (v.managed_volume, v.host_path) {
             (Some(_), Some(_)) => {
                 return Err(Self::Error::InvalidArgument(
@@ -537,6 +549,11 @@ impl TryFrom<JsBoxOptions> for BoxOptions {
             .unwrap_or_default();
 
         let health_check = js_opts.health_check.map(HealthCheckOptions::from);
+        let privileged = js_opts
+            .advanced
+            .as_ref()
+            .and_then(|a| a.privileged)
+            .unwrap_or(false);
         let capabilities: Option<ContainerCapabilities> = js_opts
             .advanced
             .and_then(|advanced| advanced.capabilities)
@@ -556,6 +573,7 @@ impl TryFrom<JsBoxOptions> for BoxOptions {
             .collect();
 
         let mut advanced = AdvancedBoxOptions::default();
+        advanced.set_privileged(privileged);
         advanced.set_capabilities(capabilities)?;
         advanced.security = security;
         advanced.health_check = health_check;
@@ -813,6 +831,7 @@ mod tests {
     fn js_managed_volume_is_taken_verbatim() {
         for reference in ["vol_01K2EXAMPLE", "my-data"] {
             let volume = VolumeSpec::try_from(JsVolumeSpec {
+                cache_volume: None,
                 managed_volume: Some(reference.into()),
                 host_path: None,
                 guest_path: "/data".into(),
@@ -830,6 +849,7 @@ mod tests {
     #[test]
     fn js_volume_requires_exactly_one_origin() {
         let err = VolumeSpec::try_from(JsVolumeSpec {
+            cache_volume: None,
             managed_volume: Some("my-data".into()),
             host_path: Some("/tmp/data".into()),
             guest_path: "/data".into(),
@@ -840,6 +860,7 @@ mod tests {
         assert!(err.to_string().contains("not both"), "{err}");
 
         let err = VolumeSpec::try_from(JsVolumeSpec {
+            cache_volume: None,
             managed_volume: None,
             host_path: None,
             guest_path: "/data".into(),
@@ -850,6 +871,27 @@ mod tests {
         assert!(
             err.to_string().contains("managedVolume or hostPath"),
             "{err}"
+        );
+    }
+
+    #[test]
+    fn js_cache_volume_preserves_type_and_refuses_a_second_origin() {
+        let input = JsVolumeSpec {
+            cache_volume: Some("build".into()),
+            managed_volume: None,
+            host_path: None,
+            guest_path: "/cache".into(),
+            read_only: None,
+        };
+        let result = VolumeSpec::try_from(input.clone()).unwrap();
+        assert_eq!(result.cache_volume.as_deref(), Some("build"));
+        assert!(result.managed_volume.is_none());
+        assert!(
+            VolumeSpec::try_from(JsVolumeSpec {
+                host_path: Some("/tmp".into()),
+                ..input
+            })
+            .is_err()
         );
     }
 
@@ -943,6 +985,7 @@ mod tests {
 
         let mut with_capabilities = js.clone();
         with_capabilities.advanced = Some(JsAdvancedBoxOptions {
+            privileged: None,
             capabilities: Some(JsContainerCapabilities {
                 add: Some(vec!["NET_ADMIN".into(), "SYS_PTRACE".into()]),
                 drop: Some(vec!["MKNOD".into(), "NET_RAW".into()]),
@@ -955,6 +998,16 @@ mod tests {
             .expect("capabilities set");
         assert_eq!(capabilities.add, ["NET_ADMIN", "SYS_PTRACE"]);
         assert_eq!(capabilities.drop, ["MKNOD", "NET_RAW"]);
+
+        let mut privileged = js.clone();
+        privileged.advanced = Some(JsAdvancedBoxOptions {
+            privileged: Some(true),
+            capabilities: None,
+        });
+        let privileged = BoxOptions::try_from(privileged).unwrap();
+        assert!(privileged.advanced.privileged);
+        assert_eq!(privileged.advanced.security, SecurityOptions::default());
+        assert!(privileged.advanced.capabilities().is_none());
 
         let opts = BoxOptions::try_from(js).unwrap();
         assert!(!opts.auto_remove);

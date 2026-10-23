@@ -89,6 +89,9 @@ pub(crate) struct ServerConfig {
 #[allow(dead_code)] // Constructed via serde::Deserialize
 #[derive(Debug, Deserialize, Clone, Default)]
 pub(crate) struct ServerCapabilities {
+    pub privileged_enabled: Option<bool>,
+    #[serde(default)]
+    pub cache_volumes_enabled: bool,
     pub linux_capabilities_enabled: Option<bool>,
     pub snapshots_enabled: Option<bool>,
     pub clone_enabled: Option<bool>,
@@ -211,7 +214,7 @@ impl CreateBoxRequest {
             volumes,
             detach: Some(options.detach),
             tty: options.tty.then_some(true),
-            // Only the capability policy crosses the wire. Like `security`,
+            // Guest privilege and capability policy cross the wire. Like `security`,
             // `advanced.network_rate_limit` is deliberately absent: shaping is
             // done by the local gvproxy bridge and a remote server enforces its
             // own network policy, so there is no field for a client to set. The
@@ -221,11 +224,11 @@ impl CreateBoxRequest {
             // an explicitly empty policy is still explicit, and collapsing it
             // into the same shape as "never touched" would leave the server
             // unable to tell the two apart.
-            advanced: options.advanced.capabilities().map(|capabilities| {
-                CreateBoxAdvancedOptions {
-                    capabilities: capabilities.clone(),
-                }
-            }),
+            advanced: (options.advanced.privileged || options.advanced.capabilities().is_some())
+                .then(|| CreateBoxAdvancedOptions {
+                    privileged: options.advanced.privileged,
+                    capabilities: options.advanced.capabilities().cloned(),
+                }),
             // The deprecated remove-on-stop flag was never applied by the cloud
             // control-plane mapper. Keep remote defaults unchanged and only send
             // the modern lifecycle fields when callers explicitly configure them.
@@ -238,14 +241,19 @@ impl CreateBoxRequest {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct CreateBoxAdvancedOptions {
-    pub capabilities: ContainerCapabilities,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub privileged: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<ContainerCapabilities>,
 }
 
-/// A mount on the wire. Only managed volumes exist here — a REST server has no
-/// host filesystem to bind from, so `BoxOptions::sanitize_remote` refuses a host
-/// bind at create and this type has no field for one.
+/// A managed volume or runner-local cache on the wire. The client never supplies
+/// a runner host path; the selected runner resolves cache storage after placement.
 #[derive(Debug, Serialize)]
 pub(crate) struct CreateBoxVolumeSpec {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_volume: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub managed_volume: String,
     pub guest_path: String,
     pub read_only: bool,
@@ -254,11 +262,8 @@ pub(crate) struct CreateBoxVolumeSpec {
 impl From<&crate::runtime::options::VolumeSpec> for CreateBoxVolumeSpec {
     fn from(volume: &crate::runtime::options::VolumeSpec) -> Self {
         Self {
-            // `BoxOptions::sanitize_remote` runs first and refuses any mount whose
-            // `managed_volume` is unset, so the default is unreachable rather
-            // than a fallback: an empty string would be a selector the server
-            // can never resolve. `From` cannot report that, which is why the
-            // check lives at create instead of here.
+            cache_volume: volume.cache_volume.clone(),
+            // Validation requires one origin. Omit this field for cache mounts.
             managed_volume: volume.managed_volume.clone().unwrap_or_default(),
             guest_path: volume.guest_path.clone(),
             read_only: volume.read_only,
@@ -1125,8 +1130,9 @@ mod tests {
 
         let req = CreateBoxRequest::from_options(&opts, None);
         let advanced = req.advanced.as_ref().expect("custom policy is serialized");
-        assert_eq!(advanced.capabilities.add, ["SYS_ADMIN"]);
-        assert_eq!(advanced.capabilities.drop, ["CAP_NET_RAW"]);
+        let capabilities = advanced.capabilities.as_ref().unwrap();
+        assert_eq!(capabilities.add, ["SYS_ADMIN"]);
+        assert_eq!(capabilities.drop, ["CAP_NET_RAW"]);
 
         let json = serde_json::to_value(&req).expect("serialize create request");
         assert_eq!(

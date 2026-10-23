@@ -5918,11 +5918,18 @@ components:
       type: string
     BoxVolume:
       example:
+        type: volume
         volumeId: volume123
         mountPath: /data
         subpath: users/alice
         readOnly: false
       properties:
+        type:
+          default: volume
+          enum:
+          - volume
+          - cache
+          type: string
         volumeId:
           description: The ID of the volume
           example: volume123
@@ -5992,11 +5999,13 @@ components:
         autoDelete: 604800
         autoResume: true
         volumes:
-        - volumeId: volume123
+        - type: volume
+          volumeId: volume123
           mountPath: /data
           subpath: users/alice
           readOnly: false
-        - volumeId: volume123
+        - type: volume
+          volumeId: volume123
           mountPath: /data
           subpath: users/alice
           readOnly: false
@@ -6193,11 +6202,13 @@ components:
           autoDelete: 604800
           autoResume: true
           volumes:
-          - volumeId: volume123
+          - type: volume
+            volumeId: volume123
             mountPath: /data
             subpath: users/alice
             readOnly: false
-          - volumeId: volume123
+          - type: volume
+            volumeId: volume123
             mountPath: /data
             subpath: users/alice
             readOnly: false
@@ -6233,11 +6244,13 @@ components:
           autoDelete: 604800
           autoResume: true
           volumes:
-          - volumeId: volume123
+          - type: volume
+            volumeId: volume123
             mountPath: /data
             subpath: users/alice
             readOnly: false
-          - volumeId: volume123
+          - type: volume
+            volumeId: volume123
             mountPath: /data
             subpath: users/alice
             readOnly: false

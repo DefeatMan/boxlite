@@ -17,6 +17,7 @@ import {
   IsObject,
   IsArray,
   Min,
+  Matches,
   IsIn,
   Validate,
   ValidateIf,
@@ -27,6 +28,16 @@ import {
 import { isValidNetworkAllowEntry, MAX_NETWORK_ALLOW_LIST_ENTRIES } from '../../box/utils/network-validation.util'
 
 const logger = new Logger('CreateBoxDto')
+
+export class AdvancedBoxOptionsDto {
+  @IsOptional()
+  @IsBoolean()
+  privileged?: boolean
+
+  @ValidateIf((_, value) => value !== undefined)
+  @IsIn([undefined], { message: 'capability policies are not supported for cloud boxes' })
+  capabilities?: never
+}
 
 @ValidatorConstraint({ name: 'isNetworkAllowEntry', async: false })
 class IsNetworkAllowEntryConstraint implements ValidatorConstraintInterface {
@@ -154,7 +165,32 @@ class IsNotHostPathConstraint implements ValidatorConstraintInterface {
   }
 }
 
+@ValidatorConstraint({ name: 'oneVolumeOrigin', async: false })
+class OneVolumeOrigin implements ValidatorConstraintInterface {
+  validate(_: unknown, args: { object: object }): boolean {
+    const v = args.object as VolumeSpecDto
+    return Number(v.managed_volume !== undefined) + Number(v.cache_volume !== undefined) === 1
+  }
+  defaultMessage(): string {
+    return 'volume requires exactly one of managed_volume or cache_volume'
+  }
+}
+
+@ValidatorConstraint({ name: 'writableCacheVolume', async: false })
+class WritableCacheVolume implements ValidatorConstraintInterface {
+  validate(readOnly: unknown, args: { object: object }): boolean {
+    return readOnly !== true || (args.object as VolumeSpecDto).cache_volume === undefined
+  }
+  defaultMessage(): string {
+    return 'a cache_volume is always mounted read-write; read_only applies to managed volumes'
+  }
+}
+
 export class VolumeSpecDto {
+  @ValidateIf((v) => v.managed_volume === undefined || v.cache_volume !== undefined)
+  @IsString()
+  @Matches(/^[A-Za-z0-9_-]{1,64}$/)
+  cache_volume?: string
   /**
    * The volume's server-assigned id or its name - the server resolves either.
    *
@@ -162,12 +198,14 @@ export class VolumeSpecDto {
    * validation error on its own rather than reaching the mapper as a lookup
    * that can never match.
    */
+  @ValidateIf((v) => v.cache_volume === undefined || v.managed_volume !== undefined)
   @IsString()
   @IsNotEmpty()
   @Validate(IsNotHostPathConstraint)
-  managed_volume: string
+  managed_volume?: string
 
   @IsString()
+  @Validate(OneVolumeOrigin)
   guest_path: string
 
   /**
@@ -176,10 +214,12 @@ export class VolumeSpecDto {
    *
    * ValidateIf (not IsOptional) so an explicit `null` is still a validation
    * error: a null that quietly became read-write would hand the caller a
-   * writable mount they believe is protected.
+   * writable mount they believe is protected. Runners have no read-only cache
+   * mount, so a read-only cache is refused for the same reason.
    */
   @ValidateIf((_, value) => value !== undefined)
   @IsBoolean()
+  @Validate(WritableCacheVolume)
   read_only?: boolean
 }
 
@@ -332,12 +372,10 @@ export class CreateBoxDto {
   })
   rootfs_path?: never
 
-  // advanced.capabilities is implemented by `boxlite serve` and the reference
-  // server; the runner has no path for it yet. Lift this once the runner
-  // forwards a capability policy.
-  @ValidateIf((_, value) => value !== undefined)
-  @IsIn([undefined], {
-    message: 'advanced options are not supported for cloud boxes',
-  })
-  advanced?: never
+  // Only guest privilege is configurable. Host sandbox policy remains local.
+  @IsOptional()
+  @IsObject()
+  @ValidateNested()
+  @Type(() => AdvancedBoxOptionsDto)
+  advanced?: AdvancedBoxOptionsDto
 }
