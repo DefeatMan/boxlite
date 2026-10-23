@@ -8,11 +8,11 @@ the stage is not serving.
 
 `/v1/config` is the stage's own statement of which surfaces it implements. The
 cloud API serves boxes, exec, files, volumes, metrics and tunnels, snapshots
-where the stage keeps an archive bucket, and no clone, export or import — so
-the ported E2B cases deliberately stop at that line (see test_volumes.py,
-test_box_metrics.py). A stage that flips one of those flags on has surface
-this suite does not cover, and that is worth a failure rather than a silent
-gap.
+where the stage keeps an archive bucket (test_snapshots.py), and no clone,
+export or import — so the ported E2B cases deliberately stop at that line (see
+test_volumes.py, test_box_metrics.py). A stage that flips one of those flags on
+has surface this suite does not cover, and that is worth a failure rather than
+a silent gap.
 """
 from __future__ import annotations
 
