@@ -8,10 +8,17 @@ jest.mock('uuid', () => ({ v4: jest.fn(() => 'mock-uuid'), validate: jest.fn(() 
 import { ValidationPipe, type INestApplication } from '@nestjs/common'
 import { Test } from '@nestjs/testing'
 import { getRedisConnectionToken } from '@nestjs-modules/ioredis'
+import Ajv2020 from 'ajv/dist/2020'
+import addFormats from 'ajv-formats'
 import type { AddressInfo } from 'net'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { QueryFailedError } from 'typeorm'
+import { parse } from 'yaml'
 import { CombinedAuthGuard } from '../auth/combined-auth.guard'
 import { AuthenticatedRateLimitGuard } from '../common/guards/authenticated-rate-limit.guard'
+import { OrganizationUserDto } from '../organization/dto/organization-user.dto'
+import { OrganizationUser } from '../organization/entities/organization-user.entity'
 import { OrganizationMemberRole } from '../organization/enums/organization-member-role.enum'
 import { OrganizationInvitationStatus } from '../organization/enums/organization-invitation-status.enum'
 import { OrganizationActionGuard } from '../organization/guards/organization-action.guard'
@@ -19,6 +26,7 @@ import { OrganizationInvitationService } from '../organization/services/organiza
 import { OrganizationService } from '../organization/services/organization.service'
 import { OrganizationUserService } from '../organization/services/organization-user.service'
 import { SystemRole } from '../user/enums/system-role.enum'
+import { User } from '../user/user.entity'
 import { BoxliteInvitationController } from './boxlite-invitation.controller'
 import { BoxliteMemberController } from './boxlite-member.controller'
 
@@ -30,6 +38,29 @@ const memberships = new Map([
 ])
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const tenant = parse(readFileSync(resolve(__dirname, '../../../../openapi/tenant.openapi.yaml'), 'utf8'))
+const tenantId = 'https://contract.test/tenant.openapi.yaml'
+const ajv = addFormats(new Ajv2020({ strict: false, allErrors: true }))
+ajv.addSchema({ components: tenant.components, paths: tenant.paths }, tenantId)
+
+async function expectTenantResponse(response: Response, path: string, method: string, status: number) {
+  expect(response.status).toBe(status)
+  const contract = tenant.paths[path]?.[method.toLowerCase()]?.responses[status]
+  expect(contract).toBeDefined()
+  if (status === 204) {
+    expect(contract.content).toBeUndefined()
+    expect(await response.text()).toBe('')
+    return
+  }
+  const pointer = path.replace(/~/g, '~0').replace(/\//g, '~1')
+  const validate = ajv.getSchema(
+    `${tenantId}#/paths/${pointer}/${method.toLowerCase()}/responses/${status}/content/application~1json/schema`,
+  )
+  if (!validate) throw new Error(`Missing Tenant API success schema: ${method} ${path} ${status}`)
+  const body = await response.json()
+  expect(validate(body) ? [] : validate.errors).toEqual([])
+  return body
+}
 
 // An API-key principal, as ApiKeyStrategy builds it: the key names its organization.
 function apiKeyPrincipal(
@@ -131,10 +162,17 @@ describe('BoxLite REST members and invitations', () => {
     { method: 'GET', path: '/members', scope: 'read:tenant', status: 200 },
     { method: 'GET', path: '/invitations', scope: 'read:tenant', status: 200 },
     { method: 'POST', path: '/invitations', scope: 'write:tenant', status: 201 },
-    { method: 'DELETE', path: '/members/user-3', scope: 'write:tenant', status: 204 },
+    {
+      method: 'DELETE',
+      path: '/members/user-3',
+      schemaPath: '/members/{user_id}',
+      scope: 'write:tenant',
+      status: 204,
+    },
     {
       method: 'DELETE',
       path: '/invitations/6f1c2a4e-0b7d-4c3e-9a5f-2d8e1b7c4a90',
+      schemaPath: '/invitations/{invitation_id}',
       scope: 'write:tenant',
       status: 204,
     },
@@ -179,12 +217,32 @@ describe('BoxLite REST members and invitations', () => {
 
     it.each(operations)(
       'allows an explicitly scoped owner key for $method $path',
-      async ({ method, path, scope, status }) => {
+      async ({ method, path, schemaPath, scope, status }) => {
         principal = apiKeyPrincipal('user-1', 'org-1', [scope])
 
-        expect((await callTenant(method, `${prefix}${path}`)).status).toBe(status)
+        const response = await callTenant(method, `${prefix}${path}`)
+        const contractPath = `${prefix === '/v1' ? '' : '/{prefix}'}${schemaPath ?? path}`
+        await expectTenantResponse(response, contractPath, method, status)
       },
     )
+
+    it.each(['missing email', 'missing user'])('returns a schema-valid member with %s', async (missing) => {
+      principal = apiKeyPrincipal('user-1', 'org-1')
+      const membership = Object.assign(new OrganizationUser(), {
+        userId: 'user-1',
+        organizationId: 'org-1',
+        role: OrganizationMemberRole.OWNER,
+        assignedRoles: [],
+        createdAt: new Date('2026-09-01T00:00:00.000Z'),
+      })
+      const user = missing === 'missing user' ? undefined : Object.assign(new User(), { email: '', name: 'Owner' })
+      organizationUserService.findAll.mockResolvedValueOnce([OrganizationUserDto.fromEntities(membership, user)])
+
+      const response = await call('GET', `${prefix}/members`)
+      const contractPath = `${prefix === '/v1' ? '' : '/{prefix}'}/members`
+      const body = await expectTenantResponse(response, contractPath, 'GET', 200)
+      expect(body.members[0].email).toBeNull()
+    })
   })
 
   it.each(operations)('bounds an admin API key for $method $path', async ({ method, path }) => {

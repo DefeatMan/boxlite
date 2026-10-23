@@ -22,7 +22,7 @@ import { OrganizationUserService } from '../organization/services/organization-u
 
 type RestMember = {
   user_id: string
-  email: string
+  email: string | null
   name: string
   role: OrganizationMemberRole
   joined_at: string
@@ -59,7 +59,7 @@ export class BoxliteMemberController {
   private toResponse(member: OrganizationUserDto): RestMember {
     return {
       user_id: member.userId,
-      email: member.email,
+      email: member.email || null,
       name: member.name,
       role: member.role,
       joined_at: new Date(member.createdAt).toISOString(),

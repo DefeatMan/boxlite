@@ -35,9 +35,11 @@ info:
 
     ## Organization prefix
 
-    Every route takes the organization id in the `{prefix}` segment: the value
-    `GET /v1/me` returns as `Principal.path_prefix`. An API key belongs to one
-    organization; using it under another organization's prefix returns 403.
+    Canonical routes such as `/v1/members` use the authenticated organization.
+    The `/{prefix}` variants accept an organization id, as returned by
+    `GET /v1/me` in `Principal.path_prefix`, or `default` for the authenticated
+    organization. An ordinary API key belongs to one organization; using it
+    under another organization's prefix returns 403.
 
     ## Roles
 
@@ -73,6 +75,124 @@ tags:
     description: Email invitations to join an organization
 
 paths:
+  /members:
+    get:
+      operationId: listCurrentOrganizationMembers
+      summary: List the authenticated organization's members
+      description: Requires organization membership and, for API keys, `read:tenant`.
+      tags: [Members]
+      responses:
+        "200":
+          description: Members of the organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListMembersResponse"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+
+  /members/{user_id}:
+    parameters:
+      - $ref: "#/components/parameters/userId"
+
+    delete:
+      operationId: removeCurrentOrganizationMember
+      summary: Remove a member from the authenticated organization
+      description: |
+        Requires the `owner` role and, for API keys, `write:tenant`.
+        Revokes the member's API keys in this organization at once. Removing
+        the last owner, or a user from their own personal organization, is
+        refused with 403.
+      tags: [Members]
+      responses:
+        "204":
+          description: Member removed and their API keys in this organization revoked
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+
+  /invitations:
+    post:
+      operationId: createCurrentOrganizationInvitation
+      summary: Invite a user to the authenticated organization by email
+      description: |
+        Requires the `owner` role and, for API keys, `write:tenant`.
+        The invitee accepts in the BoxLite console after signing in with the
+        invited address, and joins as an `owner`.
+      tags: [Invitations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateInvitationRequest"
+      responses:
+        "201":
+          description: Pending invitation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Invitation"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "409":
+          description: The email already belongs to a member or has a pending invitation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    get:
+      operationId: listCurrentOrganizationInvitations
+      summary: List the authenticated organization's pending invitations
+      description: Requires organization membership and, for API keys, `read:tenant`.
+      tags: [Invitations]
+      responses:
+        "200":
+          description: Pending, unexpired invitations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListInvitationsResponse"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+
+  /invitations/{invitation_id}:
+    parameters:
+      - $ref: "#/components/parameters/invitationId"
+
+    delete:
+      operationId: cancelCurrentOrganizationInvitation
+      summary: Cancel a pending invitation in the authenticated organization
+      description: Requires the `owner` role and, for API keys, `write:tenant`. Expired pending invitations can also be cancelled.
+      tags: [Invitations]
+      responses:
+        "204":
+          description: Invitation cancelled
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "409":
+          description: The invitation is no longer pending (accepted, declined or cancelled)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /{prefix}/members:
     parameters:
       - $ref: "#/components/parameters/prefix"
@@ -213,7 +333,7 @@ components:
       name: prefix
       in: path
       required: true
-      description: Organization id, as returned in `Principal.path_prefix` by `GET /v1/me`
+      description: Organization id from `Principal.path_prefix` in `GET /v1/me`, or `default` for the authenticated organization
       schema:
         type: string
         minLength: 1
@@ -303,8 +423,9 @@ components:
           type: string
           description: Stable user identifier; use it to remove the member
         email:
-          type: string
+          type: [string, "null"]
           format: email
+          description: Member email address, or null if no email or user record is available
         name:
           type: string
           description: Display name; may be empty

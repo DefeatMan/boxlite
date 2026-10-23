@@ -540,6 +540,15 @@ It can list members and invitations, but cannot invite, remove, or mint a
 replacement key with `write:tenant`. Canonical and prefixed routes enforce the
 same scopes.
 
+The contract documents both canonical routes, such as `/api/v1/members`, and
+their `/{prefix}` variants. Canonical routes and the `default` prefix use the
+authenticated organization; an organization ID prefix selects that organization
+subject to the same access checks.
+
+Every member response includes `email`. It is a valid email string when known,
+or `null` when the account has no email or its user record is unavailable; clients
+must handle both. For example, an address-less member has `"email": null`, not `"email": ""`.
+
 Tenant errors use the hosted service's flat JSON response: `statusCode`, `error`
 (an HTTP status phrase), `message`, `path`, and `timestamp`, with an optional
 machine-readable `code`. Validation messages are joined into one string. Clients
