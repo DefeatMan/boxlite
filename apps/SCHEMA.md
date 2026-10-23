@@ -206,6 +206,22 @@ state inline.
 | `experimentalConfig` | `jsonb` | nullable |
 | `createdAt` / `updatedAt` | `timestamptz` | |
 
+### `organization_activation_facts`
+
+After each committed Box write, `BoxRepository` upserts the row with a best-effort update
+outside the Box transaction; an organization without a recorded Box has no row. Organization
+deletion cascades to its facts; Box deletion does not. The API reads it only when activation
+is selected with include=activation on the existing organization detail.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `organizationId` | `uuid` | primary key; FK to organization with `ON DELETE CASCADE` |
+| `lastBoxCreatedAt` | `timestamptz` | nullable; maximum retained creation or warm-pool claim |
+| `lastBoxModifiedAt` | `timestamptz` | nullable; maximum successful-start or accepted-deletion time |
+
+The [activation design](../docs/contributing/investigations/organization-activation-facts.md)
+describes the optimistic update, migration locking, backfill and uncertainty.
+
 ### `user`
 
 Identity, keyed by the subject the IdP issues rather than a generated uuid.

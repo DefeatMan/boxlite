@@ -61,6 +61,21 @@ OTLP and HTTP health ports come from
 comes from its own [`config.yaml`](./otel-collector/config.yaml). Where an
 in-code default differs, the section notes it.
 
+## Admin organization metadata
+
+These read-only views require system administrator authorization. Registration filters,
+creator semantics and live pagination are documented in [the API README](api/README.md#admin-organization-metadata).
+Existing JWT organization reads and the Admin-key `by-box-id` lookup already return creation
+fields; the existing admin routes now add cross-organization date filtering, coverage of
+organizations without Boxes, and opt-in sections. Registration fields are always returned;
+usage and activation are read only when explicitly included. Upgrade all producers before
+enabling consumers of this contract.
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| `GET` | `/api/admin/organizations` | Lists registration metadata, counts and impact without usage reads. |
+| `GET` | `/api/admin/organizations/{organizationId}` | Flat registration, member, Box and impact detail; `include=usage,activation` selects optional sections. |
+
 ## Control-plane API
 
 **Service:** `apps/api` · **Base path:** `/api` · **Port:** `3000` in
