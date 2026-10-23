@@ -2,7 +2,7 @@
 
 > **Update 2026-10-23:** the F3–F5 snapshot prototype and the combined E scenario were
 > removed in favor of organization-scoped snapshots
-> ([POL-1126](https://linear.app/polygala/issue/POL-1126/design-organization-scoped-cloud-snapshots-via-object-storage)).
+> ([#2087](https://github.com/boxlite-ai/boxlite/pull/2087)).
 > Their code, guides and make targets no longer exist; this report is kept as a record.
 
 This is the historical six-round report. The user's renewed F5 request later
