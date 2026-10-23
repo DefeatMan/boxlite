@@ -300,16 +300,19 @@ describe('CreateBoxDto managed volumes', () => {
     }
   })
 
-  it('rejects read-only cloud volume mounts until the backend supports them', async () => {
+  it('accepts a read-only managed volume mount', async () => {
     const errors = await validate(
       plainToInstance(CreateBoxDto, {
         volumes: [{ managed_volume: 'volume-123', guest_path: '/data', read_only: true }],
       }),
     )
 
-    expect(getReadOnlyConstraints(errors)).toHaveProperty('isIn')
+    expect(errors).toHaveLength(0)
   })
 
+  // Only omitted or a boolean is meaningful. A null that quietly became
+  // read-write would hand the caller a writable mount they believe is
+  // protected, so it is a validation error rather than a default.
   it('rejects null read_only values', async () => {
     const errors = await validate(
       plainToInstance(CreateBoxDto, {
@@ -317,7 +320,17 @@ describe('CreateBoxDto managed volumes', () => {
       }),
     )
 
-    expect(getReadOnlyConstraints(errors)).toHaveProperty('isIn')
+    expect(getReadOnlyConstraints(errors)).toHaveProperty('isBoolean')
+  })
+
+  it('rejects a non-boolean read_only value', async () => {
+    const errors = await validate(
+      plainToInstance(CreateBoxDto, {
+        volumes: [{ managed_volume: 'volume-123', guest_path: '/data', read_only: 'yes' }],
+      }),
+    )
+
+    expect(getReadOnlyConstraints(errors)).toHaveProperty('isBoolean')
   })
 })
 
