@@ -557,6 +557,9 @@ paths:
         is `ready` or `failed`; poll `getSnapshot` for the outcome. Deleting
         the box meanwhile is allowed and fails the snapshot. Every other change
         to the box is refused with `409` until the export ends.
+
+        A `503` means the server keeps no snapshots, or that the caller's other
+        creates kept this one waiting too long; a retry may get past the latter.
       tags: [Boxes]
       requestBody:
         required: true
@@ -571,12 +574,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Snapshot"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
         "404":
           $ref: "#/components/responses/NotFoundError"
         "409":
           $ref: "#/components/responses/ConflictError"
         "429":
           description: The caller already keeps as many snapshots as the server allows
+        "503":
+          $ref: "#/components/responses/ServiceUnavailableError"
     get:
       operationId: listSnapshots
       summary: List box snapshots
@@ -655,7 +662,8 @@ paths:
         record is `succeeded` or `failed`; poll `getSnapshotRestore` for the
         outcome. A failed restore leaves the original disk in place. Deleting
         the box meanwhile is allowed and fails the restore. A snapshot of a
-        different disk size is refused with `409`.
+        different disk size or region is refused with `409`, and `503` means
+        the server keeps no snapshots.
       tags: [Boxes]
       responses:
         "202":
@@ -670,6 +678,8 @@ paths:
           $ref: "#/components/responses/NotFoundError"
         "409":
           $ref: "#/components/responses/ConflictError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailableError"
 
   /{prefix}/boxes/{box_id}/restores/{restore_id}:
     parameters:
@@ -2815,6 +2825,12 @@ components:
           type: string
           minLength: 1
           maxLength: 128
+          description: |
+            A server refuses with `400` a name it cannot keep or address. One
+            whose snapshots belong to their box refuses a name that starts
+            with `.` or holds `/`, `\` or NUL; one whose snapshots outlive
+            their box takes only letters, digits, `.`, `_` and `-`, starting
+            with a letter or digit, since the name travels in URL paths.
 
     ListSnapshotsResponse:
       type: object
