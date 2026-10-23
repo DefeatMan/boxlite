@@ -39,6 +39,12 @@ nix develop -c make cli
   package breaks dynamic host links.
 - `BOXLITE_LIBRESOLV_DIR` points `libgvproxy-sys` at a directory holding
   `libresolv.a`, for hosts without `/usr/lib/<triple>` or `/usr/lib64`.
+- CI checks it: the `nix` job in `.github/workflows/test.yml` runs this command
+  with `--ignore-environment` on Ubuntu and boots a box when build inputs
+  change. A red `nix` job does not block merge yet, but a change to build
+  scripts, Make recipes, or `-sys` crates that breaks the shell should fix
+  `flake.nix` too. Ubuntu has `/usr/lib`, so CI misses a regression that breaks
+  only on NixOS, such as a lost `BOXLITE_LIBRESOLV_DIR`.
 - After a failed build, remove `src/deps/libkrun-sys/vendor/libkrun/target`
   before retrying; a stale libkrun build script stays cached there.
 

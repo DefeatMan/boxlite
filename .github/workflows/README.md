@@ -83,6 +83,15 @@ workflow (including Go formatting), CodeQL, managed Code Quality, API tests and
 setup checks retain their existing selection. Workflow and infrastructure changes
 run `make test:apps:infra` in a separate, path-filtered job whose failures block
 `Test (conclusion)`.
+The `nix` job builds the CLI in the flake dev shell, with the runner's
+environment and Rust homes dropped, and boots `alpine:latest`. It runs when the
+flake or an input of `make cli` changes (Make recipes, build scripts,
+`src/deps/`, `build.rs`, Cargo manifests, the toolchain), or on manual
+dispatch; not weekly, because `flake.lock` pins its inputs. It is not yet in
+`Test (conclusion)`, so its failures show on the PR without blocking merge; it
+becomes required once it has proven stable. It compiles through sccache but
+does not cache `/nix/store`. Ubuntu still has `/usr/lib`, so it misses
+regressions that break only on NixOS.
 Marking a PR **Ready for review** triggers the SDK matrix and both Go analyzers
 without requiring another commit. When a user returns it to draft, the new run
 cancels the prior Test run and runs the lightweight selection. The author-review bot uses `GITHUB_TOKEN`;
@@ -194,7 +203,7 @@ every consumer.
 | --- | --- | --- |
 | `ci-config` | 3 | config, lint, test |
 | `setup-rust` | 10 | build-c, build-node, build-runtime ×2, build-wheels, lint ×2, test ×3 |
-| `sccache` | 6 | build-c, build-node, build-runtime, build-wheels, lint, test |
+| `sccache` | 7 | build-c, build-node, build-runtime, build-wheels, lint, test ×2 |
 | `build-guest` | 4 | build-c, build-node, build-runtime, build-wheels |
 | `upload-to-release` | 5 | build-c, build-node, build-runner-binary, build-runtime, build-wheels |
 | `run-in-manylinux` | 3 | build-c, build-node, build-runtime |
