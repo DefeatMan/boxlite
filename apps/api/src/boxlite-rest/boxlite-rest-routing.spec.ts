@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: AGPL-3.0
  */
 
-import { PATH_METADATA } from '@nestjs/common/constants'
+import { MODULE_METADATA, PATH_METADATA } from '@nestjs/common/constants'
 import { Reflector } from '@nestjs/core'
 import { Test } from '@nestjs/testing'
 import { ValidationPipe, type INestApplication } from '@nestjs/common'
@@ -19,6 +19,7 @@ import { BoxliteConfigController } from './boxlite-config.controller'
 import { BoxliteProxyController } from './boxlite-proxy.controller'
 import { BoxliteWsProxyService } from './boxlite-ws-proxy.service'
 import { BoxliteVolumeController } from './boxlite-volume.controller'
+import { VolumeService } from '../box/services/volume.service'
 import { BoxliteImageController } from './boxlite-image.controller'
 import { ImageCatalogService } from '../image/services/image-catalog.service'
 import { BoxliteRegistryController } from './boxlite-registry.controller'
@@ -26,8 +27,9 @@ import { RegistriesService } from '../registry/services/registries.service'
 import { CommerceBoxLimitService } from './commerce-box-limit.service'
 import { AUDIT_CONTEXT_KEY, AuditContext } from '../audit/decorators/audit.decorator'
 import { BoxliteBoxSnapshotController } from './boxlite-box-snapshot.controller'
-import { BoxliteSnapshotController } from './boxlite-snapshot.controller'
 import { BoxSnapshotService } from '../box/services/box-snapshot.service'
+import { BoxliteSnapshotController } from './boxlite-snapshot.controller'
+import { BoxliteRestModule } from './boxlite-rest.module'
 
 jest.mock('http-proxy-middleware', () => ({
   createProxyMiddleware: jest.fn(),
@@ -37,6 +39,15 @@ jest.mock('uuid', () => ({
   v4: jest.fn(() => 'mock-uuid'),
   validate: jest.fn(() => true),
 }))
+
+/**
+ * The REST module's mounts of the given controllers, in the module's own order,
+ * so their routes shadow one another as they do in production.
+ */
+const inModuleOrder = (...controllers: any[]): any[] =>
+  (Reflect.getMetadata(MODULE_METADATA.CONTROLLERS, BoxliteRestModule) as any[]).filter((mount) =>
+    controllers.some((controller) => mount === controller || mount.prototype instanceof controller),
+  )
 
 describe('BoxLite REST routing', () => {
   let app: INestApplication
@@ -54,13 +65,13 @@ describe('BoxLite REST routing', () => {
     await startApp(
       // The module's order, with the proxy controller's catch-all routes
       // present, so one that shadowed PUT network/inbound would fail below.
-      [
+      inModuleOrder(
         BoxliteConfigController,
         BoxliteBoxController,
         BoxliteBoxSnapshotController,
         BoxliteSnapshotController,
         BoxliteProxyController,
-      ],
+      ),
       [
         {
           provide: BoxSnapshotService,
@@ -376,6 +387,56 @@ describe('BoxLite REST routing', () => {
     }
     // Declared after `usage`, `:name` would have read "usage" as an image.
     expect(catalog.get).not.toHaveBeenCalled()
+  })
+
+  // An unprefixed /v1/<collection>/<name> also fits another collection's
+  // v1/:prefix/<collection> route; in the module's order each path reaches the
+  // collection it names, whichever way round the two names come.
+  it('routes an unprefixed path to the collection it names', async () => {
+    const catalog = {
+      get: jest.fn((_organization, name: string) =>
+        Promise.resolve({ name, aliases: [], curated: false, versions: [], history: [] }),
+      ),
+    }
+    const boxService = {
+      findAllDeprecated: jest.fn().mockResolvedValue([]),
+      toBoxDtos: jest.fn().mockResolvedValue([]),
+    }
+    const volumeService = { findAll: jest.fn().mockResolvedValue([]) }
+    const snapshotService = {
+      list: jest.fn().mockResolvedValue([]),
+      findOne: jest.fn().mockResolvedValue({
+        id: 'snap-1',
+        sourceBoxId: 'box-1',
+        name: 'images',
+        state: 'ready',
+        errorReason: null,
+        createdAt: new Date('2026-10-22T00:00:00Z'),
+        diskGb: 10,
+        sizeBytes: 42,
+      }),
+    }
+    await startApp(
+      inModuleOrder(BoxliteBoxController, BoxliteSnapshotController, BoxliteVolumeController, BoxliteImageController),
+      [
+        { provide: ImageCatalogService, useValue: catalog },
+        { provide: BoxService, useValue: boxService },
+        { provide: BoxStateWaiterService, useValue: {} },
+        { provide: CommerceBoxLimitService, useValue: {} },
+        { provide: VolumeService, useValue: volumeService },
+        { provide: BoxSnapshotService, useValue: snapshotService },
+      ],
+    )
+
+    for (const name of ['boxes', 'volumes', 'snapshots']) {
+      expect((await get(`/api/v1/images/${name}`)).status).toBe(200)
+      expect(catalog.get).toHaveBeenLastCalledWith({ id: 'org-123' }, name)
+    }
+    expect((await get('/api/v1/snapshots/images')).status).toBe(200)
+    expect(snapshotService.findOne).toHaveBeenCalledWith('org-123', 'images')
+    expect(boxService.findAllDeprecated).not.toHaveBeenCalled()
+    expect(volumeService.findAll).not.toHaveBeenCalled()
+    expect(snapshotService.list).not.toHaveBeenCalled()
   })
 
   it('takes an encoded image name as one path parameter', async () => {

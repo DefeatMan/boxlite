@@ -391,7 +391,9 @@ deployments (shared with the control-plane API)
 
 Most resource paths accept both an unprefixed form and an organization-prefixed
 form. The tables write that as `[/{prefix}]`; clients can discover their prefix
-through `GET /api/v1/me`. Except for configuration discovery, these routes use
+through `GET /api/v1/me`. A prefix is an organization ID or `default`, so an
+unprefixed path always names the collection it starts with: `/api/v1/images/boxes`
+is the image named `boxes`, never the box list. Except for configuration discovery, these routes use
 combined bearer authentication, then organization authorization.
 
 Image and registry management routes also consume the organization's authenticated
