@@ -350,6 +350,34 @@ describeIfDatabase('BoxSnapshotService and BoxSnapshotSettler (integration, real
     expect(await restores.count()).toBe(0)
   })
 
+  // The REST routes answer each of these refusals with 409.
+  it('refuses a second live snapshot under one name, leaving the box as it was', async () => {
+    const first = await insert(stoppedBox('first'))
+    const second = await insert(stoppedBox('second'))
+    await service.create(first.id, 'golden', organizationId)
+
+    await expect(service.create(second.id, 'golden', organizationId)).rejects.toThrow(/named golden already exists/)
+    expect((await boxes.findOneByOrFail({ id: second.id })).state).toBe(BoxState.STOPPED)
+    expect(await jobs.count({ where: { resourceId: second.id } })).toBe(0)
+  })
+
+  it('refuses to delete or restore a snapshot still being created', async () => {
+    const source = await insert(stoppedBox('source'))
+    const target = await insert(stoppedBox('target'))
+    await service.create(source.id, 'golden', organizationId)
+
+    await expect(service.remove(organizationId, 'golden')).rejects.toThrow(/still being created/)
+    await expect(service.restore(target.id, 'golden', organizationId)).rejects.toThrow(/only a ready snapshot/)
+    expect((await boxes.findOneByOrFail({ id: target.id })).state).toBe(BoxState.STOPPED)
+  })
+
+  it('refuses a box no runner holds', async () => {
+    const box = await insert(stoppedBox('unplaced', { runnerId: undefined }))
+
+    await expect(service.create(box.id, 'golden', organizationId)).rejects.toThrow(/no runner holding its disk/)
+    expect(await snapshots.count()).toBe(0)
+  })
+
   it('caps the snapshots an organization keeps', async () => {
     for (const name of ['a', 'b', 'c']) {
       const box = await insert(stoppedBox(`box-${name}`))

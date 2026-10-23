@@ -21,6 +21,8 @@ import { ImageModule } from '../image/image.module'
 import { BoxliteRegistryController } from './boxlite-registry.controller'
 import { RegistryModule } from '../registry/registry.module'
 import { CommerceBoxLimitService } from './commerce-box-limit.service'
+import { BoxliteBoxSnapshotController } from './boxlite-box-snapshot.controller'
+import { BoxliteSnapshotController } from './boxlite-snapshot.controller'
 
 @Module({
   imports: [BoxModule, AuthModule, ApiKeyModule, OrganizationModule, UserModule, ImageModule, RegistryModule],
@@ -28,6 +30,8 @@ import { CommerceBoxLimitService } from './commerce-box-limit.service'
     BoxliteMeController,
     BoxliteConfigController,
     BoxliteBoxController,
+    BoxliteBoxSnapshotController,
+    BoxliteSnapshotController,
     BoxliteProxyController,
     BoxliteVolumeController,
     BoxliteRegistryController,
