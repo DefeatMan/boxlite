@@ -728,7 +728,6 @@ Run a long-running REST API server. The server holds a single `BoxliteRuntime` a
 | `--home PATH` | `~/.boxlite` | Absolute runtime data directory; env `BOXLITE_HOME` |
 | `--host ADDR` | `127.0.0.1` | Bind address. Any non-loopback address (e.g. `0.0.0.0`) requires `--api-key`; `serve` refuses to start otherwise. |
 | `--api-key KEY` | unset | Require this exact `Authorization: Bearer` value (constant-time match) on every route except `GET /v1/config`; env `BOXLITE_SERVE_API_KEY`. Unset is permissive. |
-| `--host-path-root DIR` | unset | Allow `POST /v1/boxes` to bind `volumes[].host_path` from this machine when the path, with `..` and symlinks resolved, is a direct entry of `DIR`; repeatable, never nested. Unset refuses every host path. |
 | `--registry REGISTRY` | none | Image registry; repeatable and prepended to config |
 | `--config PATH` | none | JSON runtime configuration file |
 
@@ -738,13 +737,7 @@ Run a long-running REST API server. The server holds a single `BoxliteRuntime` a
 boxlite serve
 boxlite serve --port 9000
 BOXLITE_SERVE_API_KEY="$KEY" boxlite serve --host 0.0.0.0
-BOXLITE_SERVE_API_KEY="$KEY" boxlite serve --host 0.0.0.0 --host-path-root /srv/agents
 ```
-
-With `--host-path-root /srv/agents`, a create body may carry
-`"volumes": [{"host_path": "/srv/agents/a1", "guest_path": "/workspace"}]`. The serve
-[README](../../../src/cli/src/commands/serve/README.md#auth--config) covers the checks, including why
-`/srv/agents` itself and `/srv/agents/a1/x` are refused.
 
 ---
 
@@ -938,7 +931,6 @@ means the same thing on every machine:
 | `BOX_PATH:ro` / `BOX_PATH:rw` | `/data:ro` | Anonymous volume with explicit mode |
 | `VOLUME:BOX_PATH` | `my-data:/data` | Managed volume by name |
 | `VOLUME:BOX_PATH` | `vol_01K2EXAMPLE:/data` | Managed volume by server-assigned id |
-| `VOLUME:BOX_PATH:ro` | `my-data:/data:ro` | Managed volume, bound read-only |
 | `HOST_PATH:BOX_PATH` | `/host/data:/data` | Bind mount (host directory must exist) |
 | `HOST_PATH:BOX_PATH:OPTIONS` | `./data:/data:ro` | Bind mount with options |
 | `C:\HOST\PATH:/BOX_PATH[:OPTIONS]` | `C:\data:/app/data:ro` | Windows drive paths are handled — the drive-letter colon is not treated as a separator |
