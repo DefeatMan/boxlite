@@ -10,12 +10,9 @@
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod boot;
-#[cfg_attr(not(test), expect(dead_code, reason = "No device sits on a bus yet."))]
+#[cfg_attr(not(test), expect(dead_code, reason = "No VM adds a device yet."))]
 mod bus;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "No platform adds a device yet.")
-)]
+#[cfg_attr(not(test), expect(dead_code, reason = "No VM adds a device yet."))]
 mod chipset;
 #[cfg_attr(
     not(any(test, all(target_os = "linux", target_arch = "x86_64"))),
@@ -24,6 +21,8 @@ mod chipset;
 mod config;
 #[cfg(target_arch = "x86_64")]
 mod cpu_features;
+#[cfg_attr(not(test), expect(dead_code, reason = "No VM adds a device yet."))]
+mod devices;
 mod error;
 #[cfg_attr(
     not(all(test, target_arch = "x86_64")),
@@ -33,7 +32,7 @@ mod error;
     )
 )]
 mod events;
-#[cfg_attr(not(test), expect(dead_code, reason = "No device raises a line yet."))]
+#[cfg_attr(not(test), expect(dead_code, reason = "No VM adds a device yet."))]
 mod irq;
 #[cfg_attr(
     not(any(test, all(target_os = "linux", target_arch = "x86_64"))),

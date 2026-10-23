@@ -3,18 +3,36 @@
 
 //! `prepare` on a kernel file: the ELF fixture from the loader tests, loaded
 //! into fresh guest RAM together with the boot data, and the real kernel,
-//! booted on KVM up to its root-mount panic or, with a generated initramfs,
-//! up to the panic when its init exits.
+//! booted on KVM, on one or four vCPUs, and the legacy devices up to its
+//! root-mount panic, up to the panic when a generated init exits, or, with
+//! its console on ttyS0, until a generated init restarts the machine.
 
-use std::{error::Error as _, fs, io, path::PathBuf, process};
+use std::{
+    error::Error as _,
+    fs,
+    io::{self, Write},
+    path::PathBuf,
+    process,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+    thread,
+    time::{Duration, Instant},
+};
 
 use linux_loader::loader::bootparam::boot_params;
 use vm_memory::{Bytes, GuestAddress};
 
 use super::prepare;
 use crate::{
+    VmExit,
     boot::elf::tests::{ENTRY, fixture},
     config::VmConfig,
+    devices::{
+        console::{ConsoleWorker, DEFAULT_QUEUE_BYTES},
+        x86_64::{COM1, COM1_GSI, add_legacy_devices},
+    },
     error::Error,
     memory::{GuestRam, ram_ranges},
 };
@@ -157,185 +175,275 @@ fn a_failure_names_its_step_and_keeps_the_io_cause() {
     }
 }
 
-/// The real-kernel tests boot this command line from `VMM_KERNEL`.
+/// The real-kernel tests boot `VMM_KERNEL` with one of these command lines:
+/// the early console, which polls the UART, or the 8250 driver's console.
 const LINUX_CMDLINE: &str = "earlycon=uart8250,io,0x3f8 keep_bootcon panic=-1 reboot=k";
+const CONSOLE_CMDLINE: &str = "console=ttyS0 panic=-1 reboot=k";
+/// How long a real-kernel boot may take before the watchdog ends it.
+const BOOT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// `vcpu_count` vCPUs and 256 MiB of RAM for `kernel` and `initramfs`, booted
-/// with `LINUX_CMDLINE`.
-fn linux_config(vcpu_count: u8, initramfs: Option<PathBuf>) -> VmConfig {
+/// `vcpu_count` vCPUs and 256 MiB of RAM for `kernel` and `initramfs`,
+/// booted with `cmdline`.
+fn linux_config(vcpu_count: u8, cmdline: &str, initramfs: Option<PathBuf>) -> VmConfig {
     let kernel = std::env::var_os("VMM_KERNEL")
         .expect("set VMM_KERNEL or run make test:integration:vmm:linux");
     let config = VmConfig {
         vcpu_count,
         memory_mib: 256,
         kernel: kernel.into(),
-        cmdline: LINUX_CMDLINE.into(),
+        cmdline: cmdline.into(),
         initramfs,
     };
     config.validate().unwrap();
     config
 }
 
-/// Stub devices for the real-kernel boots. COM1 collects the earlycon log
-/// and reports an idle line; the i8042 turns the reset pulse that
-/// `panic=-1 reboot=k` make of every panic into `GuestReset`; the CMOS clock
-/// reads zero. Every other port reads 0xFF, as the buses make it.
-mod stubs {
-    use std::sync::{Arc, Mutex};
+/// Guest serial output, shared with the test.
+#[derive(Clone, Default)]
+struct SerialLog(Arc<Mutex<Vec<u8>>>);
 
-    use crate::{
-        bus::BusDevice,
-        chipset::ChipsetBuilder,
-        error::Result,
-        events::{Event, EventSender},
-    };
-
-    /// Transmitter holding register and shifter empty, which earlycon polls for.
-    const LSR_IDLE: u8 = 0x60;
-
-    struct Com1(Arc<Mutex<Vec<u8>>>);
-
-    impl BusDevice for Com1 {
-        fn read(&mut self, offset: u64, data: &mut [u8]) {
-            if offset == 5 {
-                data[0] = LSR_IDLE;
-            }
-        }
-
-        fn write(&mut self, offset: u64, data: &[u8]) {
-            if offset == 0 {
-                self.0.lock().unwrap().extend_from_slice(data);
-            }
-        }
-    }
-
-    struct I8042(EventSender);
-
-    impl BusDevice for I8042 {
-        fn read(&mut self, _offset: u64, _data: &mut [u8]) {}
-
-        fn write(&mut self, offset: u64, data: &[u8]) {
-            // Port 0x64, the command register.
-            if offset == 4 && data == [0xfe] {
-                self.0.send(Event::GuestReset);
-            }
-        }
-    }
-
-    struct Zeros;
-
-    impl BusDevice for Zeros {
-        fn read(&mut self, _offset: u64, _data: &mut [u8]) {}
-
-        fn write(&mut self, _offset: u64, _data: &[u8]) {}
-    }
-
-    /// Adds the stubs to `chipset` and returns the log COM1 fills.
-    pub(super) fn add(chipset: &mut ChipsetBuilder) -> Result<Arc<Mutex<Vec<u8>>>> {
-        let log = Arc::new(Mutex::new(Vec::new()));
-        chipset.add("com1", |resources| {
-            resources.pio(0x3f8, 8);
-            Ok(Com1(Arc::clone(&log)))
-        })?;
-        chipset.add("i8042", |resources| {
-            resources.pio(0x60, 5);
-            Ok(I8042(resources.event_sender()))
-        })?;
-        chipset.add("cmos", |resources| {
-            resources.pio(0x70, 2);
-            Ok(Zeros)
-        })?;
-        Ok(log)
+impl SerialLog {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
     }
 }
 
-/// A KVM VM booting `config` on the stubs, the earlycon log they collect, and
-/// the zero page as `prepare` wrote it.
+impl Write for SerialLog {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A console sink that blocks every write until the test opens its gate,
+/// like a log reader that stopped reading.
+#[derive(Clone, Default)]
+struct StalledLog {
+    open: Arc<(Mutex<bool>, std::sync::Condvar)>,
+    log: SerialLog,
+}
+
+impl StalledLog {
+    fn open(&self) {
+        let (open, changed) = &*self.open;
+        *open.lock().unwrap() = true;
+        changed.notify_all();
+    }
+}
+
+impl Write for StalledLog {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let (open, changed) = &*self.open;
+        let mut open = open.lock().unwrap();
+        while !*open {
+            open = changed.wait(open).unwrap();
+        }
+        self.log.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// How the console behind the serial port is wired for a run.
+struct Console {
+    sink: Box<dyn Write + Send>,
+    capacity: usize,
+}
+
+impl Console {
+    fn to(log: &SerialLog) -> Self {
+        Self {
+            sink: Box::new(log.clone()),
+            capacity: DEFAULT_QUEUE_BYTES,
+        }
+    }
+}
+
+/// KVM, counting the edges devices raise on GSI 4. With `deliver` off it
+/// drops every interrupt instead of passing it on.
+struct Gsi4Counter {
+    kvm: boxlite_hypervisor::KvmVm,
+    deliver: bool,
+    edges: Arc<AtomicUsize>,
+}
+
+impl boxlite_hypervisor::Vm for Gsi4Counter {
+    type Vcpu = boxlite_hypervisor::KvmVcpu;
+
+    unsafe fn map_memory(
+        &self,
+        region: &boxlite_hypervisor::MemoryRegion,
+    ) -> boxlite_hypervisor::Result<()> {
+        // SAFETY: the caller's contract passes through to KVM unchanged.
+        unsafe { self.kvm.map_memory(region) }
+    }
+
+    fn unmap_memory(
+        &self,
+        region: &boxlite_hypervisor::MemoryRegion,
+    ) -> boxlite_hypervisor::Result<()> {
+        boxlite_hypervisor::Vm::unmap_memory(&self.kvm, region)
+    }
+
+    fn create_vcpu(&self, id: u32) -> boxlite_hypervisor::Result<Self::Vcpu> {
+        boxlite_hypervisor::Vm::create_vcpu(&self.kvm, id)
+    }
+
+    fn set_irq_line(&self, line: u32, level: bool) -> boxlite_hypervisor::Result<()> {
+        if line == 4 && level {
+            self.edges.fetch_add(1, Ordering::Relaxed);
+        }
+        if self.deliver {
+            boxlite_hypervisor::Vm::set_irq_line(&self.kvm, line, level)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl boxlite_hypervisor::X86Vm for Gsi4Counter {
+    fn supported_cpuid(&self) -> &[boxlite_hypervisor::X86CpuidEntry] {
+        boxlite_hypervisor::X86Vm::supported_cpuid(&self.kvm)
+    }
+}
+
+/// A KVM VM booting `config` on the legacy devices, before it runs.
 struct LinuxVm {
-    vm: crate::Vm<boxlite_hypervisor::KvmVm>,
-    log: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    vm: crate::Vm<Gsi4Counter>,
+    /// The zero page as `prepare` wrote it.
     zero_page: boot_params,
+    /// The console worker behind COM1: a test finishes it once its sink can
+    /// take the rest.
+    console: ConsoleWorker,
+    /// The edges the serial port raised on GSI 4.
+    gsi_4_edges: Arc<AtomicUsize>,
 }
 
-fn linux_vm(config: &VmConfig) -> LinuxVm {
+/// Builds a KVM VM for `config` with the legacy devices, COM1 writing to
+/// `console`. With `deliver_irqs` off, every device interrupt is dropped.
+fn linux_vm(config: &VmConfig, deliver_irqs: bool, console: Console) -> LinuxVm {
+    let (writer, console) = ConsoleWorker::spawn(console.sink, console.capacity).unwrap();
+    let gsi_4_edges = Arc::new(AtomicUsize::new(0));
     let mut zero_page = None;
-    let mut log = None;
     let vm = crate::Vm::with_backend(
         config.clone(),
-        boxlite_hypervisor::KvmVm::new,
+        || {
+            Ok(Gsi4Counter {
+                kvm: boxlite_hypervisor::KvmVm::new()?,
+                deliver: deliver_irqs,
+                edges: Arc::clone(&gsi_4_edges),
+            })
+        },
         |ram, config| {
             let setup = prepare(ram, config)?;
             let address = GuestAddress(setup.boot_regs.rsi);
             zero_page = Some(ram.memory().read_obj(address).unwrap());
             Ok(setup.boot_regs)
         },
-        |chipset| {
-            log = Some(stubs::add(chipset)?);
-            Ok(())
-        },
+        |chipset| add_legacy_devices(chipset, writer),
     )
     .expect("create the KVM VM");
     LinuxVm {
         vm,
-        log: log.unwrap(),
         zero_page: zero_page.unwrap(),
+        console,
+        gsi_4_edges,
     }
 }
 
-fn log_text(log: &std::sync::Mutex<Vec<u8>>) -> String {
-    String::from_utf8_lossy(&log.lock().unwrap()).into_owned()
+/// How a real-kernel boot ended.
+struct LinuxRun {
+    /// The zero page as `prepare` wrote it.
+    zero_page: boot_params,
+    /// How `Vm::run` ended; `StopRequested` means the watchdog stopped it.
+    exit: crate::Result<VmExit>,
+    /// The edges the serial port raised on GSI 4.
+    gsi_4_edges: usize,
+    /// The console worker, still running: a test finishes it once its sink
+    /// can take the rest.
+    console: ConsoleWorker,
+    /// How long the guest ran.
+    elapsed: Duration,
 }
 
-/// Boots `config` through `Vm::run` until the guest pulses the i8042 reset.
-/// A watchdog stops a boot that has not reset after 30 seconds, so a failed
-/// boot reports the log so far.
-fn boot_to_reset(config: &VmConfig) -> (String, boot_params) {
-    use std::{
-        sync::mpsc::{self, RecvTimeoutError},
-        thread,
-        time::{Duration, Instant},
-    };
-
-    const TIMEOUT: Duration = Duration::from_secs(30);
+/// Boots `config` through `Vm::run` on the legacy devices, with the serial
+/// port on `console`, until the VM ends or a watchdog stops it at `timeout`.
+fn run_linux(
+    config: &VmConfig,
+    deliver_irqs: bool,
+    timeout: Duration,
+    console: Console,
+) -> LinuxRun {
+    use std::sync::mpsc::{self, RecvTimeoutError};
 
     let LinuxVm {
         mut vm,
-        log,
         zero_page,
-    } = linux_vm(config);
+        console,
+        gsi_4_edges,
+    } = linux_vm(config, deliver_irqs, console);
     let stop = vm.stop_handle();
     let (finished, done) = mpsc::channel::<()>();
     let watchdog = thread::spawn(move || {
-        let fired = matches!(done.recv_timeout(TIMEOUT), Err(RecvTimeoutError::Timeout));
-        if fired {
+        if let Err(RecvTimeoutError::Timeout) = done.recv_timeout(timeout) {
             stop.stop();
         }
-        fired
     });
     let started = Instant::now();
 
     let exit = vm.run();
+    let elapsed = started.elapsed();
     drop(finished);
-
-    let fired = watchdog.join().unwrap();
-    let log = log_text(&log);
-    if !matches!(exit, Ok(crate::VmExit::GuestReset)) {
-        let watchdog = if fired { " (watchdog)" } else { "" };
-        panic!(
-            "{exit:?}{watchdog} after {:?}; log:\n{log}",
-            started.elapsed()
-        );
+    watchdog.join().unwrap();
+    LinuxRun {
+        zero_page,
+        exit,
+        gsi_4_edges: gsi_4_edges.load(Ordering::Relaxed),
+        console,
+        elapsed,
     }
-    (log, zero_page)
+}
+
+/// Asserts that the guest asked for the reset that ended `run`, and prints
+/// the run's counters for the record.
+fn assert_reset(run: &LinuxRun, log: &str) {
+    assert!(
+        matches!(run.exit, Ok(VmExit::GuestReset)),
+        "{:?} after {:?}; log:\n{log}",
+        run.exit,
+        run.elapsed
+    );
+    eprintln!(
+        "boot: {:?}, {} GSI 4 edges, {} console bytes dropped",
+        run.elapsed,
+        run.gsi_4_edges,
+        run.console.dropped_bytes()
+    );
 }
 
 /// Boots the kernel named by `VMM_KERNEL` without an initramfs. The earlycon
-/// log must show the boot data as Linux read it, up to the root-mount panic.
+/// log must show the boot data as Linux read it, up to the root-mount panic
+/// and its reset.
 #[test]
 #[ignore = "requires Linux x86_64 with access to /dev/kvm and VMM_KERNEL naming an x86_64 vmlinux"]
 fn boots_linux_to_the_root_mount_panic() {
-    let (log, _) = boot_to_reset(&linux_config(1, None));
+    let log = SerialLog::default();
+    let mut run = run_linux(
+        &linux_config(1, LINUX_CMDLINE, None),
+        true,
+        BOOT_TIMEOUT,
+        Console::to(&log),
+    );
 
+    run.console.finish();
+    let log = log.text();
+    assert_reset(&run, &log);
     let lines: Vec<&str> = log.lines().collect();
     let has_prefix = |prefix: &str| lines.iter().any(|line| line.starts_with(prefix));
     assert!(has_prefix("Linux version "), "{log}");
@@ -365,14 +473,78 @@ fn boots_linux_to_the_root_mount_panic() {
     assert!(log.contains("VFS: Unable to mount root fs"), "{log}");
 }
 
-/// A static x86_64 executable that calls `exit_group(code)`.
+/// Where `static_program` loads its one segment, and the length of the ELF
+/// and program headers in front of the code.
+const PROGRAM_BASE: u64 = 0x40_0000;
+const PROGRAM_HEADERS: u64 = 64 + 56;
+
+/// A static x86_64 executable: one read-only, executable `PT_LOAD` at
+/// `PROGRAM_BASE` holding the headers and then `text`, its entry point.
+fn static_program(text: &[u8]) -> Vec<u8> {
+    let size = PROGRAM_HEADERS + text.len() as u64;
+    let mut elf = vec![0x7f, b'E', b'L', b'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    elf.extend_from_slice(&2u16.to_le_bytes()); // ET_EXEC
+    elf.extend_from_slice(&62u16.to_le_bytes()); // EM_X86_64
+    elf.extend_from_slice(&1u32.to_le_bytes()); // EV_CURRENT
+    elf.extend_from_slice(&(PROGRAM_BASE + PROGRAM_HEADERS).to_le_bytes()); // entry
+    elf.extend_from_slice(&64u64.to_le_bytes()); // program headers
+    elf.extend_from_slice(&0u64.to_le_bytes()); // no section headers
+    elf.extend_from_slice(&0u32.to_le_bytes()); // flags
+    for half in [64u16, 56, 1, 0, 0, 0] {
+        // header size, program header size and count, no sections
+        elf.extend_from_slice(&half.to_le_bytes());
+    }
+    elf.extend_from_slice(&1u32.to_le_bytes()); // PT_LOAD
+    elf.extend_from_slice(&5u32.to_le_bytes()); // R and X
+    for word in [0, PROGRAM_BASE, PROGRAM_BASE, size, size, 0x1000] {
+        // offset, virtual and physical address, file and memory size, alignment
+        elf.extend_from_slice(&word.to_le_bytes());
+    }
+    elf.extend_from_slice(text);
+    elf
+}
+
+/// A static executable that calls `exit_group(code)`.
 fn exit_program(code: u8) -> Vec<u8> {
     // mov edi, code; mov eax, 231 (exit_group); syscall
     static_program(&[0xbf, code, 0, 0, 0, 0xb8, 231, 0, 0, 0, 0x0f, 0x05])
 }
 
-/// A static x86_64 executable that pins itself to each of the first `count`
-/// CPUs in turn and exits with bit i set when `getcpu` then reports CPU i.
+/// A static executable that writes `line` and a newline to its stdout, waits
+/// until the tty has sent them, and restarts the machine; `exit_group(1)`
+/// follows in case the restart returns.
+fn print_and_restart(line: &str) -> Vec<u8> {
+    const CODE_LEN: u64 = 81;
+    let message = format!("{line}\n");
+    let message_addr = u32::try_from(PROGRAM_BASE + PROGRAM_HEADERS + CODE_LEN).unwrap();
+    let message_len = u32::try_from(message.len()).unwrap();
+    let mut text = Vec::new();
+    // mov eax, 1 (write); mov edi, 1; mov esi, message; mov edx, length; syscall
+    text.extend_from_slice(&[0xb8, 1, 0, 0, 0, 0xbf, 1, 0, 0, 0, 0xbe]);
+    text.extend_from_slice(&message_addr.to_le_bytes());
+    text.push(0xba);
+    text.extend_from_slice(&message_len.to_le_bytes());
+    text.extend_from_slice(&[0x0f, 0x05]);
+    // mov eax, 16 (ioctl); mov edi, 1; mov esi, 0x5409 (TCSBRK); mov edx, 1
+    // (drain, no break); syscall
+    text.extend_from_slice(&[
+        0xb8, 16, 0, 0, 0, 0xbf, 1, 0, 0, 0, 0xbe, 0x09, 0x54, 0, 0, 0xba, 1, 0, 0, 0, 0x0f, 0x05,
+    ]);
+    // mov eax, 169 (reboot); mov edi, 0xfee1dead; mov esi, 0x28121969;
+    // mov edx, 0x01234567 (LINUX_REBOOT_CMD_RESTART); xor r10d, r10d; syscall
+    text.extend_from_slice(&[
+        0xb8, 169, 0, 0, 0, 0xbf, 0xad, 0xde, 0xe1, 0xfe, 0xbe, 0x69, 0x19, 0x12, 0x28, 0xba, 0x67,
+        0x45, 0x23, 0x01, 0x45, 0x31, 0xd2, 0x0f, 0x05,
+    ]);
+    // mov edi, 1; mov eax, 231 (exit_group); syscall
+    text.extend_from_slice(&[0xbf, 1, 0, 0, 0, 0xb8, 231, 0, 0, 0, 0x0f, 0x05]);
+    assert_eq!(text.len() as u64, CODE_LEN);
+    text.extend_from_slice(message.as_bytes());
+    static_program(&text)
+}
+
+/// A static executable that pins itself to each of the first `count` CPUs in
+/// turn and exits with bit i set when `getcpu` then reports CPU i.
 fn affinity_program(count: u8) -> Vec<u8> {
     #[rustfmt::skip]
     let mut text = [
@@ -412,34 +584,6 @@ fn affinity_program(count: u8) -> Vec<u8> {
     static_program(&text)
 }
 
-/// A static x86_64 executable running `text`: one read-only, executable
-/// `PT_LOAD` at 0x40_0000 holding the headers and the code.
-fn static_program(text: &[u8]) -> Vec<u8> {
-    const BASE: u64 = 0x40_0000;
-    const HEADERS: u64 = 64 + 56;
-    let size = HEADERS + text.len() as u64;
-    let mut elf = vec![0x7f, b'E', b'L', b'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    elf.extend_from_slice(&2u16.to_le_bytes()); // ET_EXEC
-    elf.extend_from_slice(&62u16.to_le_bytes()); // EM_X86_64
-    elf.extend_from_slice(&1u32.to_le_bytes()); // EV_CURRENT
-    elf.extend_from_slice(&(BASE + HEADERS).to_le_bytes()); // entry
-    elf.extend_from_slice(&64u64.to_le_bytes()); // program headers
-    elf.extend_from_slice(&0u64.to_le_bytes()); // no section headers
-    elf.extend_from_slice(&0u32.to_le_bytes()); // flags
-    for half in [64u16, 56, 1, 0, 0, 0] {
-        // header size, program header size and count, no sections
-        elf.extend_from_slice(&half.to_le_bytes());
-    }
-    elf.extend_from_slice(&1u32.to_le_bytes()); // PT_LOAD
-    elf.extend_from_slice(&5u32.to_le_bytes()); // R and X
-    for word in [0, BASE, BASE, size, size, 0x1000] {
-        // offset, virtual and physical address, file and memory size, alignment
-        elf.extend_from_slice(&word.to_le_bytes());
-    }
-    elf.extend_from_slice(text);
-    elf
-}
-
 /// An uncompressed newc archive holding one executable file, `name`
 /// (`Documentation/driver-api/early-userspace/buffer-format.rst`).
 fn newc_archive(name: &str, data: &[u8]) -> Vec<u8> {
@@ -476,6 +620,21 @@ fn newc_archive(name: &str, data: &[u8]) -> Vec<u8> {
     archive
 }
 
+/// Asserts that each of `steps` is a line of `log`, in that order.
+fn assert_in_order(log: &str, steps: &[&str]) {
+    let lines: Vec<&str> = log.lines().collect();
+    let positions: Vec<usize> = steps
+        .iter()
+        .map(|step| {
+            lines
+                .iter()
+                .position(|line| line == step)
+                .unwrap_or_else(|| panic!("no {step:?} in:\n{log}"))
+        })
+        .collect();
+    assert!(positions.is_sorted(), "out of order {positions:?}:\n{log}");
+}
+
 /// Boots the kernel named by `VMM_KERNEL` with a generated initramfs whose
 /// `/init` exits with 42. Linux must find the archive where the zero page
 /// says, run its init, and report the exit code when init dies.
@@ -485,26 +644,140 @@ fn runs_the_initramfs_init_until_it_exits() {
     let archive = newc_archive("init", &exit_program(42));
     let initramfs = TempFile::new("init.cpio", &archive);
 
-    let (log, zero_page) = boot_to_reset(&linux_config(1, Some(initramfs.0.clone())));
+    let log = SerialLog::default();
+    let mut run = run_linux(
+        &linux_config(1, LINUX_CMDLINE, Some(initramfs.0.clone())),
+        true,
+        BOOT_TIMEOUT,
+        Console::to(&log),
+    );
 
+    run.console.finish();
+    let log = log.text();
+    assert_reset(&run, &log);
     let (start, size) = (
-        u64::from(zero_page.hdr.ramdisk_image),
-        u64::from(zero_page.hdr.ramdisk_size),
+        u64::from(run.zero_page.hdr.ramdisk_image),
+        u64::from(run.zero_page.hdr.ramdisk_size),
     );
     assert_eq!(size, archive.len() as u64);
     let end = (start + size).next_multiple_of(0x1000) - 1;
-    let lines: Vec<&str> = log.lines().collect();
-    let position = |line: &str| lines.iter().position(|logged| *logged == line);
-    let ramdisk = format!("RAMDISK: [mem {start:#010x}-{end:#010x}]");
-    let steps = [
-        ramdisk.as_str(),
-        "Unpacking initramfs...",
-        "Run /init as init process",
-        "Kernel panic - not syncing: Attempted to kill init! exitcode=0x00002a00",
-    ]
-    .map(|line| position(line).unwrap_or_else(|| panic!("no {line:?} in:\n{log}")));
-    assert!(steps.is_sorted(), "out of order {steps:?}:\n{log}");
+    assert_in_order(
+        &log,
+        &[
+            &format!("RAMDISK: [mem {start:#010x}-{end:#010x}]"),
+            "Unpacking initramfs...",
+            "Run /init as init process",
+            "Kernel panic - not syncing: Attempted to kill init! exitcode=0x00002a00",
+        ],
+    );
     assert!(!log.contains("VFS: Unable to mount root fs"), "{log}");
+}
+
+/// The line `/init` prints in the console tests.
+const INIT_MARKER: &str = "INIT-MARKER-0123456789ABCDEF";
+
+/// Boots the kernel named by `VMM_KERNEL` with its console on the 8250 driver
+/// and an `/init` that prints `INIT_MARKER` and restarts the machine. Linux
+/// must find a 16550A on IRQ 4, `/init`'s line must leave through the tty,
+/// and the restart must end the run with the i8042 reset.
+#[test]
+#[ignore = "requires Linux x86_64 with access to /dev/kvm and VMM_KERNEL naming an x86_64 vmlinux"]
+fn boots_linux_on_the_legacy_devices_until_init_restarts() {
+    let archive = newc_archive("init", &print_and_restart(INIT_MARKER));
+    let initramfs = TempFile::new("restart.cpio", &archive);
+
+    let log = SerialLog::default();
+    let mut run = run_linux(
+        &linux_config(1, CONSOLE_CMDLINE, Some(initramfs.0.clone())),
+        true,
+        BOOT_TIMEOUT,
+        Console::to(&log),
+    );
+
+    run.console.finish();
+    let log = log.text();
+    assert_reset(&run, &log);
+    assert_in_order(
+        &log,
+        &[
+            &serial_probe_line(),
+            INIT_MARKER,
+            "reboot: Restarting system",
+        ],
+    );
+    assert!(!log.contains("Kernel panic"), "{log}");
+    assert!(run.gsi_4_edges > 0);
+    assert_eq!(run.console.dropped_bytes(), 0);
+}
+
+/// The line Linux prints when it finds COM1 at its port and GSI.
+fn serial_probe_line() -> String {
+    format!("serial8250: ttyS0 at I/O {COM1:#x} (irq = {COM1_GSI}, base_baud = 115200) is a 16550A")
+}
+
+/// The same boot with a console sink that takes nothing until the run has
+/// ended, and a queue of 4 KiB. The guest must still reach its restart on
+/// time: output is lost and counted, never waited for. The sink then gets
+/// the batch the worker held when the sink stalled, whose size depends on
+/// when the worker woke, and the newest 4 KiB, which hold the restart line.
+#[test]
+#[ignore = "requires Linux x86_64 with access to /dev/kvm and VMM_KERNEL naming an x86_64 vmlinux"]
+fn a_stalled_console_sink_never_stalls_the_guest() {
+    let archive = newc_archive("init", &print_and_restart(INIT_MARKER));
+    let initramfs = TempFile::new("stalled.cpio", &archive);
+    let stalled = StalledLog::default();
+    let capacity = 4096;
+
+    let mut run = run_linux(
+        &linux_config(1, CONSOLE_CMDLINE, Some(initramfs.0.clone())),
+        true,
+        BOOT_TIMEOUT,
+        Console {
+            sink: Box::new(stalled.clone()),
+            capacity,
+        },
+    );
+    let dropped = run.console.dropped_bytes();
+    // Only now may the sink take anything: the worker writes the batch it
+    // held, then the newest 4 KiB, and ends.
+    stalled.open();
+    run.console.finish();
+    let log = stalled.log.text();
+
+    assert_reset(&run, &log);
+    assert!(dropped > 0, "the boot log outgrew the queue");
+    assert!(log.len() <= 2 * capacity, "{}", log.len());
+    assert!(log.contains("reboot: Restarting system"), "{log}");
+}
+
+/// The same boot with every device interrupt dropped. Kernel messages still
+/// appear, since the console polls the UART, but tty output waits for THRE
+/// on IRQ 4: the start of `/init`'s line must not leave, so the run ends at
+/// the timeout. vm-superio 0.8.1 lets its first 16 bytes through.
+#[test]
+#[ignore = "requires Linux x86_64 with access to /dev/kvm and VMM_KERNEL naming an x86_64 vmlinux"]
+fn tty_output_waits_for_irq_4() {
+    let archive = newc_archive("init", &print_and_restart(INIT_MARKER));
+    let initramfs = TempFile::new("no-irq.cpio", &archive);
+
+    let log = SerialLog::default();
+    let mut run = run_linux(
+        &linux_config(1, CONSOLE_CMDLINE, Some(initramfs.0.clone())),
+        false,
+        Duration::from_secs(3),
+        Console::to(&log),
+    );
+
+    run.console.finish();
+    let log = log.text();
+    assert!(
+        matches!(run.exit, Ok(VmExit::StopRequested)),
+        "{:?}; log:\n{log}",
+        run.exit
+    );
+    assert!(log.contains("Run /init as init process"), "{log}");
+    assert!(!log.contains("INIT-MARKER"), "{log}");
+    assert!(run.gsi_4_edges > 0, "the UART asked for IRQ 4");
 }
 
 /// Boots the kernel named by `VMM_KERNEL` on four vCPUs. Linux must read the
@@ -513,8 +786,17 @@ fn runs_the_initramfs_init_until_it_exits() {
 #[test]
 #[ignore = "requires Linux x86_64 with access to /dev/kvm and VMM_KERNEL naming an x86_64 vmlinux"]
 fn brings_up_every_vcpu() {
-    let (log, _) = boot_to_reset(&linux_config(4, None));
+    let log = SerialLog::default();
+    let mut run = run_linux(
+        &linux_config(4, LINUX_CMDLINE, None),
+        true,
+        BOOT_TIMEOUT,
+        Console::to(&log),
+    );
 
+    run.console.finish();
+    let log = log.text();
+    assert_reset(&run, &log);
     let lines: Vec<&str> = log.lines().collect();
     for line in [
         "found SMP MP-table at [mem 0x0009fc00-0x0009fc0f]",
@@ -545,8 +827,17 @@ fn runs_user_code_on_every_vcpu() {
     let archive = newc_archive("init", &affinity_program(4));
     let initramfs = TempFile::new("affinity.cpio", &archive);
 
-    let (log, _) = boot_to_reset(&linux_config(4, Some(initramfs.0.clone())));
+    let log = SerialLog::default();
+    let mut run = run_linux(
+        &linux_config(4, LINUX_CMDLINE, Some(initramfs.0.clone())),
+        true,
+        BOOT_TIMEOUT,
+        Console::to(&log),
+    );
 
+    run.console.finish();
+    let log = log.text();
+    assert_reset(&run, &log);
     let panic = "Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000f00";
     assert!(log.lines().any(|line| line == panic), "{log}");
 }
@@ -557,22 +848,25 @@ fn runs_user_code_on_every_vcpu() {
 #[test]
 #[ignore = "requires Linux x86_64 with access to /dev/kvm and VMM_KERNEL naming an x86_64 vmlinux"]
 fn stops_a_guest_that_sleeps_forever() {
-    use std::{
-        thread,
-        time::{Duration, Instant},
-    };
-
     // pause: mov eax, 34 (pause); syscall; jmp pause
     let init = static_program(&[0xb8, 34, 0, 0, 0, 0x0f, 0x05, 0xeb, 0xf7]);
     let archive = newc_archive("init", &init);
     let initramfs = TempFile::new("pause.cpio", &archive);
-    let LinuxVm { mut vm, log, .. } = linux_vm(&linux_config(1, Some(initramfs.0.clone())));
+    let log = SerialLog::default();
+    let LinuxVm {
+        mut vm,
+        mut console,
+        ..
+    } = linux_vm(
+        &linux_config(1, LINUX_CMDLINE, Some(initramfs.0.clone())),
+        true,
+        Console::to(&log),
+    );
     let stop = vm.stop_handle();
-    let watched = std::sync::Arc::clone(&log);
+    let watched = log.clone();
     let stopper = thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while !log_text(&watched).contains("Run /init as init process") && Instant::now() < deadline
-        {
+        let deadline = Instant::now() + BOOT_TIMEOUT;
+        while !watched.text().contains("Run /init as init process") && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(10));
         }
         // Let init reach its pause before the stop.
@@ -586,9 +880,10 @@ fn stops_a_guest_that_sleeps_forever() {
     let returned = Instant::now();
 
     let stopped = stopper.join().unwrap();
-    let log = log_text(&log);
+    console.finish();
+    let log = log.text();
     assert!(log.contains("Run /init as init process"), "{log}");
-    assert_eq!(exit.unwrap(), crate::VmExit::StopRequested, "{log}");
+    assert_eq!(exit.unwrap(), VmExit::StopRequested, "{log}");
     let took = returned.duration_since(stopped);
     assert!(took < Duration::from_secs(2), "{took:?}");
 }

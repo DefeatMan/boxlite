@@ -205,7 +205,8 @@ successfully completed access is not completed again.
 | `Reset` | The guest reset | PSCI `SYSTEM_RESET`, decoded by the HVF backend | a `KVM_EXIT_SYSTEM_EVENT` reset on arm64; an x86 triple fault (`KVM_EXIT_SHUTDOWN`) | the i8042 reset below |
 
 On x86_64 the guest resets through the i8042 port. That reset arrives as an
-`IoOut`, and the VMM's i8042 device turns it into the end of the VM.
+`IoOut`, and the VMM's i8042 device sends `GuestReset` to the event loop,
+which ends the VM.
 
 KVM handles PSCI `CPU_ON` for secondary vCPUs in the kernel. M1 extends the
 current M0 `VcpuExit` enum with an HVF CPU-start request alongside the boot
@@ -338,8 +339,9 @@ today.
 - **No emulated controller.** HVF and KVM provide in-kernel interrupt
   controllers, so the VMM emulates none. WHP (M10) emulates only local APICs.
 - **Line assignment.** The VMM gives each device a line when it builds the
-  machine, and the chipset builder rejects a second claim of a line. It declares virtio-mmio interrupts edge-triggered, as Firecracker,
-  libkrun and dragonball do.
+  machine, and the chipset builder rejects a second claim of a line. It
+  declares virtio-mmio interrupts edge-triggered, as Firecracker, libkrun and
+  dragonball do.
 - **Raising an interrupt.** Devices raise their lines from their own threads
   through the VMM's interrupt path, which calls `Vm::set_irq_line` and then
   unparks halted vCPUs.
