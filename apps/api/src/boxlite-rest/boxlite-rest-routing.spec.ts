@@ -25,6 +25,9 @@ import { BoxliteRegistryController } from './boxlite-registry.controller'
 import { RegistriesService } from '../registry/services/registries.service'
 import { CommerceBoxLimitService } from './commerce-box-limit.service'
 import { AUDIT_CONTEXT_KEY, AuditContext } from '../audit/decorators/audit.decorator'
+import { BoxliteBoxSnapshotController } from './boxlite-box-snapshot.controller'
+import { BoxliteSnapshotController } from './boxlite-snapshot.controller'
+import { BoxSnapshotService } from '../box/services/box-snapshot.service'
 
 jest.mock('http-proxy-middleware', () => ({
   createProxyMiddleware: jest.fn(),
@@ -40,7 +43,7 @@ describe('BoxLite REST routing', () => {
   let updateInboundEnabled: jest.Mock
   let setOutboundNetwork: jest.Mock
 
-  async function startRoutingTestApp() {
+  async function startRoutingTestApp(snapshotService: Record<string, jest.Mock> = {}) {
     updateInboundEnabled = jest.fn((_boxId: string, inboundEnabled: boolean) => Promise.resolve({ inboundEnabled }))
     setOutboundNetwork = jest.fn((_id, policy) =>
       Promise.resolve({
@@ -51,13 +54,27 @@ describe('BoxLite REST routing', () => {
     await startApp(
       // The module's order, with the proxy controller's catch-all routes
       // present, so one that shadowed PUT network/inbound would fail below.
-      [BoxliteConfigController, BoxliteBoxController, BoxliteProxyController],
       [
+        BoxliteConfigController,
+        BoxliteBoxController,
+        BoxliteBoxSnapshotController,
+        BoxliteSnapshotController,
+        BoxliteProxyController,
+      ],
+      [
+        {
+          provide: BoxSnapshotService,
+          useValue: { isEnabled: jest.fn().mockReturnValue(false), ...snapshotService },
+        },
         {
           provide: BoxService,
           useValue: {
             findAllDeprecated: jest.fn().mockResolvedValue([]),
             toBoxDtos: jest.fn().mockResolvedValue([]),
+            // A box named 'named-box' is box-1; any other name is its own id.
+            findOneByIdOrName: jest.fn((idOrName: string) =>
+              Promise.resolve({ id: idOrName === 'named-box' ? 'box-1' : idOrName }),
+            ),
             updateInboundEnabled,
             setOutboundNetwork,
           },
@@ -106,6 +123,20 @@ describe('BoxLite REST routing', () => {
   async function get(path: string): Promise<Response> {
     const address = app.getHttpServer().address() as AddressInfo
     return fetch(`http://127.0.0.1:${address.port}${path}`)
+  }
+
+  async function post(path: string, body: unknown): Promise<Response> {
+    const address = app.getHttpServer().address() as AddressInfo
+    return fetch(`http://127.0.0.1:${address.port}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  }
+
+  async function del(path: string): Promise<Response> {
+    const address = app.getHttpServer().address() as AddressInfo
+    return fetch(`http://127.0.0.1:${address.port}${path}`, { method: 'DELETE' })
   }
 
   async function put(path: string, body: unknown): Promise<Response> {
@@ -215,6 +246,120 @@ describe('BoxLite REST routing', () => {
     const response = await get('/api/v1/config')
 
     expect((await response.json()).capabilities.inbound_update_enabled).toBe(true)
+  })
+
+  // Clients probe snapshots_enabled before calling any snapshot route, so it
+  // must follow the server's storage configuration rather than a constant.
+  it.each([true, false])('advertises snapshots_enabled=%s from the snapshot service', async (enabled) => {
+    await startRoutingTestApp({ isEnabled: jest.fn().mockReturnValue(enabled) })
+
+    const response = await get('/api/v1/config')
+
+    expect((await response.json()).capabilities.snapshots_enabled).toBe(enabled)
+  })
+
+  it('reaches the snapshot routes with or without a routing prefix', async () => {
+    const snapshot = {
+      id: 'snap-1',
+      sourceBoxId: 'box-1',
+      name: 'golden',
+      state: 'ready',
+      errorReason: null,
+      createdAt: new Date('2026-10-22T00:00:00Z'),
+      diskGb: 10,
+      sizeBytes: 42,
+    }
+    const restore = {
+      id: 'restore-1',
+      boxId: 'box-2',
+      snapshotId: 'snap-1',
+      state: 'pending',
+      errorReason: null,
+      createdAt: new Date('2026-10-22T00:00:00Z'),
+      completedAt: null,
+    }
+    const snapshotService = {
+      list: jest.fn().mockResolvedValue([snapshot]),
+      findOne: jest.fn().mockResolvedValue(snapshot),
+      restore: jest.fn().mockResolvedValue(restore),
+      getRestore: jest.fn().mockResolvedValue(restore),
+    }
+    await startRoutingTestApp(snapshotService)
+
+    for (const prefix of ['', '/default']) {
+      const listed = await get(`/api/v1${prefix}/snapshots`)
+      expect(listed.status).toBe(200)
+      expect((await listed.json()).snapshots[0]).toMatchObject({ id: 'snap-1', box_id: 'box-1', status: 'ready' })
+
+      const restored = await post(`/api/v1${prefix}/boxes/box-2/snapshots/golden/restore`, {})
+      expect(restored.status).toBe(202)
+      expect(await restored.json()).toMatchObject({ id: 'restore-1', snapshot_id: 'snap-1', status: 'pending' })
+
+      const polled = await get(`/api/v1${prefix}/boxes/box-2/restores/restore-1`)
+      expect(polled.status).toBe(200)
+      expect(await polled.json()).toMatchObject({ id: 'restore-1', box_id: 'box-2', status: 'pending' })
+    }
+    expect(snapshotService.restore).toHaveBeenCalledWith('box-2', 'golden', 'org-123')
+    expect(snapshotService.getRestore).toHaveBeenCalledWith('box-2', 'restore-1', 'org-123')
+  })
+
+  // Under a box, reads and deletes reach only the snapshots taken from it,
+  // whether the path names the box by id or by name.
+  it('narrows box-level snapshot reads and deletes to the snapshots of that box', async () => {
+    const snapshot = {
+      id: 'snap-1',
+      sourceBoxId: 'box-1',
+      name: 'golden',
+      state: 'ready',
+      errorReason: null,
+      createdAt: new Date('2026-10-22T00:00:00Z'),
+      diskGb: 10,
+      sizeBytes: 42,
+    }
+    const snapshotService = {
+      list: jest.fn().mockResolvedValue([snapshot]),
+      findOne: jest.fn().mockResolvedValue(snapshot),
+      remove: jest.fn().mockResolvedValue(undefined),
+    }
+    await startRoutingTestApp(snapshotService)
+
+    expect((await get('/api/v1/boxes/named-box/snapshots')).status).toBe(200)
+    expect((await get('/api/v1/boxes/named-box/snapshots/golden')).status).toBe(200)
+    expect((await del('/api/v1/boxes/named-box/snapshots/golden')).status).toBe(204)
+
+    const scope = { sourceBoxId: 'box-1' }
+    expect(snapshotService.list).toHaveBeenCalledWith('org-123', scope)
+    expect(snapshotService.findOne).toHaveBeenCalledWith('org-123', 'golden', scope)
+    expect(snapshotService.remove).toHaveBeenCalledWith('org-123', 'golden', scope)
+  })
+
+  // A snapshot name ends up in URL paths, so the route refuses one that would
+  // not survive there before the service sees it.
+  it.each([
+    ['golden-1.0', 201],
+    ['../escape', 400],
+    ['', 400],
+  ])('answers a create named %j with %d', async (name, status) => {
+    const create = jest.fn().mockResolvedValue({
+      id: 'snap-1',
+      sourceBoxId: 'box-1',
+      name,
+      state: 'creating',
+      errorReason: null,
+      createdAt: new Date('2026-10-22T00:00:00Z'),
+      diskGb: 10,
+      sizeBytes: 0,
+    })
+    await startRoutingTestApp({ create })
+
+    const response = await post('/api/v1/boxes/box-1/snapshots', { name })
+
+    expect(response.status).toBe(status)
+    expect(create).toHaveBeenCalledTimes(status === 201 ? 1 : 0)
+    if (status === 201) {
+      expect(create).toHaveBeenCalledWith('box-1', name, 'org-123')
+      expect(await response.json()).toMatchObject({ id: 'snap-1', status: 'creating' })
+    }
   })
 
   it('answers image usage on its own route, with or without a routing prefix', async () => {
