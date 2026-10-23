@@ -176,6 +176,16 @@ class OneVolumeOrigin implements ValidatorConstraintInterface {
   }
 }
 
+@ValidatorConstraint({ name: 'writableCacheVolume', async: false })
+class WritableCacheVolume implements ValidatorConstraintInterface {
+  validate(readOnly: unknown, args: { object: object }): boolean {
+    return readOnly !== true || (args.object as VolumeSpecDto).cache_volume === undefined
+  }
+  defaultMessage(): string {
+    return 'a cache_volume is always mounted read-write; read_only applies to managed volumes'
+  }
+}
+
 export class VolumeSpecDto {
   @ValidateIf((v) => v.managed_volume === undefined || v.cache_volume !== undefined)
   @IsString()
@@ -199,13 +209,18 @@ export class VolumeSpecDto {
   guest_path: string
 
   /**
-   * Read-only managed mounts are not implemented yet. Rejected rather than
-   * silently downgraded to read-write, which would hand the caller a writable
-   * mount they believe is protected.
+   * Mount the volume read-only: the runner binds it into the box read-only.
+   * Omitted means read-write.
+   *
+   * ValidateIf (not IsOptional) so an explicit `null` is still a validation
+   * error: a null that quietly became read-write would hand the caller a
+   * writable mount they believe is protected. Runners have no read-only cache
+   * mount, so a read-only cache is refused for the same reason.
    */
   @ValidateIf((_, value) => value !== undefined)
-  @IsIn([false])
-  read_only?: false
+  @IsBoolean()
+  @Validate(WritableCacheVolume)
+  read_only?: boolean
 }
 
 export class SecretSpecDto {

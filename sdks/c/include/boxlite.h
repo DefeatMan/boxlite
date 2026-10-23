@@ -186,6 +186,9 @@ typedef struct FFIError CBoxliteError;
 // Box export completion.
 typedef void (*CBoxExportCb)(char*, CBoxliteError*, void*);
 
+// Box restore-from-archive completion.
+typedef void (*CBoxRestoreArchiveCb)(CBoxliteError*, void*);
+
 typedef struct RuntimeHandle CBoxliteRuntime;
 
 // Runtime import completion.
@@ -630,9 +633,6 @@ typedef struct VolumeHandle CBoxliteVolumeHandle;
 // Runtime shutdown completion.
 typedef void (*CRuntimeShutdownCb)(CBoxliteError*, void*);
 
-// Snapshot JSON completion. Caller frees the owned result string.
-typedef void (*CBoxSnapshotCb)(char*, CBoxliteError*, void*);
-
 // C ABI representation of volume metadata.
 //
 // `id` and `created_at` are non-null, heap-owned C strings. A standalone value
@@ -738,6 +738,17 @@ enum BoxliteErrorCode boxlite_box_export(CBoxHandle *handle,
                                          CBoxExportCb cb,
                                          void *user_data,
                                          CBoxliteError *out_error);
+
+// Submit a restore of a stopped box's container disk from an archive.
+//
+// The box keeps its identity and configuration; a failure leaves its
+// original disk in place. The caller retains ownership of the archive file;
+// this bridge never removes it.
+enum BoxliteErrorCode boxlite_box_restore_from_archive(CBoxHandle *handle,
+                                                       const char *archive_path,
+                                                       CBoxRestoreArchiveCb cb,
+                                                       void *user_data,
+                                                       CBoxliteError *out_error);
 
 // Submit a trusted archive import.
 //
@@ -1126,6 +1137,18 @@ enum BoxliteErrorCode boxlite_runtime_metrics(CBoxliteRuntime *runtime,
                                               void *user_data,
                                               CBoxliteError *out_error);
 
+// Replace inbound policy from {"mode":"enabled","allow_net":[]}.
+// Blocks until applied or rejected. Strings are borrowed for the call.
+enum BoxliteErrorCode boxlite_network_update_inbound(CBoxNetworkHandle *network,
+                                                     const char *policy_json,
+                                                     CBoxliteError *out_error);
+
+// Replace outbound policy from {"mode":"enabled","allow_net":["example.com"]}.
+// An empty enabled allowlist clears restrictions. Blocks until applied or rejected.
+enum BoxliteErrorCode boxlite_network_update_outbound(CBoxNetworkHandle *network,
+                                                      const char *policy_json,
+                                                      CBoxliteError *out_error);
+
 // Borrow the box's network capability into a new owned handle.
 //
 // On success, `*out_network` must be released with `boxlite_network_free`.
@@ -1165,6 +1188,14 @@ enum BoxliteErrorCode boxlite_network_tunnel(CBoxNetworkHandle *network,
                                              uint16_t port,
                                              CBoxTunnelHandle **out_tunnel,
                                              CBoxliteError *out_error);
+
+// Withdraw public access to `port` in the box.
+//
+// Safe to repeat. Connections already open are not closed. Returns
+// `InvalidArgument` for a null network pointer or port zero.
+enum BoxliteErrorCode boxlite_network_revoke_tunnel(CBoxNetworkHandle *network,
+                                                    uint16_t port,
+                                                    CBoxliteError *out_error);
 
 // Release an unconsumed tunnel. Existing connections and forwarders remain alive.
 void boxlite_tunnel_free(CBoxTunnelHandle *tunnel);
@@ -1257,7 +1288,7 @@ void boxlite_options_set_network_enabled(CBoxliteOptions *opts);
 void boxlite_options_set_network_disabled(CBoxliteOptions *opts);
 
 // Adds one entry to the outbound allowlist. Patterns: exact host,
-// "*.example.com", IP, or CIDR.
+// "*.example.com", IPv4, or IPv4 CIDR; anything else fails at create.
 //
 // A non-empty allowlist restricts both TCP and UDP egress. Hostname entries
 // are enforced by TLS SNI / HTTP Host inspection, which only TCP carries, so
@@ -1545,32 +1576,6 @@ void boxlite_runtime_free(CBoxliteRuntime *runtime);
 //
 // Returns the number of dispatched events, or `-1` on error.
 int boxlite_runtime_drain(CBoxliteRuntime *runtime, int timeout_ms, CBoxliteError *out_error);
-
-// Submit create/get/list/remove/restore using a JSON request with `operation`,
-// `name` (except list), and optional `snapshot_type` (default filesystem).
-// The callback owns the JSON result string; release with boxlite_free_string.
-// Inputs are copied before returning. Cancellation does not abort disk capture.
-enum BoxliteErrorCode boxlite_box_snapshot(CBoxHandle *handle,
-                                           const char *request_json,
-                                           CBoxSnapshotCb cb,
-                                           void *user_data,
-                                           CBoxliteError *out_error);
-
-// Runtime snapshot get/remove by opaque ID, surviving source deletion.
-enum BoxliteErrorCode boxlite_runtime_snapshot(CBoxliteRuntime *runtime,
-                                               const char *id,
-                                               bool remove,
-                                               CBoxSnapshotCb cb,
-                                               void *user_data,
-                                               CBoxliteError *out_error);
-
-// Cold-create from snapshot. Consumes opts just like boxlite_create_box.
-enum BoxliteErrorCode boxlite_create_from_snapshot(CBoxliteRuntime *runtime,
-                                                   const char *id,
-                                                   CBoxliteOptions *opts,
-                                                   CBoxCreateBoxCb cb,
-                                                   void *user_data,
-                                                   CBoxliteError *out_error);
 
 void boxlite_free_string(char *s);
 

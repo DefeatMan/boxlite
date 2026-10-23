@@ -281,20 +281,6 @@ impl BoxOptions {
             ));
         }
 
-        // The server rejects `read_only: true` on a managed mount. Refusing here
-        // says so plainly instead of surfacing a field-level 400, and — more to the
-        // point — never lets a caller believe a writable mount is protected.
-        if let Some(volume) = self
-            .volumes
-            .iter()
-            .find(|volume| volume.read_only)
-            .and_then(|volume| volume.managed_volume.as_deref())
-        {
-            return Err(BoxliteError::Unsupported(format!(
-                "read-only managed volumes are not supported yet; mount {volume:?} read-write"
-            )));
-        }
-
         // REST runtimes send no typed mounts yet(TODO): refused here, before
         // any request, rather than left out of it.
         if !self.mounts.is_empty() {
@@ -309,79 +295,6 @@ impl BoxOptions {
 
 #[async_trait::async_trait]
 impl RuntimeBackend for RestRuntime {
-    async fn snapshot_copy(
-        &self,
-        id: &str,
-        runner_id: &str,
-        name: Option<String>,
-    ) -> BoxliteResult<crate::SnapshotInfo> {
-        let config = self.client.get_config().await?;
-        if !config
-            .capabilities
-            .and_then(|c| c.snapshot_copy_enabled)
-            .unwrap_or(false)
-        {
-            return Err(BoxliteError::Unsupported(
-                "server does not support snapshot copy".into(),
-            ));
-        }
-        let response: super::types::SnapshotResponse = self
-            .client
-            .post(
-                &format!("/snapshots/{}/copies", urlencoding::encode(id)),
-                &serde_json::json!({"runner_id": runner_id, "name": name}),
-            )
-            .await?;
-        Ok(response.to_snapshot_info())
-    }
-    async fn snapshot_get(&self, id: &str) -> BoxliteResult<crate::SnapshotInfo> {
-        let response: super::types::SnapshotResponse = self
-            .client
-            .get(&format!("/snapshots/{}", urlencoding::encode(id)))
-            .await?;
-        Ok(response.to_snapshot_info())
-    }
-
-    async fn snapshot_remove(&self, id: &str) -> BoxliteResult<()> {
-        self.client
-            .delete(&format!("/snapshots/{}", urlencoding::encode(id)))
-            .await
-    }
-
-    async fn create_from_snapshot(
-        &self,
-        id: &str,
-        name: Option<String>,
-        options: Option<BoxOptions>,
-    ) -> BoxliteResult<LiteBox> {
-        let options = if let Some(options) = options {
-            options.sanitize_remote()?;
-            if options.advanced.privileged {
-                self.client.require_privileged_enabled().await?;
-            }
-            if options.advanced.capabilities().is_some() {
-                self.client.require_linux_capabilities_enabled().await?;
-            }
-            if options.volumes.iter().any(|v| v.cache_volume.is_some()) {
-                self.client.require_cache_volumes_enabled().await?;
-            }
-            Some(CreateBoxRequest::from_options(&options, None))
-        } else {
-            None
-        };
-        let response: BoxResponse = self
-            .client
-            .post(
-                &format!("/snapshots/{}/boxes", urlencoding::encode(id)),
-                &serde_json::json!({"name": name, "options": options}),
-            )
-            .await?;
-        Ok(litebox_from_rest(Arc::new(RestBox::new(
-            self.client.clone(),
-            response.to_box_info()?,
-        ))))
-    }
-
     async fn create(&self, options: BoxOptions, name: Option<String>) -> BoxliteResult<LiteBox> {
         options.sanitize_remote()?;
 
@@ -613,6 +526,58 @@ mod tests {
                     .write_all(
                         format!(
                             "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            }
+            requests
+        });
+        (port, server)
+    }
+
+    /// Like `json_server`, but returns each request's line with its JSON body
+    /// (`Null` when it has none), so a test can read what reached the server.
+    async fn recording_json_server(
+        bodies: Vec<&'static str>,
+    ) -> (
+        u16,
+        tokio::task::JoinHandle<Vec<(String, serde_json::Value)>>,
+    ) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for body in bodies {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut headers = Vec::new();
+                while !headers.ends_with(b"\r\n\r\n") {
+                    headers.push(socket.read_u8().await.unwrap());
+                }
+                let head = String::from_utf8(headers).unwrap();
+                let length = head
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap_or(0);
+                let mut payload = vec![0; length];
+                socket.read_exact(&mut payload).await.unwrap();
+                let json = if payload.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::from_slice(&payload).unwrap()
+                };
+                requests.push((head.lines().next().unwrap().to_string(), json));
+                socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                             body.len(),
                             body
                         )
@@ -884,11 +849,11 @@ mod tests {
         assert!(error.to_string().contains("typed mounts"), "{error}");
     }
 
-    /// The server rejects `read_only: true` on a managed mount. Refusing it
-    /// here keeps a caller from believing a writable mount is protected — the
-    /// failure mode that matters is the silent downgrade, not the 400.
+    /// A read-only managed mount is an ordinary request: nothing client-side
+    /// refuses it, and the runner binds the volume read-only. Reaching the
+    /// transport error is the proof it cleared validation.
     #[tokio::test]
-    async fn create_rejects_read_only_managed_volume() {
+    async fn create_sends_read_only_managed_volume() {
         use crate::runtime::options::VolumeSpec;
 
         let options = BoxliteRestOptions::new("http://localhost:1");
@@ -904,10 +869,12 @@ mod tests {
         let error = RuntimeBackend::create(&runtime, box_options, None)
             .await
             .err()
-            .expect("read-only managed volumes must be rejected before network I/O");
+            .expect("no server is listening on localhost:1");
 
-        assert!(matches!(error, BoxliteError::Unsupported(_)), "{error:?}");
-        assert!(error.to_string().contains("read-only"), "{error}");
+        assert!(
+            !matches!(error, BoxliteError::Unsupported(_)),
+            "a read-only managed mount must not be refused client-side: {error:?}"
+        );
     }
 
     /// The guard is about host paths, not about mounts: a managed volume gets
@@ -1029,6 +996,104 @@ mod tests {
                 "POST /v1/boxes HTTP/1.1",
                 "GET /v1/config HTTP/1.1",
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn advertised_cache_volume_reaches_the_create_request() {
+        let (port, server) = recording_json_server(vec![
+            r#"{"capabilities":{"cache_volumes_enabled":true}}"#,
+            BOX_RESPONSE,
+        ])
+        .await;
+        let runtime =
+            RestRuntime::new(&BoxliteRestOptions::new(format!("http://127.0.0.1:{port}"))).unwrap();
+        let options = BoxOptions {
+            volumes: vec![crate::runtime::options::VolumeSpec::cache_volume(
+                "build", "/cache",
+            )],
+            ..BoxOptions::default()
+        };
+
+        RuntimeBackend::create(&runtime, options, None)
+            .await
+            .unwrap();
+
+        let requests = server.await.unwrap();
+        assert_eq!(requests[0].0, "GET /v1/config HTTP/1.1");
+        assert_eq!(requests[1].0, "POST /v1/boxes HTTP/1.1");
+        assert_eq!(
+            requests[1].1["volumes"],
+            serde_json::json!([{"cache_volume": "build", "guest_path": "/cache", "read_only": false}])
+        );
+    }
+
+    /// A managed volume needs no cache support, so it is sent without asking
+    /// and without a `cache_volume` key.
+    #[tokio::test]
+    async fn managed_volume_reaches_the_create_request_without_cache_volume() {
+        let (port, server) = recording_json_server(vec![BOX_RESPONSE]).await;
+        let runtime =
+            RestRuntime::new(&BoxliteRestOptions::new(format!("http://127.0.0.1:{port}"))).unwrap();
+        let options = BoxOptions {
+            volumes: vec![crate::runtime::options::VolumeSpec::managed_volume(
+                "data", "/data",
+            )],
+            ..BoxOptions::default()
+        };
+
+        RuntimeBackend::create(&runtime, options, None)
+            .await
+            .unwrap();
+
+        let requests = server.await.unwrap();
+        assert_eq!(requests[0].0, "POST /v1/boxes HTTP/1.1");
+        assert_eq!(
+            requests[0].1["volumes"],
+            serde_json::json!([{"managed_volume": "data", "guest_path": "/data", "read_only": false}])
+        );
+    }
+
+    /// The contract defaults `privileged` to false, so only true reaches the
+    /// wire, and only after the server advertises guest privilege.
+    #[tokio::test]
+    async fn privileged_reaches_the_create_request_only_when_set() {
+        let (port, server) = recording_json_server(vec![
+            BOX_RESPONSE,
+            BOX_RESPONSE,
+            r#"{"capabilities":{"privileged_enabled":true}}"#,
+            BOX_RESPONSE,
+        ])
+        .await;
+        let runtime =
+            RestRuntime::new(&BoxliteRestOptions::new(format!("http://127.0.0.1:{port}"))).unwrap();
+        let mut explicit_off = BoxOptions::default();
+        explicit_off.advanced.set_privileged(false);
+        let mut on = BoxOptions::default();
+        on.advanced.set_privileged(true);
+
+        for options in [BoxOptions::default(), explicit_off, on] {
+            RuntimeBackend::create(&runtime, options, None)
+                .await
+                .unwrap();
+        }
+
+        let requests = server.await.unwrap();
+        let lines: Vec<&str> = requests.iter().map(|(line, _)| line.as_str()).collect();
+        assert_eq!(
+            lines,
+            [
+                "POST /v1/boxes HTTP/1.1",
+                "POST /v1/boxes HTTP/1.1",
+                "GET /v1/config HTTP/1.1",
+                "POST /v1/boxes HTTP/1.1",
+            ]
+        );
+        assert!(requests[0].1.get("advanced").is_none());
+        assert!(requests[1].1.get("advanced").is_none());
+        assert_eq!(
+            requests[3].1["advanced"],
+            serde_json::json!({"privileged": true})
         );
     }
 

@@ -44,6 +44,7 @@ import Redis from 'ioredis'
 import { runnerLookupCacheKeyById, RUNNER_LOOKUP_CACHE_TTL_MS } from '../utils/runner-lookup-cache.util'
 import { BoxRepository } from '../repositories/box.repository'
 import { RunnerServiceInfo } from '../common/runner-service-info'
+import { runnerBindsReadOnlyVolumes } from '../utils/runner-version.util'
 
 @Injectable()
 export class RunnerService {
@@ -291,10 +292,6 @@ export class RunnerService {
     if (excludedRunnerIds?.length) {
       runnerFilter.id = Not(In(excludedRunnerIds))
     }
-    if (params.requiredRunnerId) {
-      if (excludedRunnerIds?.includes(params.requiredRunnerId)) return []
-      runnerFilter.id = params.requiredRunnerId
-    }
 
     if (params.regions?.length) {
       runnerFilter.region = In(params.regions)
@@ -304,9 +301,11 @@ export class RunnerService {
       runnerFilter.class = params.boxClass
     }
 
-    const runners = await this.runnerRepository.find({
-      where: runnerFilter,
-    })
+    const runners = (
+      await this.runnerRepository.find({
+        where: runnerFilter,
+      })
+    ).filter((runner) => !params.requireReadOnlyVolumes || runnerBindsReadOnlyVolumes(runner.appVersion))
 
     return runners.sort((a, b) => b.availabilityScore - a.availabilityScore).slice(0, 10)
   }
@@ -781,7 +780,11 @@ export class RunnerService {
     const availableRunners = await this.findAvailableRunners(params)
 
     if (availableRunners.length === 0) {
-      throw new BadRequestError(NO_AVAILABLE_RUNNERS)
+      throw new BadRequestError(
+        params.requireReadOnlyVolumes
+          ? `${NO_AVAILABLE_RUNNERS}: no runner here can mount a volume read-only yet`
+          : NO_AVAILABLE_RUNNERS,
+      )
     }
 
     // Get random runner from the best available runners
@@ -981,11 +984,12 @@ export class RunnerService {
 export const NO_AVAILABLE_RUNNERS = 'No available runners'
 
 export class GetRunnerParams {
-  requiredRunnerId?: string
   regions?: string[]
   boxClass?: BoxClass
   excludedRunnerIds?: string[]
   availabilityScoreThreshold?: number
+  /** Only runners that bind a `readOnly` volume read-only. */
+  requireReadOnlyVolumes?: boolean
 }
 
 interface AvailabilityScoreParams {

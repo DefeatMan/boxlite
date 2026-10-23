@@ -67,6 +67,9 @@ export function createBoxToCreateBox(dto: RestCreateBoxDto, target?: string): Cr
     volumeId: volume.cache_volume ?? volume.managed_volume,
     ...(volume.cache_volume !== undefined ? { type: 'cache' as const } : {}),
     mountPath: volume.guest_path,
+    // Left undefined when omitted so a row written before this field and an
+    // explicit false stay distinguishable in the persisted jsonb.
+    readOnly: volume.read_only,
   }))
   createDto.secrets = dto.secrets?.map((secret) => ({
     name: secret.name,
@@ -100,6 +103,10 @@ function mapState(state: string | BoxState | undefined): string {
     case BoxState.DESTROYING:
     case BoxState.ARCHIVING:
       return 'stopping'
+    case BoxState.EXPORTING:
+      return 'exporting'
+    case BoxState.IMPORTING:
+      return 'importing'
     case BoxState.ERROR:
     case BoxState.UNKNOWN:
     default:

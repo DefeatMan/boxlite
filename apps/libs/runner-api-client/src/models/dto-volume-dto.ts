@@ -17,6 +17,10 @@
 export interface DtoVolumeDTO {
     'type'?: 'volume' | 'cache';
     'mountPath'?: string;
+    /**
+     * ReadOnly binds the volume (or its Subpath) into the box read-only. Omitted on the wire means read-write, so an older API that never sends it keeps today\'s behaviour.
+     */
+    'readOnly'?: boolean;
     'subpath'?: string;
     'volumeId'?: string;
 }

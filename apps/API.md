@@ -14,8 +14,8 @@ The inventory is implementation-grounded:
   prefix applied in [`main.ts`](./api/src/main.ts).
 - Hosted BoxLite-compatible routes come from the controllers in
   [`boxlite-rest`](./api/src/boxlite-rest/). They are excluded from the product
-  OpenAPI document because their portable contract lives in
-  [`openapi/box.openapi.yaml`](../openapi/box.openapi.yaml).
+  OpenAPI document because their contracts live in [`openapi/box.openapi.yaml`](../openapi/box.openapi.yaml)
+  and, for cloud-only members and invitations, [`openapi/admin.openapi.yaml`](../openapi/admin.openapi.yaml).
 - The registry proxy's runner credential lookup is an internal service route.
   It is excluded from the Cloud OpenAPI document and generated customer clients;
   the proxy owns its request and response handling.
@@ -36,9 +36,11 @@ The inventory is implementation-grounded:
   [`local-dex-env.mjs`](./scripts/local-dex-env.mjs).
 
 `openapi/box.openapi.yaml` also describes portable capabilities that the hosted
-service does not currently register, including snapshots, clone, export,
-import, and runtime-wide metrics. They are intentionally absent below;
-`GET /api/v1/config` reports snapshots, clone, export, and import as disabled.
+service does not currently register, including clone, export, import, and
+runtime-wide metrics. They are intentionally absent below; `GET /api/v1/config`
+reports clone, export, and import as disabled. Snapshots are registered, and
+the same route reports them enabled only on a stage that configures snapshot
+storage (`BOX_SNAPSHOT_ARCHIVE_PREFIX`).
 
 ## Services at a glance
 
@@ -85,6 +87,19 @@ serves and the events it emits are catalogued below alongside its routes.
 | `DELETE` | `/api/api-keys/{name}`          | Deletes the caller's API key by name.                          |
 | `DELETE` | `/api/api-keys/{userId}/{name}` | Deletes a named API key belonging to a specified user.         |
 
+Key creation takes an explicit `permissions` array. When authenticated with an API key,
+the requested permissions must be a subset of that key's permissions, including for
+owners and system admins; broader grants return 403 before a key is created.
+The user's existing grantability checks still apply. An owner using a user JWT
+can create a key with any supported permission.
+
+Both DELETE routes require `write:members` when authenticated with an API key,
+including owner/admin keys and revocation of the calling key itself. A
+`read:members` key cannot revoke any key. User JWTs retain their existing access:
+members can revoke their own keys; owners and admins can also revoke other users'
+keys within the selected organization. The scope does not bypass these user or
+organization boundaries.
+
 </details>
 
 <details>
@@ -120,23 +135,23 @@ serves and the events it emits are catalogued below alongside its routes.
 | `DELETE` | `/api/organizations/{organizationId}`                                    | Deletes an organization.                                 |
 | `PATCH`  | `/api/organizations/{organizationId}/name`                               | Changes an organization's name.                          |
 | `PATCH`  | `/api/organizations/{organizationId}/default-region`                     | Sets the organization's default region.                  |
-| `POST`   | `/api/organizations/{organizationId}/leave`                              | Removes the caller from the organization.                |
+| `POST`   | `/api/organizations/{organizationId}/leave`                              | Removes the caller and revokes their API keys here.      |
 | `POST`   | `/api/organizations/{organizationId}/suspend`                            | Suspends the organization.                               |
 | `POST`   | `/api/organizations/{organizationId}/unsuspend`                          | Restores a suspended organization.                       |
 | `GET`    | `/api/organizations/by-box-id/{boxId}`                                   | Resolves the organization that owns a box.               |
 | `POST`   | `/api/organizations/{organizationId}/box-default-limited-network-egress` | Changes the default limited-egress policy for new boxes. |
 | `PUT`    | `/api/organizations/{organizationId}/experimental-config`                | Replaces the organization's experimental configuration.  |
 | `GET`    | `/api/organizations/{organizationId}/users`                              | Lists organization members.                              |
-| `POST`   | `/api/organizations/{organizationId}/users/{userId}/access`              | Changes a member's organization access.                  |
-| `DELETE` | `/api/organizations/{organizationId}/users/{userId}`                     | Removes a member from the organization.                  |
+| `POST`   | `/api/organizations/{organizationId}/users/{userId}/access`              | Changes access; refuses to demote a default-org creator. |
+| `DELETE` | `/api/organizations/{organizationId}/users/{userId}`                     | Removes a member and revokes their API keys here.        |
 | `GET`    | `/api/organizations/invitations`                                         | Lists invitations addressed to the caller.               |
 | `GET`    | `/api/organizations/invitations/count`                                   | Counts invitations addressed to the caller.              |
 | `POST`   | `/api/organizations/invitations/{invitationId}/accept`                   | Accepts an organization invitation.                      |
 | `POST`   | `/api/organizations/invitations/{invitationId}/decline`                  | Declines an organization invitation.                     |
-| `GET`    | `/api/organizations/{organizationId}/invitations`                        | Lists the organization's pending invitations.            |
+| `GET`    | `/api/organizations/{organizationId}/invitations`                        | Lists pending invitations, including expired ones.       |
 | `POST`   | `/api/organizations/{organizationId}/invitations`                        | Creates an organization invitation.                      |
 | `PUT`    | `/api/organizations/{organizationId}/invitations/{invitationId}`         | Changes a pending invitation.                            |
-| `POST`   | `/api/organizations/{organizationId}/invitations/{invitationId}/cancel`  | Cancels a pending invitation.                            |
+| `POST`   | `/api/organizations/{organizationId}/invitations/{invitationId}/cancel`  | Cancels a pending invitation, even after expiry.          |
 
 </details>
 
@@ -340,7 +355,7 @@ release fetched over HTTPS.
 
 | Protocol                 | Path, topic, or event          | What it does                                                                                                                           |
 | ------------------------ | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Socket.IO over WebSocket | `/api/socket.io/`              | Authenticates a JWT or API key, joins user and organization rooms, and streams resource notifications.                                 |
+| Socket.IO over WebSocket | `/api/socket.io/`              | Authenticates a JWT or API key and joins the user room, plus the organization room for members only; removal ejects the member. |
 | Socket.IO event          | `box.created`                  | Notifies an organization that a box was created.                                                                                       |
 | Socket.IO event          | `box.state.updated`            | Notifies an organization that a box's observed state changed.                                                                          |
 | Socket.IO event          | `box.desired-state.updated`    | Notifies an organization that a box's desired state changed.                                                                           |
@@ -376,7 +391,9 @@ deployments (shared with the control-plane API)
 
 Most resource paths accept both an unprefixed form and an organization-prefixed
 form. The tables write that as `[/{prefix}]`; clients can discover their prefix
-through `GET /api/v1/me`. Except for configuration discovery, these routes use
+through `GET /api/v1/me`. A prefix is an organization ID or `default`, so an
+unprefixed path always names the collection it starts with: `/api/v1/images/boxes`
+is the image named `boxes`, never the box list. Except for configuration discovery, these routes use
 combined bearer authentication, then organization authorization.
 
 Image and registry management routes also consume the organization's authenticated
@@ -450,11 +467,50 @@ organization membership.
 | `GET`    | `/api/v1[/{prefix}]/boxes/{boxId}/files?path={path}`          | Downloads a box path as a tar stream.                   |
 | `GET`    | `/api/v1[/{prefix}]/boxes/{boxId}/metrics`                    | Returns metrics for one box without marking it active.  |
 | `POST`   | `/api/v1[/{prefix}]/boxes/{boxId}/network/tunnel?port={port}` | Returns the runner tunnel URI for a guest TCP port.     |
+| `DELETE` | `/api/v1[/{prefix}]/boxes/{boxId}/network/tunnel?port={port}` | Revokes a port's public declaration; `204`, idempotent. |
 | `PUT`    | `/api/v1[/{prefix}]/boxes/{boxId}/network/inbound`            | Enables or disables a box's inbound access.             |
 
 The exec, signal, resize, files, and metrics handlers are registered as
 catch-all reverse proxies to the box's assigned runner; the methods shown are
 the portable contract, which the runner's own route registration enforces.
+
+</details>
+
+<details>
+<summary><b>Snapshots</b> · 9 routes</summary>
+
+| Method   | Path                                                           | What it does                                                         |
+| -------- | -------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `POST`   | `/api/v1[/{prefix}]/boxes/{boxId}/snapshots`                   | Starts exporting a stopped box; answers `201` with `status: creating`. |
+| `GET`    | `/api/v1[/{prefix}]/boxes/{boxId}/snapshots`                   | Lists the snapshots taken from the box.                              |
+| `GET`    | `/api/v1[/{prefix}]/boxes/{boxId}/snapshots/{snapshot}`        | Gets one of them by name or ID.                                      |
+| `DELETE` | `/api/v1[/{prefix}]/boxes/{boxId}/snapshots/{snapshot}`        | Deletes one of them.                                                 |
+| `POST`   | `/api/v1[/{prefix}]/boxes/{boxId}/snapshots/{snapshot}/restore` | Starts replacing the stopped box's disk; answers `202` with a restore record. |
+| `GET`    | `/api/v1[/{prefix}]/boxes/{boxId}/restores/{restoreId}`        | Gets a restore record.                                               |
+| `GET`    | `/api/v1[/{prefix}]/snapshots`                                 | Lists the organization's snapshots, including those of deleted boxes. |
+| `GET`    | `/api/v1[/{prefix}]/snapshots/{snapshot}`                      | Gets any snapshot of the organization by name or ID.                 |
+| `DELETE` | `/api/v1[/{prefix}]/snapshots/{snapshot}`                      | Deletes any snapshot of the organization.                            |
+
+A snapshot belongs to the organization, not to its box: names are unique per
+organization, a snapshot outlives the box it came from, and `restore` accepts
+any ready snapshot of the organization whose disk size and region match the
+target box. A name takes letters, digits, `.`, `_` and `-`, starting with a
+letter or digit, since it travels in URL paths; any other answers `400`.
+
+Creating one moves the box to `exporting` and restoring one to `importing`;
+until the runner job settles, the box accepts only deletion, which fails the
+snapshot or restore. Either way the box ends stopped, and a failed restore
+keeps the original disk. A job no runner picks up within ten minutes fails,
+which frees its box. Create and restore need `write:boxes`, deletion
+`delete:boxes`.
+
+An organization keeps at most `BOX_SNAPSHOT_MAX_PER_ORGANIZATION` (default 10)
+creating or ready snapshots; one more answers `429` (`resource_exhausted`). An
+organization's creates take turns, and one kept waiting over five seconds
+answers `503` (`upstream_unavailable`) for the caller to retry. Archives live
+in object storage under `BOX_SNAPSHOT_ARCHIVE_PREFIX` (`gs://` only; `s3://`
+is reserved and refused at boot), and the API deletes them itself. Snapshot
+storage is not billed yet.
 
 </details>
 
@@ -505,6 +561,74 @@ whose resolved proxy reference has lost its credential is also rejected before
 it is saved. Once a dependent box commits, deletion returns 409 with its ID.
 The dependency check reads candidate credentials once for the organization and
 registry host, then matches each box in memory using the longest repository prefix.
+
+</details>
+
+<details>
+<summary><b>Members and invitations</b> · 5 routes</summary>
+
+Contract: [`openapi/admin.openapi.yaml`](../openapi/admin.openapi.yaml). This cloud-only
+Admin API manages an organization's users and invitations. Ordinary scoped API keys
+and user JWTs can call it; a platform administrator account is not required.
+Dedicated Admin SDK methods are not yet available. Existing Cloud API SDK methods
+continue to manage organizations and invitations.
+
+| Method | Path | Required API-key scope | Membership rule |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/organizations/users` | `read:members` | Member |
+| `DELETE` | `/api/v1/organizations/users/{user_id}` | `write:members` | Owner |
+| `GET` | `/api/v1/organizations/invites` | `read:members` | Member |
+| `POST` | `/api/v1/organizations/invites` | `write:members` | Owner |
+| `DELETE` | `/api/v1/organizations/invites/{invite_id}` | `write:members` | Owner |
+
+The key selects its organization. JWT callers select an organization with
+`X-BoxLite-Organization-ID`, or use their default organization. Read and write
+scopes are independent; owner and platform-admin keys still need the declared
+scope. For example, create a restricted key through the Cloud API/SDK with
+`{"name":"member-reader","permissions":["read:members"]}`. It can list users and
+invites but cannot invite users or delegate a key with `write:members`.
+Console owner-created keys default to both member scopes.
+
+The unmerged Tenant routes and scope names are replaced directly. Previously
+stored tenant grants migrate to the equivalent member grants; keys without those
+grants do not gain them. Removing a user revokes their organization keys. The last
+owner and a user's personal/default organization membership remain protected.
+
+Both lists accept `pageSize` (1–1000, default 100) and `pageToken`. Responses contain
+`users` or `invites`, plus `next_page_token` when more records exist. Treat tokens
+as opaque and return them unchanged; they are bound to the organization and
+resource and never grant access. Lists use ascending resource IDs.
+
+Users have `type: "user"`, `id` (the same as `/v1/me`'s `sub`), `email`, `name`,
+`role`, and `added_at`. Email is `null` when absent or the user record is unavailable.
+Invites have `type: "invite"`, `id`, `email`, `role`, `status`, `added_at`, and
+`expires_at`. Lists include every state; pending invitations past their deadline
+appear as `expired`. Expired pending invitations can be cancelled but not accepted.
+
+Create an invitation with `{"email":"teammate@example.com","role":"owner"}`.
+The role is required and currently only `owner` is accepted. Optional `expires_at`
+must be in the future on initial creation; omission uses
+`ORGANIZATION_INVITATION_TTL_SECONDS`, default seven days. Unknown request fields
+are rejected. Clients should tolerate additional response fields.
+
+An optional UUID `Idempotency-Key` makes create-invite retries return the original
+201 response for 24 hours, scoped to the organization and acting user. A different
+payload with the same key returns 422; a concurrent in-progress request returns
+409 and may be retried. Replay works after cancellation or expiry and does not
+send another email. This guarantee applies to create-invite only; it does not
+change Box `/v1/config` capabilities. The email event is not a transactional outbox:
+a process crash after commit can still lose notification delivery.
+
+Admin errors use the shared Box shape, for example
+`{"error":{"message":"Forbidden resource","type":"AuthError","code":"permission_denied"}}`.
+All operations may return 429; respect `Retry-After` when present. Console Cloud
+API errors retain their existing flat shape.
+
+Invitees accept through the JWT-only Console endpoint
+`/api/organizations/invitations/{invitationId}/accept`. Acceptance requires the
+invited email and does not require member scopes or prior membership. Email links
+resolve `/dashboard/user/invitations` against `DASHBOARD_URL` and accept after
+sign-in. See [invitation link lifetime](./infra/docs/configuration.md#invitation-link-lifetime).
 
 </details>
 

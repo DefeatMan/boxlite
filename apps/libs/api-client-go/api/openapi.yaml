@@ -1765,6 +1765,8 @@ paths:
             - archived
             - archiving
             - resizing
+            - exporting
+            - importing
             type: string
           type: array
         style: form
@@ -4733,6 +4735,8 @@ components:
             - delete:images
             - read:registries
             - write:images
+            - read:members
+            - write:members
             type: string
           type: array
         expiresAt:
@@ -4792,6 +4796,8 @@ components:
             - delete:images
             - read:registries
             - write:images
+            - read:members
+            - write:members
             type: string
           type: array
         expiresAt:
@@ -4856,6 +4862,8 @@ components:
             - delete:images
             - read:registries
             - write:images
+            - read:members
+            - write:members
             type: string
           type: array
         lastUsedAt:
@@ -4927,6 +4935,8 @@ components:
             - delete:images
             - read:registries
             - write:images
+            - read:members
+            - write:members
             type: string
           type: array
         isGlobal:
@@ -5333,6 +5343,8 @@ components:
             - delete:images
             - read:registries
             - write:images
+            - read:members
+            - write:members
             type: string
           type: array
       required:
@@ -5379,6 +5391,8 @@ components:
             - delete:images
             - read:registries
             - write:images
+            - read:members
+            - write:members
             type: string
           type: array
       required:
@@ -5891,6 +5905,8 @@ components:
       - archived
       - archiving
       - resizing
+      - exporting
+      - importing
       type: string
     BoxDesiredState:
       description: The desired state of the box
@@ -5902,10 +5918,18 @@ components:
       type: string
     BoxVolume:
       example:
+        type: volume
         volumeId: volume123
         mountPath: /data
         subpath: users/alice
+        readOnly: false
       properties:
+        type:
+          default: volume
+          enum:
+          - volume
+          - cache
+          type: string
         volumeId:
           description: The ID of the volume
           example: volume123
@@ -5920,6 +5944,11 @@ components:
             \ is mounted."
           example: users/alice
           type: string
+        readOnly:
+          description: Mount the volume read-only. When true the box can read but
+            not modify the files under the mount (or its subpath). Omitted means read-write.
+          example: false
+          type: boolean
       required:
       - mountPath
       - volumeId
@@ -5970,12 +5999,16 @@ components:
         autoDelete: 604800
         autoResume: true
         volumes:
-        - volumeId: volume123
+        - type: volume
+          volumeId: volume123
           mountPath: /data
           subpath: users/alice
-        - volumeId: volume123
+          readOnly: false
+        - type: volume
+          volumeId: volume123
           mountPath: /data
           subpath: users/alice
+          readOnly: false
         createdAt: 2024-10-01T12:00:00Z
         updatedAt: 2024-10-01T12:00:00Z
         lastActivityAt: 2024-10-01T12:00:00Z
@@ -6169,12 +6202,16 @@ components:
           autoDelete: 604800
           autoResume: true
           volumes:
-          - volumeId: volume123
+          - type: volume
+            volumeId: volume123
             mountPath: /data
             subpath: users/alice
-          - volumeId: volume123
+            readOnly: false
+          - type: volume
+            volumeId: volume123
             mountPath: /data
             subpath: users/alice
+            readOnly: false
           createdAt: 2024-10-01T12:00:00Z
           updatedAt: 2024-10-01T12:00:00Z
           lastActivityAt: 2024-10-01T12:00:00Z
@@ -6207,12 +6244,16 @@ components:
           autoDelete: 604800
           autoResume: true
           volumes:
-          - volumeId: volume123
+          - type: volume
+            volumeId: volume123
             mountPath: /data
             subpath: users/alice
-          - volumeId: volume123
+            readOnly: false
+          - type: volume
+            volumeId: volume123
             mountPath: /data
             subpath: users/alice
+            readOnly: false
           createdAt: 2024-10-01T12:00:00Z
           updatedAt: 2024-10-01T12:00:00Z
           lastActivityAt: 2024-10-01T12:00:00Z
@@ -6283,6 +6324,8 @@ components:
           - archived
           - archiving
           - resizing
+          - exporting
+          - importing
           example: started
           type: string
         errorReason:
@@ -6942,6 +6985,8 @@ components:
       - ROLLBACK_EXPORT_BOX
       - ROLLBACK_IMPORT_BOX
       - DISCARD_EXPORTED_BOX
+      - CREATE_SNAPSHOT
+      - RESTORE_SNAPSHOT
       type: string
     Job:
       example:

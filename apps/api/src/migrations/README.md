@@ -20,8 +20,11 @@ deployed environment runs code that no longer maps them.
 | `region.sshGatewayUrl`                               | same                                             | same                                                                           |
 | `region.sshGatewayApiKeyHash` (+ its unique index)   | same                                             | same                                                                           |
 | `organization.template_deactivation_timeout_minutes` | every database                                   | the image catalog, which unmapped it and deferred the drop                     |
+| table `filesystem_snapshot`                          | x_features databases that ran its F4 migration   | the removal of the F3–F5 snapshot prototype, whose migration file went with it |
+| `box.snapshotId`                                     | same                                             | same                                                                           |
 
-The SSH objects are absent from fresh databases, so their drop needs `IF EXISTS`. The
+The SSH and snapshot prototype objects are absent from fresh databases, so their drop needs
+`IF EXISTS`. The
 organization column is still created by the baseline, so a plain `DROP COLUMN` retires it
 everywhere; it is `NOT NULL DEFAULT 20160`, which is why inserts that omit it keep working until
 then.
@@ -195,6 +198,31 @@ Runs only migrations in the `post-deploy/` folder. Use this:
 
 - **After** the new API version is fully deployed
 - As part of your CI/CD pipeline, after the rolling update completes
+
+## Member Scopes and Invitation Retries
+
+The historical tenant-scope migration remains in the chain. The Admin migration
+renames both enum labels to `read:members` and `write:members` for API keys and
+organization roles, preserving existing grants without adding permissions to
+unscoped keys. Rollback restores the old labels. The unmerged Tenant HTTP API is
+replaced directly; no compatibility deployment with that API is required.
+
+API-key validation retains the existing Redis cache namespace. Old cached scope
+labels translate on read, so membership removal, key revocation, and identity
+linking continue to invalidate the same entries across deployment versions.
+
+A separate pre-deploy migration adds `organization_invitation_request`. Creating
+an invite and saving its replay snapshot share a transaction and an advisory lock
+scoped to organization, user, and idempotency key. Replay records expire after
+24 hours; subsequent keyed requests clean expired records for their organization.
+Deleting an organization cascades to its replay records. Rollback drops this table
+and loses retry history, so coordinate rollback with stopping Admin writes.
+
+The integration tests run actual PostgreSQL migrations and services. Set
+`DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, and `DB_DATABASE`; the migration
+suite needs permission to create temporary databases. Run
+`make coverage:api FILTER='AddTenantScopes1792497600000|Admin organization storage'`.
+The suites clean their temporary databases or schemas and run in API CI.
 
 ## Reverting Migrations
 

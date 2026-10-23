@@ -124,7 +124,6 @@ export class RunnerAdapterV2 implements RunnerAdapter {
 
     const payload = {
       id: box.id,
-      snapshotId: box.snapshotId,
       image,
       osUser: box.osUser,
       cpuQuota: box.cpu,
@@ -142,6 +141,7 @@ export class RunnerAdapterV2 implements RunnerAdapter {
         volumeId: volume.volumeId,
         mountPath: volume.mountPath,
         subpath: volume.subpath,
+        readOnly: volume.readOnly,
       })),
       secrets: box.secrets?.map((secret) => ({
         name: secret.name,

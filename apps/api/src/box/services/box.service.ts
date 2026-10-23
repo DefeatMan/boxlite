@@ -10,6 +10,7 @@ import { Not, Repository, LessThan, In, JsonContains, FindOptionsWhere, ILike } 
 import { Box } from '../entities/box.entity'
 import { persistWithGeneratedBoxName } from '../utils/box-name-generator'
 import { boxImageIsOrgOwned } from '../utils/image-ownership.util'
+import { assertNoSnapshotOperation } from '../utils/box-state.util'
 import { CreateBoxDto } from '../dto/create-box.dto'
 import { BoxState } from '../enums/box-state.enum'
 import { BoxClass } from '../enums/box-class.enum'
@@ -86,6 +87,7 @@ import { Region } from '../../region/entities/region.entity'
 import { BoxActivityService } from './box-activity.service'
 import { assertWithinPerBoxLimits } from './per-box-limits'
 import { requiresFreshBox } from '../utils/warm-pool-eligibility.util'
+import { OutboundPolicy, setRunnerOutbound } from '../runner-adapter/network-policy'
 import { isCuratedSelector, withoutRegistryProxy } from '../../image/utils/image-ref.util'
 import {
   AUTO_DELETE_DISABLED,
@@ -107,7 +109,6 @@ const DEFAULT_BOX_GPU = 0
 
 export type BoxCreationOptions = {
   maxCreatedBoxes?: number
-  snapshot?: { nativeId: string; runnerId: string }
 }
 
 @Injectable()
@@ -289,7 +290,7 @@ export class BoxService {
           }
           return { ...volume, volumeId: canonicalId }
         })
-      } else if (image && !needsFreshBox && !options.snapshot) {
+      } else if (image && !needsFreshBox) {
         //  No volumes requested — try to claim a pre-warmed box matching this image/spec
         //  before creating a fresh one.
         const skipWarmPool = (await this.redis.exists(`warm-pool:skip:${image}`)) === 1
@@ -317,7 +318,6 @@ export class BoxService {
       const box = new Box(region.id, createBoxDto.name)
 
       box.organizationId = organization.id
-      box.snapshotId = options.snapshot?.nativeId
 
       //  TODO: make configurable
       box.class = boxClass
@@ -379,19 +379,20 @@ export class BoxService {
       // before the insert: it has no way to give a slot back, so a create its
       // own input or placement refuses must not spend one. Only the box limit
       // and a name collision, which the insert itself settles, come after it.
-      const insertedBox = await this.persistOnAvailableRunner(
-        box,
-        { regions: [region.id], boxClass, requiredRunnerId: options.snapshot?.runnerId },
-        async () => {
-          await this.imageAdmissionService.spendColdPullBudget(organization, resolvedImage)
-          return createBoxDto.name
-            ? this.boxRepository.insert(box, options.maxCreatedBoxes)
-            : persistWithGeneratedBoxName(box.id, (name) => {
-                box.name = name
-                return this.boxRepository.insert(box, options.maxCreatedBoxes)
-              })
-        },
-      )
+      const runnerParams: GetRunnerParams = {
+        regions: [region.id],
+        boxClass,
+        requireReadOnlyVolumes: box.volumes?.some((volume) => volume.readOnly) || undefined,
+      }
+      const insertedBox = await this.persistOnAvailableRunner(box, runnerParams, async () => {
+        await this.imageAdmissionService.spendColdPullBudget(organization, resolvedImage)
+        return createBoxDto.name
+          ? this.boxRepository.insert(box, options.maxCreatedBoxes)
+          : persistWithGeneratedBoxName(box.id, (name) => {
+              box.name = name
+              return this.boxRepository.insert(box, options.maxCreatedBoxes)
+            })
+      })
 
       recordBoxRequested('box.create', insertedBox.id, ctx)
 
@@ -906,6 +907,7 @@ export class BoxService {
       return box
     }
 
+    assertNoSnapshotOperation(box)
     this.assertBoxNotErrored(box)
 
     if (String(box.state) !== String(box.desiredState)) {
@@ -969,6 +971,7 @@ export class BoxService {
   async stop(boxIdOrName: string, organizationId: string | undefined, ctx: Context, force?: boolean): Promise<Box> {
     const box = await this.findOneByIdOrName(boxIdOrName, organizationId)
 
+    assertNoSnapshotOperation(box)
     this.assertBoxNotErrored(box)
 
     if (String(box.state) !== String(box.desiredState)) {
@@ -1054,6 +1057,7 @@ export class BoxService {
 
   async updateInboundEnabled(boxIdOrName: string, inboundEnabled: boolean, organizationId?: string): Promise<Box> {
     const box = await this.findOneByIdOrName(boxIdOrName, organizationId)
+    assertNoSnapshotOperation(box)
 
     const updateData: Partial<Box> = {
       inboundEnabled,
@@ -1264,6 +1268,7 @@ export class BoxService {
 
   async replaceLabels(boxIdOrName: string, labels: { [key: string]: string }, organizationId?: string): Promise<Box> {
     const box = await this.findOneByIdOrName(boxIdOrName, organizationId)
+    assertNoSnapshotOperation(box)
 
     // Replace all labels
     const updateData: Partial<Box> = {
@@ -1310,6 +1315,7 @@ export class BoxService {
 
   async setAutostopInterval(boxIdOrName: string, interval: number, organizationId?: string): Promise<Box> {
     const box = await this.findOneByIdOrName(boxIdOrName, organizationId)
+    assertNoSnapshotOperation(box)
 
     const updateData: Partial<Box> = {
       autoStop: this.minutesToSeconds(interval),
@@ -1320,6 +1326,7 @@ export class BoxService {
 
   async setAutoDeleteInterval(boxIdOrName: string, interval: number, organizationId?: string): Promise<Box> {
     const box = await this.findOneByIdOrName(boxIdOrName, organizationId)
+    assertNoSnapshotOperation(box)
 
     const updateData: Partial<Box> = {
       autoDelete: interval <= 0 ? 0 : this.minutesToSeconds(interval),
@@ -1335,6 +1342,7 @@ export class BoxService {
     organizationId?: string,
   ): Promise<Box> {
     const box = await this.findOneByIdOrName(boxIdOrName, organizationId)
+    assertNoSnapshotOperation(box)
 
     const updateData: Partial<Box> = {}
 
@@ -1358,6 +1366,21 @@ export class BoxService {
     }
 
     return updatedBox
+  }
+
+  async setOutboundNetwork(boxIdOrName: string, policy: OutboundPolicy, organizationId: string): Promise<Box> {
+    if (policy.mode === 'disabled' && policy.allow_net.length) {
+      throw new BadRequestError('disabled outbound cannot include allow_net')
+    }
+    const allowNet = this.resolveOutboundAllowNet(policy.allow_net) ?? []
+    const box = await this.findOneByIdOrName(boxIdOrName, organizationId)
+    assertNoSnapshotOperation(box)
+    const resolved = { ...policy, allow_net: allowNet }
+    return this.boxRepository.replaceOutbound(box.id, organizationId, resolved, async (locked, next) => {
+      const runner = await this.runnerService.findOne(locked.runnerId)
+      if (!runner) throw new ConflictException('Box runner is unavailable')
+      await setRunnerOutbound(runner, locked.id, next)
+    })
   }
 
   // used by internal services to update the state of a box to resolve domain and runner state mismatch

@@ -22,7 +22,6 @@ mod options;
 mod registries;
 mod rest;
 mod runtime;
-mod snapshots;
 #[cfg(test)]
 mod tests;
 mod util;
@@ -89,6 +88,5 @@ pub use options::*;
 pub use registries::*;
 pub use rest::*;
 pub use runtime::*;
-pub use snapshots::*;
 pub use util::*;
 pub use volumes::*;

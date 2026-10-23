@@ -287,7 +287,8 @@ volumes=[
 ```
 
 Managed volumes require a REST runtime; host binds are local-runtime only.
-`read_only` is rejected on a managed mount - only host binds may be read-only.
+Either may set `"read_only": True`; a managed volume is then bound read-only
+on the runner.
 
 #### Port forwarding format
 
@@ -424,6 +425,7 @@ Both `boxlite.Box` and `boxlite.SimpleBox` expose `box.network`.
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
 | Tunnel | `await box.network.tunnel(port) -> BoxTunnel` | Prepare a one-shot tunnel to a TCP service in the box |
+| Revoke | `await box.network.revoke_tunnel(port) -> None` | Withdraw the port's public URL; open connections stay open |
 | Forward | `await tunnel.forward(listen) -> TunnelForwarder` | Bind one local listener and forward every client |
 | Inspect | `tunnel.uri() -> str \| None` | Read the prepared public URL; `None` for a local box |
 | Connect | `await tunnel.connect() -> BoxConnection` | Consume the prepared tunnel into its byte stream |

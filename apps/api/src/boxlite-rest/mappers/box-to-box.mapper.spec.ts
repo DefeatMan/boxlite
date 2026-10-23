@@ -64,7 +64,25 @@ describe('BoxLite lifecycle policy mapper', () => {
       volumes: [{ managed_volume: 'volume-123', guest_path: '/data', read_only: false }],
     })
 
-    expect(mapped.volumes).toEqual([{ volumeId: 'volume-123', mountPath: '/data' }])
+    expect(mapped.volumes).toEqual([{ volumeId: 'volume-123', mountPath: '/data', readOnly: false }])
+  })
+
+  it('carries read_only through as readOnly', () => {
+    const mapped = createBoxToCreateBox({
+      volumes: [{ managed_volume: 'volume-123', guest_path: '/data', read_only: true }],
+    })
+
+    expect(mapped.volumes).toEqual([{ volumeId: 'volume-123', mountPath: '/data', readOnly: true }])
+  })
+
+  // Left undefined, not false, so a row written before this field and an
+  // explicit false stay distinguishable in the persisted jsonb.
+  it('leaves readOnly undefined when read_only is omitted', () => {
+    const mapped = createBoxToCreateBox({
+      volumes: [{ managed_volume: 'volume-123', guest_path: '/data' }],
+    })
+
+    expect(mapped.volumes?.[0]).not.toHaveProperty('readOnly', expect.anything())
   })
 
   // A name is as valid as an id here; VolumeService.validateVolumes resolves
@@ -74,7 +92,7 @@ describe('BoxLite lifecycle policy mapper', () => {
       volumes: [{ managed_volume: 'customer-data', guest_path: '/data', read_only: false }],
     })
 
-    expect(mapped.volumes).toEqual([{ volumeId: 'customer-data', mountPath: '/data' }])
+    expect(mapped.volumes).toEqual([{ volumeId: 'customer-data', mountPath: '/data', readOnly: false }])
   })
 
   it('maps REST secret specs to secret placeholder rules', () => {
@@ -122,6 +140,17 @@ describe('BoxLite lifecycle policy mapper', () => {
     } as any)
 
     expect(response.auto_resume).toBe(true)
+  })
+
+  // The contract names a stopped box a snapshot job holds, rather than folding
+  // it into stopped: only deletion is accepted until the job settles.
+  it.each([
+    [BoxState.EXPORTING, 'exporting'],
+    [BoxState.IMPORTING, 'importing'],
+  ])('reports a %s box as %s', (state, status) => {
+    const response = boxToBoxResponse({ id: 'box-1', name: 'demo', state, labels: {} } as any)
+
+    expect(response.status).toBe(status)
   })
 })
 

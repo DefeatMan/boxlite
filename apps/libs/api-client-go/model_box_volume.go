@@ -21,12 +21,15 @@ var _ MappedNullable = &BoxVolume{}
 
 // BoxVolume struct for BoxVolume
 type BoxVolume struct {
+	Type *string `json:"type,omitempty"`
 	// The ID of the volume
 	VolumeId string `json:"volumeId"`
 	// The mount path for the volume
 	MountPath string `json:"mountPath"`
 	// Optional subpath within the volume to mount. When specified, only this S3 prefix will be accessible. When omitted, the entire volume is mounted.
 	Subpath *string `json:"subpath,omitempty"`
+	// Mount the volume read-only. When true the box can read but not modify the files under the mount (or its subpath). Omitted means read-write.
+	ReadOnly *bool `json:"readOnly,omitempty"`
 	AdditionalProperties map[string]interface{}
 }
 
@@ -38,6 +41,8 @@ type _BoxVolume BoxVolume
 // will change when the set of required properties is changed
 func NewBoxVolume(volumeId string, mountPath string) *BoxVolume {
 	this := BoxVolume{}
+	var type_ string = "volume"
+	this.Type = &type_
 	this.VolumeId = volumeId
 	this.MountPath = mountPath
 	return &this
@@ -48,7 +53,41 @@ func NewBoxVolume(volumeId string, mountPath string) *BoxVolume {
 // but it doesn't guarantee that properties required by API are set
 func NewBoxVolumeWithDefaults() *BoxVolume {
 	this := BoxVolume{}
+	var type_ string = "volume"
+	this.Type = &type_
 	return &this
+}
+
+// GetType returns the Type field value if set, zero value otherwise.
+func (o *BoxVolume) GetType() string {
+	if o == nil || IsNil(o.Type) {
+		var ret string
+		return ret
+	}
+	return *o.Type
+}
+
+// GetTypeOk returns a tuple with the Type field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+func (o *BoxVolume) GetTypeOk() (*string, bool) {
+	if o == nil || IsNil(o.Type) {
+		return nil, false
+	}
+	return o.Type, true
+}
+
+// HasType returns a boolean if a field has been set.
+func (o *BoxVolume) HasType() bool {
+	if o != nil && !IsNil(o.Type) {
+		return true
+	}
+
+	return false
+}
+
+// SetType gets a reference to the given string and assigns it to the Type field.
+func (o *BoxVolume) SetType(v string) {
+	o.Type = &v
 }
 
 // GetVolumeId returns the VolumeId field value
@@ -131,6 +170,38 @@ func (o *BoxVolume) SetSubpath(v string) {
 	o.Subpath = &v
 }
 
+// GetReadOnly returns the ReadOnly field value if set, zero value otherwise.
+func (o *BoxVolume) GetReadOnly() bool {
+	if o == nil || IsNil(o.ReadOnly) {
+		var ret bool
+		return ret
+	}
+	return *o.ReadOnly
+}
+
+// GetReadOnlyOk returns a tuple with the ReadOnly field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+func (o *BoxVolume) GetReadOnlyOk() (*bool, bool) {
+	if o == nil || IsNil(o.ReadOnly) {
+		return nil, false
+	}
+	return o.ReadOnly, true
+}
+
+// HasReadOnly returns a boolean if a field has been set.
+func (o *BoxVolume) HasReadOnly() bool {
+	if o != nil && !IsNil(o.ReadOnly) {
+		return true
+	}
+
+	return false
+}
+
+// SetReadOnly gets a reference to the given bool and assigns it to the ReadOnly field.
+func (o *BoxVolume) SetReadOnly(v bool) {
+	o.ReadOnly = &v
+}
+
 func (o BoxVolume) MarshalJSON() ([]byte, error) {
 	toSerialize,err := o.ToMap()
 	if err != nil {
@@ -141,10 +212,16 @@ func (o BoxVolume) MarshalJSON() ([]byte, error) {
 
 func (o BoxVolume) ToMap() (map[string]interface{}, error) {
 	toSerialize := map[string]interface{}{}
+	if !IsNil(o.Type) {
+		toSerialize["type"] = o.Type
+	}
 	toSerialize["volumeId"] = o.VolumeId
 	toSerialize["mountPath"] = o.MountPath
 	if !IsNil(o.Subpath) {
 		toSerialize["subpath"] = o.Subpath
+	}
+	if !IsNil(o.ReadOnly) {
+		toSerialize["readOnly"] = o.ReadOnly
 	}
 
 	for key, value := range o.AdditionalProperties {
@@ -190,9 +267,11 @@ func (o *BoxVolume) UnmarshalJSON(data []byte) (err error) {
 	additionalProperties := make(map[string]interface{})
 
 	if err = json.Unmarshal(data, &additionalProperties); err == nil {
+		delete(additionalProperties, "type")
 		delete(additionalProperties, "volumeId")
 		delete(additionalProperties, "mountPath")
 		delete(additionalProperties, "subpath")
+		delete(additionalProperties, "readOnly")
 		o.AdditionalProperties = additionalProperties
 	}
 

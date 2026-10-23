@@ -14,6 +14,7 @@ use boxlite_shared::errors::{BoxliteError, BoxliteResult};
 use futures::StreamExt;
 use std::io;
 
+use crate::BoxInfo;
 use crate::litebox::copy::CopyOptions;
 use crate::litebox::snapshot_mgr::SnapshotInfo;
 use crate::litebox::{
@@ -23,8 +24,9 @@ use crate::litebox::{
 use crate::metrics::BoxMetrics;
 use crate::runtime::backend::{BoxBackend, BoxNetworkBackend, SnapshotBackend};
 use crate::runtime::id::BoxID;
-use crate::runtime::options::{CloneOptions, ExportOptions, SnapshotOptions};
-use crate::{BoxInfo, LiteBox};
+use crate::runtime::options::{
+    CloneOptions, ExportOptions, InboundNetworkConfig, OutboundNetworkConfig, SnapshotOptions,
+};
 
 use super::client::{ApiClient, WsStream, transport_error};
 use super::error::map_http_body;
@@ -32,7 +34,7 @@ use super::exec::RestExecControl;
 use super::types::{
     BoxMetricsResponse, BoxResponse, CloneBoxRequest, CreateSnapshotRequest, ExecRequest,
     ExecResponse, ExecutionStatusResponse, ExportBoxRequest, ListSnapshotsResponse,
-    SnapshotResponse,
+    SnapshotResponse, SnapshotRestoreResponse,
 };
 
 /// REST-backed box handle.
@@ -582,6 +584,24 @@ impl BoxBackend for RestBox {
 
 #[async_trait]
 impl BoxNetworkBackend for RestBox {
+    async fn update_inbound(&self, config: InboundNetworkConfig) -> BoxliteResult<()> {
+        self.client
+            .put_no_content(
+                &format!("/boxes/{}/network/inbound", self.box_id_str()),
+                &config,
+            )
+            .await
+    }
+
+    async fn update_outbound(&self, config: OutboundNetworkConfig) -> BoxliteResult<()> {
+        self.client
+            .put_no_content(
+                &format!("/boxes/{}/network/outbound", self.box_id_str()),
+                &config,
+            )
+            .await
+    }
+
     async fn tunnel(&self, target: SocketAddr) -> BoxliteResult<BoxTunnel> {
         let endpoint = self.tunnel_endpoint(target).await?;
         let client = self.client.clone();
@@ -589,6 +609,12 @@ impl BoxNetworkBackend for RestBox {
             let connection = client.connect_box_network_tunnel(&endpoint).await?;
             Ok(BoxConnection::new(connection))
         }))
+    }
+
+    async fn revoke_tunnel(&self, port: u16) -> BoxliteResult<()> {
+        self.client
+            .revoke_box_tunnel(&self.box_id_str(), port)
+            .await
     }
 }
 
@@ -606,41 +632,70 @@ impl RestBox {
     }
 }
 
+/// How a snapshot or restore a server finishes after replying is followed:
+/// polled with backoff, and given up on after a bound no real export reaches.
+#[cfg(not(test))]
+const SNAPSHOT_POLL_FIRST: std::time::Duration = std::time::Duration::from_secs(1);
+#[cfg(test)]
+const SNAPSHOT_POLL_FIRST: std::time::Duration = std::time::Duration::from_millis(10);
+const SNAPSHOT_POLL_MAX: std::time::Duration = std::time::Duration::from_secs(5);
+const SNAPSHOT_WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
+
+/// Paces the polling of one asynchronous snapshot operation.
+struct OperationPoll {
+    delay: std::time::Duration,
+    deadline: std::time::Instant,
+}
+
+impl OperationPoll {
+    fn new() -> Self {
+        Self {
+            delay: SNAPSHOT_POLL_FIRST,
+            deadline: std::time::Instant::now() + SNAPSHOT_WAIT_LIMIT,
+        }
+    }
+
+    async fn wait(&mut self, operation: &str) -> BoxliteResult<()> {
+        if std::time::Instant::now() >= self.deadline {
+            return Err(BoxliteError::Internal(format!(
+                "{operation} did not finish within {} minutes",
+                SNAPSHOT_WAIT_LIMIT.as_secs() / 60
+            )));
+        }
+        tokio::time::sleep(self.delay).await;
+        self.delay = (self.delay * 2).min(SNAPSHOT_POLL_MAX);
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl SnapshotBackend for RestBox {
     async fn create(&self, options: SnapshotOptions, name: &str) -> BoxliteResult<SnapshotInfo> {
-        if options.snapshot_type == crate::SnapshotType::Filesystem {
-            self.client.require_snapshots_enabled().await?;
-        }
+        self.client.require_snapshots_enabled().await?;
 
         let box_id = self.box_id_str();
         let path = format!("/boxes/{}/snapshots", box_id);
         let req = CreateSnapshotRequest::from_options(&options, name);
-        let resp: SnapshotResponse = self.client.post(&path, &req).await?;
-        if resp.snapshot_type != options.snapshot_type {
-            return Err(BoxliteError::InvalidState(
-                "server returned a different snapshot type; memory cannot downgrade to filesystem"
-                    .into(),
-            ));
+        let mut resp: SnapshotResponse = self.client.post(&path, &req).await?;
+
+        // A server that exports after replying hands back a snapshot still
+        // being created. Waiting for it keeps create() what it is locally: it
+        // returns a snapshot that can be restored, or the reason there is none.
+        // Polled by name, which the contract guarantees; an ID only may work.
+        let poll_path = format!("{}/{}", path, urlencoding::encode(name));
+        let mut poll = OperationPoll::new();
+        while resp.status.as_deref() == Some("creating") {
+            poll.wait(&format!("snapshot '{name}'")).await?;
+            resp = self.client.get(&poll_path).await?;
         }
-        if resp.snapshot_type == crate::SnapshotType::Memory && !resp.is_mock {
-            return Err(BoxliteError::Unsupported("real memory snapshots are not implemented; simulated results must be marked is_mock".into()));
+        if resp.status.as_deref() == Some("failed") {
+            return Err(BoxliteError::Storage(format!(
+                "snapshot '{}' failed: {}",
+                name,
+                resp.error.as_deref().unwrap_or("no reason given")
+            )));
         }
         Ok(resp.to_snapshot_info())
-    }
-
-    async fn create_box(&self, snapshot: &str, name: Option<String>) -> BoxliteResult<LiteBox> {
-        let path = format!(
-            "/boxes/{}/snapshots/{}/boxes",
-            self.box_id_str(),
-            urlencoding::encode(snapshot)
-        );
-        let response: BoxResponse = self
-            .client
-            .post(&path, &serde_json::json!({"name": name}))
-            .await?;
-        let child = Arc::new(RestBox::new(self.client.clone(), response.to_box_info()?));
-        Ok(LiteBox::new(child.clone(), child.clone(), child))
     }
 
     async fn list(&self) -> BoxliteResult<Vec<SnapshotInfo>> {
@@ -684,7 +739,35 @@ impl SnapshotBackend for RestBox {
         let box_id = self.box_id_str();
         let encoded_name = urlencoding::encode(name);
         let path = format!("/boxes/{}/snapshots/{}/restore", box_id, encoded_name);
-        self.client.post_empty_no_content(&path).await
+        // No body: the server restored the box before replying. A body is the
+        // record of a restore still running, polled until it ends — the box is
+        // stopped either way, so only the record says whether it worked.
+        let Some(mut restore) = self
+            .client
+            .post_empty_for_optional_json::<SnapshotRestoreResponse>(&path)
+            .await?
+        else {
+            return Ok(());
+        };
+
+        let poll_path = format!(
+            "/boxes/{}/restores/{}",
+            box_id,
+            urlencoding::encode(&restore.id)
+        );
+        let mut poll = OperationPoll::new();
+        while restore.status == "pending" {
+            poll.wait(&format!("restore of snapshot '{name}'")).await?;
+            restore = self.client.get(&poll_path).await?;
+        }
+        if restore.status != "succeeded" {
+            return Err(BoxliteError::Storage(format!(
+                "restoring snapshot '{}' failed: {}",
+                name,
+                restore.error.as_deref().unwrap_or("no reason given")
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -1444,6 +1527,87 @@ mod tests {
 
     /// Shorthand for the `Arc<Mutex<...>>` shared between server and client.
     type SharedState = Arc<Mutex<ServerState>>;
+
+    #[tokio::test]
+    async fn network_policy_updates_send_directional_puts_and_preserve_errors() {
+        use crate::{InboundNetworkConfig, NetworkMode, OutboundNetworkConfig};
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for status in [200, 200, 400] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                // Read exactly through the header so no body bytes get discarded.
+                let mut header = Vec::new();
+                while !header.ends_with(b"\r\n\r\n") {
+                    header.push(stream.read_u8().await.unwrap());
+                }
+                let header = String::from_utf8(header).unwrap();
+                let length: usize = header
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|value| value.trim().parse().unwrap())
+                    })
+                    .unwrap();
+                let mut body = vec![0; length];
+                stream.read_exact(&mut body).await.unwrap();
+                requests.push((
+                    header.lines().next().unwrap().to_owned(),
+                    serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+                ));
+                let response = if status == 200 {
+                    "{}"
+                } else {
+                    r#"{"error":{"message":"old backend","type":"UnsupportedError","code":"unsupported"}}"#
+                };
+                stream.write_all(format!("HTTP/1.1 {status} Result\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).as_bytes()).await.unwrap();
+            }
+            requests
+        });
+        let handle = crate::litebox::NetworkHandle::new(Arc::new(rest_box_for(port, "policy-box")));
+        handle
+            .update_inbound(InboundNetworkConfig {
+                mode: NetworkMode::Enabled,
+                allow_net: vec![],
+            })
+            .await
+            .unwrap();
+        handle
+            .update_outbound(OutboundNetworkConfig {
+                mode: NetworkMode::Enabled,
+                allow_net: vec!["example.com".into()],
+            })
+            .await
+            .unwrap();
+        let error = handle
+            .update_outbound(OutboundNetworkConfig::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, BoxliteError::Unsupported(_)));
+        let requests = server.await.unwrap();
+        assert_eq!(
+            requests[0].0,
+            "PUT /v1/boxes/policy-box/network/inbound HTTP/1.1"
+        );
+        assert_eq!(
+            requests[0].1,
+            serde_json::json!({"mode":"enabled","allow_net":[]})
+        );
+        assert_eq!(
+            requests[1].0,
+            "PUT /v1/boxes/policy-box/network/outbound HTTP/1.1"
+        );
+        assert_eq!(
+            requests[1].1,
+            serde_json::json!({"mode":"enabled","allow_net":["example.com"]})
+        );
+        assert_eq!(
+            requests[2].1,
+            serde_json::json!({"mode":"enabled","allow_net":[]})
+        );
+    }
 
     /// Read the first HTTP request line + headers off a freshly accepted TCP
     /// stream. Returns the raw bytes consumed (so the WS upgrade can resume
@@ -2616,6 +2780,130 @@ mod tests {
         }
     }
 
+    /// Answer one connection per `(status, body)`, in order, recording each
+    /// request line. A `204` is sent without a body.
+    async fn scripted_server(
+        replies: Vec<(u16, &'static str)>,
+    ) -> (u16, tokio::task::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for (status, body) in replies {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let head = String::from_utf8(read_request_head(&mut socket).await).unwrap();
+                requests.push(head.lines().next().unwrap_or_default().to_string());
+                let response = if status == 204 {
+                    "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n".to_string()
+                } else {
+                    format!(
+                        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                };
+                socket.write_all(response.as_bytes()).await.unwrap();
+                let _ = socket.shutdown().await;
+            }
+            requests
+        });
+        (port, server)
+    }
+
+    const SNAPSHOTS_ENABLED: &str = r#"{"capabilities":{"snapshots_enabled":true}}"#;
+
+    /// A server that exports after replying answers with a snapshot still
+    /// being created; create() must wait it out, so what it returns can be
+    /// restored straight away, as a local snapshot can.
+    #[tokio::test]
+    async fn create_waits_for_an_asynchronous_snapshot_to_be_ready() {
+        let snapshot = |status: &str| {
+            format!(
+                r#"{{"id":"snap-1","box_id":"box1","name":"golden","status":"{status}","created_at":1,"guest_disk_bytes":0,"container_disk_bytes":10,"size_bytes":4}}"#
+            )
+        };
+        let creating: &'static str = Box::leak(snapshot("creating").into_boxed_str());
+        let ready: &'static str = Box::leak(snapshot("ready").into_boxed_str());
+        let (port, server) = scripted_server(vec![
+            (200, SNAPSHOTS_ENABLED),
+            (201, creating),
+            (200, creating),
+            (200, ready),
+        ])
+        .await;
+
+        let info = rest_box_for(port, "box1")
+            .create(SnapshotOptions::default(), "golden")
+            .await
+            .expect("a snapshot that becomes ready is a successful create");
+
+        assert_eq!(info.disk_info.size_bytes, 4);
+        let requests = server.await.unwrap();
+        assert!(requests[1].starts_with("POST ") && requests[1].contains("/boxes/box1/snapshots "));
+        assert!(
+            requests[3].starts_with("GET ")
+                && requests[3].contains("/boxes/box1/snapshots/golden ")
+        );
+    }
+
+    #[tokio::test]
+    async fn create_reports_why_an_asynchronous_snapshot_failed() {
+        let (port, server) = scripted_server(vec![
+            (200, SNAPSHOTS_ENABLED),
+            (
+                201,
+                r#"{"id":"snap-1","box_id":"box1","name":"golden","status":"failed","error":"The box was deleted while it was being exported","created_at":1,"guest_disk_bytes":0,"container_disk_bytes":10,"size_bytes":0}"#,
+            ),
+        ])
+        .await;
+
+        let error = rest_box_for(port, "box1")
+            .create(SnapshotOptions::default(), "golden")
+            .await
+            .expect_err("a failed snapshot must not read as created");
+
+        assert!(
+            error
+                .to_string()
+                .contains("deleted while it was being exported"),
+            "{error}"
+        );
+        server.await.unwrap();
+    }
+
+    /// The box ends up stopped whether the restore worked or not, so the
+    /// record is the only place the outcome can come from.
+    #[tokio::test]
+    async fn restore_follows_the_restore_record_to_its_outcome() {
+        let (port, server) = scripted_server(vec![
+            (200, SNAPSHOTS_ENABLED),
+            (202, r#"{"id":"restore-1","status":"pending"}"#),
+            (200, r#"{"id":"restore-1","status":"pending"}"#),
+            (200, r#"{"id":"restore-1","status":"failed","error":"container disk checksum mismatch"}"#),
+        ])
+        .await;
+
+        let error = rest_box_for(port, "box1")
+            .restore("golden")
+            .await
+            .expect_err("a failed restore must not read as success");
+
+        assert!(error.to_string().contains("checksum mismatch"), "{error}");
+        let requests = server.await.unwrap();
+        assert!(requests[3].contains("/boxes/box1/restores/restore-1 "));
+    }
+
+    #[tokio::test]
+    async fn restore_on_a_synchronous_server_returns_at_once() {
+        let (port, server) = scripted_server(vec![(200, SNAPSHOTS_ENABLED), (204, "")]).await;
+
+        rest_box_for(port, "box1")
+            .restore("golden")
+            .await
+            .expect("a 204 is a finished restore");
+
+        assert_eq!(server.await.unwrap().len(), 2);
+    }
+
     /// A refusal the server states plainly must not reach the caller as a
     /// server fault.
     ///
@@ -2714,5 +3002,60 @@ mod tests {
         connection.read_exact(&mut echoed).await.unwrap();
         assert_eq!(&echoed, b"ping");
         assert_eq!(posts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// Serve one request with `reply`, handing back its request head.
+    fn serve_once(listener: TcpListener, reply: &'static str) -> tokio::task::JoinHandle<String> {
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let head = String::from_utf8(read_request_head(&mut socket).await).unwrap();
+            socket.write_all(reply.as_bytes()).await.unwrap();
+            head
+        })
+    }
+
+    /// `revoke_tunnel()` withdraws exactly the port `tunnel()` would open:
+    /// one `DELETE /network/tunnel` naming it, and a 204 is success.
+    #[tokio::test]
+    async fn revoke_tunnel_deletes_the_port_declaration() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = serve_once(
+            listener,
+            "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n",
+        );
+
+        let network = crate::litebox::NetworkHandle::new(Arc::new(rest_box_for(port, "tun-box")));
+        network.revoke_tunnel(3000).await.unwrap();
+
+        let head = tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .expect("revoke_tunnel sent no request")
+            .unwrap()
+            .to_lowercase();
+        assert!(
+            head.starts_with("delete /v1/boxes/tun-box/network/tunnel?port=3000 http/1.1"),
+            "unexpected request line: {head}"
+        );
+    }
+
+    /// A box the server does not know is an error, not a silent success.
+    #[tokio::test]
+    async fn revoke_tunnel_reports_a_missing_box() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = serve_once(
+            listener,
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+
+        let network = crate::litebox::NetworkHandle::new(Arc::new(rest_box_for(port, "gone-box")));
+        let err = network
+            .revoke_tunnel(3000)
+            .await
+            .expect_err("a 404 must not read as a revoked port");
+
+        assert!(matches!(err, BoxliteError::NotFound(_)), "{err:?}");
+        server.await.unwrap();
     }
 }

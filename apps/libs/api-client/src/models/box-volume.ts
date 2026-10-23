@@ -15,6 +15,7 @@
 
 
 export interface BoxVolume {
+    'type'?: BoxVolumeTypeEnum;
     /**
      * The ID of the volume
      */
@@ -27,5 +28,18 @@ export interface BoxVolume {
      * Optional subpath within the volume to mount. When specified, only this S3 prefix will be accessible. When omitted, the entire volume is mounted.
      */
     'subpath'?: string;
+    /**
+     * Mount the volume read-only. When true the box can read but not modify the files under the mount (or its subpath). Omitted means read-write.
+     */
+    'readOnly'?: boolean;
 }
+
+export const BoxVolumeTypeEnum = {
+    VOLUME: 'volume',
+    CACHE: 'cache',
+    UNKNOWN_DEFAULT_OPEN_API: '11184809',
+} as const;
+
+export type BoxVolumeTypeEnum = typeof BoxVolumeTypeEnum[keyof typeof BoxVolumeTypeEnum];
+
 

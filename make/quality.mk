@@ -97,8 +97,8 @@ fmt\:check\:c:
 # (nx run-many format + root-level prettier over TS/JSON/YAML).
 fmt\:apps: _ensure-apps-deps
 	@echo "🔧 Formatting apps workspace..."
-ifneq ($(FMT_FILES),)
-	@cd apps && yarn prettier --write $(patsubst apps/%,%,$(FMT_FILES))
+ifneq ($(FILES),)
+	@cd apps && yarn prettier --write $(FILES)
 else
 	@cd apps && yarn format
 endif
@@ -199,6 +199,7 @@ fmt\:go:
 	@cd sdks/go && go fmt ./...
 	@cd src/deps/libgvproxy-sys/gvproxy-bridge && gofmt -w .
 	@cd apps/image-service && go fmt ./...
+	@cd apps/runner && gofmt -w .
 
 fmt\:check\:go:
 	@echo "🔍 Checking Go formatting..."
