@@ -4,14 +4,11 @@
  * SPDX-License-Identifier: AGPL-3.0
  */
 
-import { METHOD_METADATA } from '@nestjs/common/constants'
+import { METHOD_METADATA, MODULE_METADATA, PATH_METADATA } from '@nestjs/common/constants'
 import { Reflector } from '@nestjs/core'
 import { RequiredOrganizationResourcePermissions } from '../organization/decorators/required-organization-resource-permissions.decorator'
 import { OrganizationResourcePermission } from '../organization/enums/organization-resource-permission.enum'
-import { BoxliteBoxController } from './boxlite-box.controller'
-import { BoxliteBoxSnapshotController } from './boxlite-box-snapshot.controller'
-import { BoxliteProxyController } from './boxlite-proxy.controller'
-import { BoxliteSnapshotController } from './boxlite-snapshot.controller'
+import { BoxliteRestModule } from './boxlite-rest.module'
 
 // http-proxy-middleware ships ESM only and the proxy controller imports it at
 // module scope; mock it the way the routing spec does so the class can load.
@@ -66,28 +63,37 @@ const EXPECTED: Record<string, OrganizationResourcePermission[] | null> = {
 
 type Controller = { new (...args: never[]): unknown; name: string }
 
-/** Route handlers on a controller, found the way Nest finds them. */
+/** Route handlers on a controller, found the way Nest finds them: along its prototype chain. */
 function routeMethods(controller: Controller): string[] {
-  const prototype = controller.prototype
-  return Object.getOwnPropertyNames(prototype)
-    .filter((method) => method !== 'constructor')
-    .filter((method) => Reflect.getMetadata(METHOD_METADATA, prototype[method]) !== undefined)
+  const methods = new Set<string>()
+  for (
+    let prototype = controller.prototype;
+    prototype !== Object.prototype;
+    prototype = Object.getPrototypeOf(prototype)
+  ) {
+    Object.getOwnPropertyNames(prototype)
+      .filter((method) => method !== 'constructor')
+      .filter((method) => Reflect.getMetadata(METHOD_METADATA, prototype[method]) !== undefined)
+      .forEach((method) => methods.add(method))
+  }
+  return [...methods]
 }
 
 describe('REST box/proxy/snapshot permission coverage (GHSA-2qqv-7cwv-mj8h)', () => {
-  const controllers: Controller[] = [
-    BoxliteBoxController as Controller,
-    BoxliteProxyController as Controller,
-    BoxliteBoxSnapshotController as Controller,
-    BoxliteSnapshotController as Controller,
-  ]
+  // Every controller the REST module mounts under a box or snapshot path, so a
+  // new one is audited without being listed here.
+  const controllers = (Reflect.getMetadata(MODULE_METADATA.CONTROLLERS, BoxliteRestModule) as Controller[]).filter(
+    (controller) =>
+      [Reflect.getMetadata(PATH_METADATA, controller)].flat().some((path: string) => /boxes|snapshots/.test(path)),
+  )
   const handlers = controllers.flatMap((controller) =>
     routeMethods(controller).map((method) => [`${controller.name}.${method}`, controller, method] as const),
   )
 
   it('has an expectation for every route handler, so no new route escapes the audit', () => {
     const audited = Object.keys(EXPECTED).sort()
-    const actual = handlers.map(([, , method]) => method).sort()
+    // Both organization snapshot mounts share their handlers.
+    const actual = [...new Set(handlers.map(([, , method]) => method))].sort()
     expect(actual).toEqual(audited)
   })
 
