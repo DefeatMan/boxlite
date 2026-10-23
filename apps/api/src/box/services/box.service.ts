@@ -10,6 +10,7 @@ import { Not, Repository, LessThan, In, JsonContains, FindOptionsWhere, ILike } 
 import { Box } from '../entities/box.entity'
 import { persistWithGeneratedBoxName } from '../utils/box-name-generator'
 import { boxImageIsOrgOwned } from '../utils/image-ownership.util'
+import { assertNoSnapshotOperation } from '../utils/box-state.util'
 import { CreateBoxDto } from '../dto/create-box.dto'
 import { BoxState } from '../enums/box-state.enum'
 import { BoxClass } from '../enums/box-class.enum'
@@ -891,6 +892,7 @@ export class BoxService {
       return box
     }
 
+    assertNoSnapshotOperation(box)
     this.assertBoxNotErrored(box)
 
     if (String(box.state) !== String(box.desiredState)) {
@@ -954,6 +956,7 @@ export class BoxService {
   async stop(boxIdOrName: string, organizationId: string | undefined, ctx: Context, force?: boolean): Promise<Box> {
     const box = await this.findOneByIdOrName(boxIdOrName, organizationId)
 
+    assertNoSnapshotOperation(box)
     this.assertBoxNotErrored(box)
 
     if (String(box.state) !== String(box.desiredState)) {
@@ -1039,6 +1042,7 @@ export class BoxService {
 
   async updateInboundEnabled(boxIdOrName: string, inboundEnabled: boolean, organizationId?: string): Promise<Box> {
     const box = await this.findOneByIdOrName(boxIdOrName, organizationId)
+    assertNoSnapshotOperation(box)
 
     const updateData: Partial<Box> = {
       inboundEnabled,
@@ -1249,6 +1253,7 @@ export class BoxService {
 
   async replaceLabels(boxIdOrName: string, labels: { [key: string]: string }, organizationId?: string): Promise<Box> {
     const box = await this.findOneByIdOrName(boxIdOrName, organizationId)
+    assertNoSnapshotOperation(box)
 
     // Replace all labels
     const updateData: Partial<Box> = {
@@ -1295,6 +1300,7 @@ export class BoxService {
 
   async setAutostopInterval(boxIdOrName: string, interval: number, organizationId?: string): Promise<Box> {
     const box = await this.findOneByIdOrName(boxIdOrName, organizationId)
+    assertNoSnapshotOperation(box)
 
     const updateData: Partial<Box> = {
       autoStop: this.minutesToSeconds(interval),
@@ -1305,6 +1311,7 @@ export class BoxService {
 
   async setAutoDeleteInterval(boxIdOrName: string, interval: number, organizationId?: string): Promise<Box> {
     const box = await this.findOneByIdOrName(boxIdOrName, organizationId)
+    assertNoSnapshotOperation(box)
 
     const updateData: Partial<Box> = {
       autoDelete: interval <= 0 ? 0 : this.minutesToSeconds(interval),
@@ -1320,6 +1327,7 @@ export class BoxService {
     organizationId?: string,
   ): Promise<Box> {
     const box = await this.findOneByIdOrName(boxIdOrName, organizationId)
+    assertNoSnapshotOperation(box)
 
     const updateData: Partial<Box> = {}
 
@@ -1351,6 +1359,7 @@ export class BoxService {
     }
     const allowNet = this.resolveOutboundAllowNet(policy.allow_net) ?? []
     const box = await this.findOneByIdOrName(boxIdOrName, organizationId)
+    assertNoSnapshotOperation(box)
     const resolved = { ...policy, allow_net: allowNet }
     return this.boxRepository.replaceOutbound(box.id, organizationId, resolved, async (locked, next) => {
       const runner = await this.runnerService.findOne(locked.runnerId)
