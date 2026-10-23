@@ -52,6 +52,6 @@ export enum OrganizationResourcePermission {
   WRITE_IMAGES = 'write:images',
 
   // Tenant membership, invitations and key revocation; appended to match the database enums.
-  READ_TENANT = 'read:tenant',
-  WRITE_TENANT = 'write:tenant',
+  READ_MEMBERS = 'read:members',
+  WRITE_MEMBERS = 'write:members',
 }

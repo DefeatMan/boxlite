@@ -4939,8 +4939,8 @@ components:
             - delete:images
             - read:registries
             - write:images
-            - read:tenant
-            - write:tenant
+            - read:members
+            - write:members
             type: string
           type: array
         expiresAt:
@@ -5000,8 +5000,8 @@ components:
             - delete:images
             - read:registries
             - write:images
-            - read:tenant
-            - write:tenant
+            - read:members
+            - write:members
             type: string
           type: array
         expiresAt:
@@ -5066,8 +5066,8 @@ components:
             - delete:images
             - read:registries
             - write:images
-            - read:tenant
-            - write:tenant
+            - read:members
+            - write:members
             type: string
           type: array
         lastUsedAt:
@@ -5139,8 +5139,8 @@ components:
             - delete:images
             - read:registries
             - write:images
-            - read:tenant
-            - write:tenant
+            - read:members
+            - write:members
             type: string
           type: array
         isGlobal:
@@ -5547,8 +5547,8 @@ components:
             - delete:images
             - read:registries
             - write:images
-            - read:tenant
-            - write:tenant
+            - read:members
+            - write:members
             type: string
           type: array
       required:
@@ -5595,8 +5595,8 @@ components:
             - delete:images
             - read:registries
             - write:images
-            - read:tenant
-            - write:tenant
+            - read:members
+            - write:members
             type: string
           type: array
       required:

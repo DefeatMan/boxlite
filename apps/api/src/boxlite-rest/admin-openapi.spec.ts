@@ -11,32 +11,32 @@ import { resolve } from 'node:path'
 import { parse } from 'yaml'
 import { AllExceptionsFilter } from '../filters/all-exceptions.filter'
 
-const tenantId = 'https://contract.test/tenant.openapi.yaml'
-const tenant = parse(readFileSync(resolve(__dirname, '../../../../openapi/tenant.openapi.yaml'), 'utf8'))
+const adminId = 'https://contract.test/admin.openapi.yaml'
+const admin = parse(readFileSync(resolve(__dirname, '../../../../openapi/admin.openapi.yaml'), 'utf8'))
 const box = parse(readFileSync(resolve(__dirname, '../../../../openapi/box.openapi.yaml'), 'utf8'))
 const ajv = addFormats(new Ajv2020({ strict: false, allErrors: true }))
-ajv.addSchema({ components: tenant.components, paths: tenant.paths }, tenantId)
-ajv.addSchema({ components: box.components }, new URL('./box.openapi.yaml', tenantId).href)
+ajv.addSchema({ components: admin.components, paths: admin.paths }, adminId)
+ajv.addSchema({ components: box.components }, new URL('./box.openapi.yaml', adminId).href)
 
 type Operation = { responses?: Record<string, { $ref?: string }> }
-const errors = Object.entries(tenant.paths).flatMap(([path, item]) =>
+const errors = Object.entries(admin.paths).flatMap(([path, item]) =>
   Object.entries(item as Record<string, Operation>).flatMap(([method, operation]) =>
     Object.entries(operation.responses ?? {})
       .filter(([status]) => /^4\d\d$/.test(status))
       .map(([status, response]) => {
         const pointer = path.replace(/~/g, '~0').replace(/\//g, '~1')
         const responseRef = response.$ref
-          ? new URL(response.$ref, tenantId).href
-          : `${tenantId}#/paths/${pointer}/${method}/responses/${status}`
+          ? new URL(response.$ref, adminId).href
+          : `${adminId}#/paths/${pointer}/${method}/responses/${status}`
         return { path, method, status: Number(status), schemaRef: `${responseRef}/content/application~1json/schema` }
       }),
   ),
 )
 
-describe('Tenant API error contract', () => {
+describe('Admin API error contract', () => {
   it.each(errors)('$method $path documents the actual $status response', async ({ path, status, schemaRef }) => {
     const validate = ajv.getSchema(schemaRef)
-    if (!validate) throw new Error(`Missing Tenant API error schema: ${schemaRef}`)
+    if (!validate) throw new Error(`Missing Admin API error schema: ${schemaRef}`)
 
     const json = jest.fn()
     const sendStatus = jest.fn().mockReturnValue({ json })
@@ -44,14 +44,17 @@ describe('Tenant API error contract', () => {
     const url = `/api/v1${path.replace('{prefix}', 'org-1')}`
     const host = {
       switchToHttp: () => ({
-        getResponse: () => ({ status: sendStatus }),
+        getResponse: () => ({ status: sendStatus, getHeader: jest.fn() }),
         getRequest: () => ({ path: url, url }),
       }),
     } as ArgumentsHost
     const exception =
       status === 401
         ? new UnauthorizedException('Invalid credentials')
-        : new HttpException({ message: ['Request refused', 'Check organization access'], code: 'request_refused' }, status)
+        : new HttpException(
+            { message: ['Request refused', 'Check organization access'], code: 'request_refused' },
+            status,
+          )
 
     await filter.catch(exception, host)
 
@@ -59,6 +62,6 @@ describe('Tenant API error contract', () => {
     expect(json).toHaveBeenCalledTimes(1)
     const body = json.mock.calls[0][0]
     expect(validate(body)).toBe(true)
-    expect(validate({ ...body, error: { message: body.message } })).toBe(false)
+    expect(validate({ error: { message: body.error.message } })).toBe(false)
   })
 })

@@ -15,7 +15,7 @@ The inventory is implementation-grounded:
 - Hosted BoxLite-compatible routes come from the controllers in
   [`boxlite-rest`](./api/src/boxlite-rest/). They are excluded from the product
   OpenAPI document because their contracts live in [`openapi/box.openapi.yaml`](../openapi/box.openapi.yaml)
-  and, for cloud-only members and invitations, [`openapi/tenant.openapi.yaml`](../openapi/tenant.openapi.yaml).
+  and, for cloud-only members and invitations, [`openapi/admin.openapi.yaml`](../openapi/admin.openapi.yaml).
 - The registry proxy's runner credential lookup is an internal service route.
   It is excluded from the Cloud OpenAPI document and generated customer clients;
   the proxy owns its request and response handling.
@@ -91,9 +91,9 @@ owners and system admins; broader grants return 403 before a key is created.
 The user's existing grantability checks still apply. An owner using a user JWT
 can create a key with any supported permission.
 
-Both DELETE routes require `write:tenant` when authenticated with an API key,
+Both DELETE routes require `write:members` when authenticated with an API key,
 including owner/admin keys and revocation of the calling key itself. A
-`read:tenant` key cannot revoke any key. User JWTs retain their existing access:
+`read:members` key cannot revoke any key. User JWTs retain their existing access:
 members can revoke their own keys; owners and admins can also revoke other users'
 keys within the selected organization. The scope does not bypass these user or
 organization boundaries.
@@ -525,56 +525,68 @@ registry host, then matches each box in memory using the longest repository pref
 <details>
 <summary><b>Members and invitations</b> · 5 routes</summary>
 
-Contract: [`openapi/tenant.openapi.yaml`](../openapi/tenant.openapi.yaml), cloud-only and meant for the CLI
-and SDKs, which do not call it yet. Reads need membership; writes need the owner role.
-API keys additionally require `read:tenant` to list members or invitations and
-`write:tenant` to create/cancel invitations or remove members. The scopes are
-independent: write does not imply read. Missing scopes return 403, including for
-owner and system-admin keys, before the operation runs. User JWTs retain the
-existing membership and owner rules.
+Contract: [`openapi/admin.openapi.yaml`](../openapi/admin.openapi.yaml). This cloud-only
+Admin API manages an organization's users and invitations. Ordinary scoped API keys
+and user JWTs can call it; a platform administrator account is not required.
+Dedicated Admin SDK methods are not yet available. Existing Cloud API SDK methods
+continue to manage organizations and invitations.
 
-Existing keys are not granted these scopes automatically. Create a replacement
-with the needed permissions to use these routes. For example, an owner can create
-a read-only key with `{"name":"tenant-reader","permissions":["read:tenant"]}`.
-It can list members and invitations, but cannot invite, remove, or mint a
-replacement key with `write:tenant`. Canonical and prefixed routes enforce the
-same scopes.
+| Method | Path | Required API-key scope | Membership rule |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/organizations/users` | `read:members` | Member |
+| `DELETE` | `/api/v1/organizations/users/{user_id}` | `write:members` | Owner |
+| `GET` | `/api/v1/organizations/invites` | `read:members` | Member |
+| `POST` | `/api/v1/organizations/invites` | `write:members` | Owner |
+| `DELETE` | `/api/v1/organizations/invites/{invite_id}` | `write:members` | Owner |
 
-The contract documents both canonical routes, such as `/api/v1/members`, and
-their `/{prefix}` variants. Canonical routes and the `default` prefix use the
-authenticated organization; an organization ID prefix selects that organization
-subject to the same access checks.
+The key selects its organization. JWT callers select an organization with
+`X-BoxLite-Organization-ID`, or use their default organization. Read and write
+scopes are independent; owner and platform-admin keys still need the declared
+scope. For example, create a restricted key through the Cloud API/SDK with
+`{"name":"member-reader","permissions":["read:members"]}`. It can list users and
+invites but cannot invite users or delegate a key with `write:members`.
+Console owner-created keys default to both member scopes.
 
-Every member response includes `email`. It is a valid email string when known,
-or `null` when the account has no email or its user record is unavailable; clients
-must handle both. For example, an address-less member has `"email": null`, not `"email": ""`.
+The unmerged Tenant routes and scope names are replaced directly. Previously
+stored tenant grants migrate to the equivalent member grants; keys without those
+grants do not gain them. Removing a user revokes their organization keys. The last
+owner and a user's personal/default organization membership remain protected.
 
-Tenant errors use the hosted service's flat JSON response: `statusCode`, `error`
-(an HTTP status phrase), `message`, `path`, and `timestamp`, with an optional
-machine-readable `code`. Validation messages are joined into one string. Clients
-must decode this shape rather than the portable Box API's nested `error` object.
+Both lists accept `pageSize` (1–1000, default 100) and `pageToken`. Responses contain
+`users` or `invites`, plus `next_page_token` when more records exist. Treat tokens
+as opaque and return them unchanged; they are bound to the organization and
+resource and never grant access. Lists use ascending resource IDs.
 
-Invitees accept in the console, through `/api/organizations/invitations/{invitationId}/accept`.
-Acceptance remains user-JWT-only; it does not require tenant scopes or prior membership.
-Email links accept automatically after sign-in with the invited email address.
-Links resolve `/dashboard/user/invitations` against `DASHBOARD_URL`, which accepts
-the console origin with or without a trailing slash.
-New invitations without an explicit `expiresAt` (Cloud API) or `expires_at` (Tenant API)
-use `ORGANIZATION_INVITATION_TTL_SECONDS`, defaulting to `604800` (seven days).
-Changing this deployment setting leaves existing deadlines unchanged; see
-[invitation link lifetime](./infra/docs/configuration.md#invitation-link-lifetime).
+Users have `type: "user"`, `id` (the same as `/v1/me`'s `sub`), `email`, `name`,
+`role`, and `added_at`. Email is `null` when absent or the user record is unavailable.
+Invites have `type: "invite"`, `id`, `email`, `role`, `status`, `added_at`, and
+`expires_at`. Lists include every state; pending invitations past their deadline
+appear as `expired`. Expired pending invitations can be cancelled but not accepted.
 
-Expired pending invitations can be cancelled but cannot be accepted. The Cloud API
-organization listing retains them for console removal or resending; the Tenant API
-and personal incoming-invitation listings return only unexpired pending invitations.
+Create an invitation with `{"email":"teammate@example.com","role":"owner"}`.
+The role is required and currently only `owner` is accepted. Optional `expires_at`
+must be in the future on initial creation; omission uses
+`ORGANIZATION_INVITATION_TTL_SECONDS`, default seven days. Unknown request fields
+are rejected. Clients should tolerate additional response fields.
 
-| Method   | Path                                                   | What it does                                                        |
-| -------- | ------------------------------------------------------ | ------------------------------------------------------------------- |
-| `GET`    | `/api/v1[/{prefix}]/members`                           | Lists the organization's members.                                   |
-| `DELETE` | `/api/v1[/{prefix}]/members/{user_id}`                 | Removes a member and revokes their API keys in the organization.    |
-| `POST`   | `/api/v1[/{prefix}]/invitations`                       | Invites an email as an owner; `409` if already a member or invited. |
-| `GET`    | `/api/v1[/{prefix}]/invitations`                       | Lists pending, unexpired invitations.                               |
-| `DELETE` | `/api/v1[/{prefix}]/invitations/{invitation_id}`       | Cancels a pending invitation; `409` once it is no longer pending.   |
+An optional UUID `Idempotency-Key` makes create-invite retries return the original
+201 response for 24 hours, scoped to the organization and acting user. A different
+payload with the same key returns 422; a concurrent in-progress request returns
+409 and may be retried. Replay works after cancellation or expiry and does not
+send another email. This guarantee applies to create-invite only; it does not
+change Box `/v1/config` capabilities. The email event is not a transactional outbox:
+a process crash after commit can still lose notification delivery.
+
+Admin errors use the shared Box shape, for example
+`{"error":{"message":"Forbidden resource","type":"AuthError","code":"permission_denied"}}`.
+All operations may return 429; respect `Retry-After` when present. Console Cloud
+API errors retain their existing flat shape.
+
+Invitees accept through the JWT-only Console endpoint
+`/api/organizations/invitations/{invitationId}/accept`. Acceptance requires the
+invited email and does not require member scopes or prior membership. Email links
+resolve `/dashboard/user/invitations` against `DASHBOARD_URL` and accept after
+sign-in. See [invitation link lifetime](./infra/docs/configuration.md#invitation-link-lifetime).
 
 </details>
 

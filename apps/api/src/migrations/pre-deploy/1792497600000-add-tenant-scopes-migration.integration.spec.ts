@@ -5,6 +5,7 @@ import { AddImageCatalog1787100000000 } from './1787100000000-add-image-catalog-
 import { AddImageCatalogApi1787400000000 } from './1787400000000-add-image-catalog-api-migration'
 import { AddRegistryReadScope1790500000000 } from './1790500000000-add-registry-read-scope-migration'
 import { AddImageWriteScope1790700000000 } from './1790700000000-add-image-write-scope-migration'
+import { RenameMemberScopes1792728000000 } from './1792728000000-rename-member-scopes-migration'
 import { AddTenantScopes1792497600000 } from './1792497600000-add-tenant-scopes-migration'
 
 const describeIfDatabase = process.env.DB_HOST ? describe : describe.skip
@@ -121,6 +122,29 @@ describeIfDatabase('AddTenantScopes1792497600000 (integration, real Postgres)', 
     await seed('tenant', ['read:tenant', 'write:tenant'])
     for (const table of tables) {
       expect(await grants(table)).toContainEqual({ name: 'tenant', permissions: ['read:tenant', 'write:tenant'] })
+    }
+  })
+
+  it('renames tenant grants to member grants and restores them on rollback', async () => {
+    await migrate('up')
+    await seed('mixed', ['read:tenant', 'write:boxes', 'write:tenant'])
+    const rename = new RenameMemberScopes1792728000000()
+    await rename.up(queryRunner)
+    for (const table of tables) {
+      expect(await scopes(table)).toEqual([...scopesBefore, 'read:members', 'write:members'])
+      expect(await grants(table)).toContainEqual({
+        name: 'mixed',
+        permissions: ['read:members', 'write:boxes', 'write:members'],
+      })
+      expect(await grants(table)).toContainEqual({ name: 'unscoped', permissions: [] })
+    }
+    await rename.down(queryRunner)
+    for (const table of tables) {
+      expect(await scopes(table)).toEqual([...scopesBefore, 'read:tenant', 'write:tenant'])
+      expect(await grants(table)).toContainEqual({
+        name: 'mixed',
+        permissions: ['read:tenant', 'write:boxes', 'write:tenant'],
+      })
     }
   })
 

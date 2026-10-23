@@ -196,15 +196,15 @@ their message through the shared interceptor. Panel tests cover the masked
 secret and its cleanup on close, prefix completion, the `?connect=` link,
 duplicates, and refusals named by box.
 
-## Console API keys include tenant access
+## Console API keys include member access
 
 The key dialog creates a key with the user's available permissions. An owner's
-new key includes `read:tenant` and `write:tenant`, displayed in the Tenant
-permission group. A non-owner's key can include assigned tenant read access,
-but never tenant write. Existing keys receive no additional permissions.
+new key includes `read:members` and `write:members`, displayed in the Members
+permission group. A non-owner's key can include assigned member read access,
+but never member write. Existing keys receive no additional permissions.
 
 Create restricted keys through the API or SDK by supplying an explicit
-`permissions` array; see [API key delegation and tenant scopes](../API.md).
+`permissions` array; see [API key delegation and member scopes](../API.md).
 The scopes are independent, and an API key can only create keys with the same
 or fewer permissions. Invitation acceptance in the console continues to use
 the signed-in user's JWT.

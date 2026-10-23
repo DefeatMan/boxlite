@@ -30,7 +30,7 @@ vi.mock('@/hooks/useCopyToClipboard', () => ({ useCopyToClipboard: () => [null, 
 vi.mock('@/components/ApiKeyTable', () => ({ ApiKeyTable: () => null }))
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
-describe('console tenant key defaults', () => {
+describe('console member key defaults', () => {
   let root: Root
 
   beforeAll(() => {
@@ -70,25 +70,25 @@ describe('console tenant key defaults', () => {
     return (mocks.create.mock.calls[0] as unknown as [{ permissions: string[] }])[0].permissions
   }
 
-  it('includes independent tenant read and write scopes for an owner', async () => {
+  it('includes independent member read and write scopes for an owner', async () => {
     const permissions = await createKey()
 
-    expect(permissions).toContain('read:tenant')
-    expect(permissions).toContain('write:tenant')
+    expect(permissions).toContain('read:members')
+    expect(permissions).toContain('write:members')
   })
 
-  it('includes assigned tenant read for a member but never tenant write', async () => {
+  it('includes assigned member read for a member but never member write', async () => {
     mocks.member = {
       role: 'member',
-      assignedRoles: [{ permissions: ['write:boxes', 'read:tenant', 'write:tenant'] }],
+      assignedRoles: [{ permissions: ['write:boxes', 'read:members', 'write:members'] }],
     }
     const permissions = await createKey()
 
-    expect(permissions).toContain('read:tenant')
-    expect(permissions).not.toContain('write:tenant')
+    expect(permissions).toContain('read:members')
+    expect(permissions).not.toContain('write:members')
   })
 
-  it('does not grant tenant scopes to a member without them', async () => {
+  it('does not grant member scopes to a member without them', async () => {
     mocks.member = { role: 'member', assignedRoles: [{ permissions: ['write:boxes'] }] }
 
     expect(await createKey()).toEqual(['write:boxes'])

@@ -51,7 +51,7 @@ for (const [path, expected] of [
   ['make/quality.mk', ['go']],
   ['.github/workflows/lint.yml', ['go', 'infra']],
   ['openapi/box.openapi.yaml', ['rust', 'api']],
-  ['openapi/tenant.openapi.yaml', ['rust', 'api']],
+  ['openapi/admin.openapi.yaml', ['rust', 'api']],
 ] as const) {
   test(`source and shared recipes retain their tests: ${path}`, () => {
     assert.deepEqual(testSuites(['docs/README.md', path]), [...expected])
@@ -60,7 +60,7 @@ for (const [path, expected] of [
 
 // Anything a suite filter selects on must also reach the workflow that runs
 // the filter, or a push to main changes the suite's inputs and tests nothing.
-for (const path of ['apps/runner/cmd/runner/main.go', 'apps/go.work', 'apps/go.work.sum', 'openapi/box.openapi.yaml', 'openapi/tenant.openapi.yaml']) {
+for (const path of ['apps/runner/cmd/runner/main.go', 'apps/go.work', 'apps/go.work.sum', 'openapi/box.openapi.yaml', 'openapi/admin.openapi.yaml']) {
   test(`a push that selects a suite reaches the Test workflow: ${path}`, () => {
     assert.equal(acceptsFiles('test.yml', 'push', [path]), true)
   })

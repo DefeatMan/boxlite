@@ -145,7 +145,7 @@ describe('API key authorization', () => {
       'refuses read-only, empty, legacy and box-only %s keys before deletion',
       async (role) => {
         principal.role = role
-        for (const permissions of [undefined, [], [Permission.READ_TENANT], [Permission.WRITE_BOXES]]) {
+        for (const permissions of [undefined, [], [Permission.READ_MEMBERS], [Permission.WRITE_BOXES]]) {
           principal.apiKey = { organizationId: 'org-1', permissions }
 
           expect((await revoke()).status).toBe(403)
@@ -154,22 +154,22 @@ describe('API key authorization', () => {
       },
     )
 
-    it.each([SystemRole.USER, SystemRole.ADMIN])('allows a tenant-write %s key', async (role) => {
+    it.each([SystemRole.USER, SystemRole.ADMIN])('allows a member-write %s key', async (role) => {
       principal.role = role
-      principal.apiKey = { organizationId: 'org-1', permissions: [Permission.WRITE_TENANT] }
+      principal.apiKey = { organizationId: 'org-1', permissions: [Permission.WRITE_MEMBERS] }
 
       expect((await revoke()).status).toBe(204)
       expect(deleteApiKey).toHaveBeenCalledWith('org-1', 'owner-1', 'target-key')
     })
 
-    it('requires tenant write even to revoke the calling key', async () => {
+    it('requires member write even to revoke the calling key', async () => {
       const selfPath = path.replace('target-key', 'calling-key')
-      principal.apiKey = { organizationId: 'org-1', name: 'calling-key', permissions: [Permission.READ_TENANT] }
+      principal.apiKey = { organizationId: 'org-1', name: 'calling-key', permissions: [Permission.READ_MEMBERS] }
 
       expect((await revoke(selfPath)).status).toBe(403)
       expect(deleteApiKey).not.toHaveBeenCalled()
 
-      principal.apiKey = { organizationId: 'org-1', name: 'calling-key', permissions: [Permission.WRITE_TENANT] }
+      principal.apiKey = { organizationId: 'org-1', name: 'calling-key', permissions: [Permission.WRITE_MEMBERS] }
       expect((await revoke(selfPath)).status).toBe(204)
       expect(deleteApiKey).toHaveBeenCalledWith('org-1', 'owner-1', 'calling-key')
     })
@@ -187,7 +187,7 @@ describe('API key authorization', () => {
 
     it('preserves member key revocation within their own account when scoped', async () => {
       membership.role = OrganizationMemberRole.MEMBER
-      principal.apiKey = { organizationId: 'org-1', permissions: [Permission.WRITE_TENANT] }
+      principal.apiKey = { organizationId: 'org-1', permissions: [Permission.WRITE_MEMBERS] }
 
       expect((await revoke()).status).toBe(204)
       expect(deleteApiKey).toHaveBeenCalledWith('org-1', 'owner-1', 'target-key')
@@ -195,14 +195,14 @@ describe('API key authorization', () => {
 
     it('refuses a key without membership in its organization', async () => {
       principal.organizationId = 'org-2'
-      principal.apiKey = { organizationId: 'org-2', permissions: [Permission.WRITE_TENANT] }
+      principal.apiKey = { organizationId: 'org-2', permissions: [Permission.WRITE_MEMBERS] }
 
       expect((await revoke()).status).toBe(403)
       expect(deleteApiKey).not.toHaveBeenCalled()
     })
 
     it('refuses a read-only owner key deleting another user key', async () => {
-      principal.apiKey = { organizationId: 'org-1', permissions: [Permission.READ_TENANT] }
+      principal.apiKey = { organizationId: 'org-1', permissions: [Permission.READ_MEMBERS] }
 
       expect((await revoke('/api-keys/other-user/target-key')).status).toBe(403)
       expect(deleteApiKey).not.toHaveBeenCalled()
@@ -210,7 +210,7 @@ describe('API key authorization', () => {
 
     it.each([false, true])('retains member target-user isolation (JWT: %s)', async (jwt) => {
       membership.role = OrganizationMemberRole.MEMBER
-      principal.apiKey = { organizationId: 'org-1', permissions: [Permission.WRITE_TENANT] }
+      principal.apiKey = { organizationId: 'org-1', permissions: [Permission.WRITE_MEMBERS] }
       if (jwt) delete principal.apiKey
 
       expect((await revoke('/api-keys/other-user/target-key')).status).toBe(403)
@@ -218,7 +218,7 @@ describe('API key authorization', () => {
     })
 
     it.each([false, true])('allows owner revocation of another user key (JWT: %s)', async (jwt) => {
-      principal.apiKey = { organizationId: 'org-1', permissions: [Permission.WRITE_TENANT] }
+      principal.apiKey = { organizationId: 'org-1', permissions: [Permission.WRITE_MEMBERS] }
       if (jwt) delete principal.apiKey
 
       expect((await revoke('/api-keys/other-user/target-key')).status).toBe(204)

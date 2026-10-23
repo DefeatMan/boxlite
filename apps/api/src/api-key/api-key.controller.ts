@@ -184,8 +184,8 @@ export class ApiKeyController {
   }
 
   private validateApiKeyRevocationPermission(authContext: OrganizationAuthContext): void {
-    if (authContext.apiKey && !authContext.apiKey.permissions?.includes(OrganizationResourcePermission.WRITE_TENANT)) {
-      throw new ForbiddenException('API key requires write:tenant to revoke API keys')
+    if (authContext.apiKey && !authContext.apiKey.permissions?.includes(OrganizationResourcePermission.WRITE_MEMBERS)) {
+      throw new ForbiddenException('API key requires write:members to revoke API keys')
     }
   }
 

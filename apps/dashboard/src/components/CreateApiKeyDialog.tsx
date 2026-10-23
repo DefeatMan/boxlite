@@ -194,7 +194,7 @@ export const CreateApiKeyDialog: React.FC<CreateApiKeyDialogProps> = ({
                   <div>
                     <div className="text-[13px] font-semibold text-brand">API access</div>
                     <div className="mt-[5px] text-[12.5px] leading-relaxed text-muted-foreground">
-                      {availablePermissions.includes(CreateApiKeyPermissionsEnum.WRITE_TENANT)
+                      {availablePermissions.includes(CreateApiKeyPermissionsEnum.WRITE_MEMBERS)
                         ? 'This key includes member and invitation management. Use the API or SDK to create a key with fewer permissions.'
                         : 'This key includes your available resource permissions. Use the API or SDK to select fewer permissions.'}
                     </div>

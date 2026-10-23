@@ -4,7 +4,14 @@
  * SPDX-License-Identifier: AGPL-3.0
  */
 
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common'
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+  UnprocessableEntityException,
+} from '@nestjs/common'
+import { createHash } from 'node:crypto'
 import { ConfigService } from '@nestjs/config'
 import { EventEmitter2 } from '@nestjs/event-emitter'
 import { InjectRepository } from '@nestjs/typeorm'
@@ -40,6 +47,75 @@ export class OrganizationInvitationService {
     organizationId: string,
     createOrganizationInvitationDto: CreateOrganizationInvitationDto,
     invitedBy: string,
+    request?: { userId: string; idempotencyKey?: string },
+  ): Promise<OrganizationInvitation> {
+    const prepare = () => {
+      if (
+        request &&
+        createOrganizationInvitationDto.expiresAt &&
+        createOrganizationInvitationDto.expiresAt <= new Date()
+      ) {
+        throw new BadRequestException('expires_at must be in the future')
+      }
+      return this.prepareInvitation(organizationId, createOrganizationInvitationDto, invitedBy)
+    }
+    if (!request?.idempotencyKey) {
+      const invitation = await this.organizationInvitationRepository.save(await prepare())
+      this.notifyInvitationCreated(invitation)
+      return invitation
+    }
+
+    const key = [organizationId, request.userId, request.idempotencyKey.toLowerCase()]
+    const fingerprint = createHash('sha256')
+      .update(
+        JSON.stringify([
+          createOrganizationInvitationDto.email,
+          createOrganizationInvitationDto.role,
+          createOrganizationInvitationDto.expiresAt?.toISOString() ?? null,
+        ]),
+      )
+      .digest('hex')
+    const result = await this.dataSource.transaction(async (manager) => {
+      const [lock] = await manager.query('SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS acquired', [
+        JSON.stringify(key),
+      ])
+      if (!lock.acquired) throw new ConflictException('This Idempotency-Key is in progress; retry the request')
+      const [record] = await manager.query(
+        'SELECT "requestHash", response, "expiresAt" FROM organization_invitation_request WHERE "organizationId" = $1 AND "userId" = $2 AND key = $3',
+        key,
+      )
+      if (record && new Date(record.expiresAt) > new Date()) {
+        if (record.requestHash !== fingerprint)
+          throw new UnprocessableEntityException('Idempotency-Key was used with a different request')
+        return {
+          invitation: Object.assign(new OrganizationInvitation(), record.response, {
+            createdAt: new Date(record.response.createdAt),
+            expiresAt: new Date(record.response.expiresAt),
+          }),
+          created: false,
+        }
+      }
+      // Cleanup is organization-scoped; replay lookup and persistence share the invitation transaction.
+      await manager.query(
+        'DELETE FROM organization_invitation_request WHERE "organizationId" = $1 AND "expiresAt" <= now()',
+        [organizationId],
+      )
+      const invitation = await manager.save(await prepare())
+      const { id, email, role, status, createdAt, expiresAt } = invitation
+      await manager.query(
+        'INSERT INTO organization_invitation_request ("organizationId", "userId", key, "requestHash", response, "expiresAt") VALUES ($1, $2, $3, $4, $5, now() + interval \'24 hours\')',
+        [...key, fingerprint, { id, email, role, status, createdAt, expiresAt }],
+      )
+      return { invitation, created: true }
+    })
+    if (result.created) this.notifyInvitationCreated(result.invitation)
+    return result.invitation
+  }
+
+  private async prepareInvitation(
+    organizationId: string,
+    createOrganizationInvitationDto: CreateOrganizationInvitationDto,
+    invitedBy: string,
   ): Promise<OrganizationInvitation> {
     const organization = await this.organizationService.findOne(organizationId)
     if (!organization) {
@@ -67,7 +143,7 @@ export class OrganizationInvitationService {
       throw new ConflictException(`User with email "${normalizedEmail}" already invited to this organization`)
     }
 
-    let invitation = new OrganizationInvitation()
+    const invitation = new OrganizationInvitation()
     invitation.organizationId = organizationId
     invitation.organization = organization
     invitation.email = normalizedEmail
@@ -83,8 +159,10 @@ export class OrganizationInvitationService {
     }
     invitation.assignedRoles = assignedRoles
 
-    invitation = await this.organizationInvitationRepository.save(invitation)
+    return invitation
+  }
 
+  private notifyInvitationCreated(invitation: OrganizationInvitation): void {
     this.eventEmitter.emit(
       OrganizationEvents.INVITATION_CREATED,
       new OrganizationInvitationCreatedEvent(
@@ -95,8 +173,6 @@ export class OrganizationInvitationService {
         invitation.expiresAt,
       ),
     )
-
-    return invitation
   }
 
   async update(
@@ -152,6 +228,14 @@ export class OrganizationInvitationService {
         organization: true,
         assignedRoles: true,
       },
+    })
+  }
+
+  async findPage(organizationId: string, pageSize: number, afterId?: string): Promise<OrganizationInvitation[]> {
+    return this.organizationInvitationRepository.find({
+      where: { organizationId, ...(afterId ? { id: MoreThan(afterId) } : {}) },
+      order: { id: 'ASC' },
+      take: pageSize + 1,
     })
   }
 

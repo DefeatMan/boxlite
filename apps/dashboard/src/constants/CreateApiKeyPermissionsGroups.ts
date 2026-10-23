@@ -8,8 +8,8 @@ import { CreateApiKeyPermissionsEnum } from '@boxlite-ai/api-client'
 
 export const CREATE_API_KEY_PERMISSIONS_GROUPS: { name: string; permissions: CreateApiKeyPermissionsEnum[] }[] = [
   {
-    name: 'Tenant',
-    permissions: [CreateApiKeyPermissionsEnum.READ_TENANT, CreateApiKeyPermissionsEnum.WRITE_TENANT],
+    name: 'Members',
+    permissions: [CreateApiKeyPermissionsEnum.READ_MEMBERS, CreateApiKeyPermissionsEnum.WRITE_MEMBERS],
   },
   {
     name: 'Boxes',

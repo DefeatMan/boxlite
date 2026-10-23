@@ -196,18 +196,30 @@ Runs only migrations in the `post-deploy/` folder. Use this:
 - **After** the new API version is fully deployed
 - As part of your CI/CD pipeline, after the rolling update completes
 
-## Tenant Scope Regression Coverage
+## Member Scopes and Invitation Retries
 
-The tenant scope integration spec runs the historical migrations in a temporary
-database, then checks upgrade, repeated upgrade, and rollback for both API-key
-and organization-role permissions. It verifies that upgrade preserves existing
-grants and rollback removes only tenant scopes.
+The historical tenant-scope migration remains in the chain. The Admin migration
+renames both enum labels to `read:members` and `write:members` for API keys and
+organization roles, preserving existing grants without adding permissions to
+unscoped keys. Rollback restores the old labels. The unmerged Tenant HTTP API is
+replaced directly; no compatibility deployment with that API is required.
 
-Set `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, and `DB_DATABASE` for a
-test PostgreSQL instance; the user needs permission to create databases.
-From the repository root, run
-`make coverage:api FILTER=AddTenantScopes1792497600000`.
-The spec drops its temporary database after each test and runs in the API CI suite.
+API-key validation retains the existing Redis cache namespace. Old cached scope
+labels translate on read, so membership removal, key revocation, and identity
+linking continue to invalidate the same entries across deployment versions.
+
+A separate pre-deploy migration adds `organization_invitation_request`. Creating
+an invite and saving its replay snapshot share a transaction and an advisory lock
+scoped to organization, user, and idempotency key. Replay records expire after
+24 hours; subsequent keyed requests clean expired records for their organization.
+Deleting an organization cascades to its replay records. Rollback drops this table
+and loses retry history, so coordinate rollback with stopping Admin writes.
+
+The integration tests run actual PostgreSQL migrations and services. Set
+`DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, and `DB_DATABASE`; the migration
+suite needs permission to create temporary databases. Run
+`make coverage:api FILTER='AddTenantScopes1792497600000|Admin organization storage'`.
+The suites clean their temporary databases or schemas and run in API CI.
 
 ## Reverting Migrations
 

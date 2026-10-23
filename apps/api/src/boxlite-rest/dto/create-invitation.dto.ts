@@ -3,17 +3,19 @@
  * SPDX-License-Identifier: AGPL-3.0
  */
 
-import { Type } from 'class-transformer'
-import { IsDate, IsEmail, IsOptional, MinDate } from 'class-validator'
+import { Equals, IsRFC3339, IsEmail, IsString, ValidateIf } from 'class-validator'
+import { OrganizationMemberRole } from '../../organization/enums/organization-member-role.enum'
 
-/** Body of `POST /v1/{prefix}/invitations`; see openapi/tenant.openapi.yaml CreateInvitationRequest. */
+/** Body of POST /v1/organizations/invites; see openapi/admin.openapi.yaml. */
 export class CreateInvitationDto {
   @IsEmail()
   email: string
 
-  @IsOptional()
-  @Type(() => Date)
-  @IsDate()
-  @MinDate(() => new Date(), { message: 'expires_at must be in the future' })
-  expires_at?: Date
+  @Equals(OrganizationMemberRole.OWNER)
+  role: OrganizationMemberRole.OWNER
+
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsString()
+  @IsRFC3339()
+  expires_at?: string
 }

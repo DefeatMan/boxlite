@@ -37,7 +37,7 @@ const Keys: React.FC = () => {
       authenticatedUserOrganizationMember.assignedRoles.flatMap((role) => role.permissions),
     )
     return DEFAULT_API_KEY_PERMISSIONS.filter(
-      (permission) => permission !== CreateApiKeyPermissionsEnum.WRITE_TENANT && assignedPermissions.has(permission),
+      (permission) => permission !== CreateApiKeyPermissionsEnum.WRITE_MEMBERS && assignedPermissions.has(permission),
     )
   }, [authenticatedUserOrganizationMember])
 
