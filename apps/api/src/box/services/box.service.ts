@@ -109,6 +109,7 @@ const DEFAULT_BOX_GPU = 0
 
 export type BoxCreationOptions = {
   maxCreatedBoxes?: number
+  initialSnapshotId?: string
 }
 
 @Injectable()
@@ -256,7 +257,8 @@ export class BoxService {
       // `box.image` records for a private image.
       const resolvedImage = await this.imageResolverService.resolve(organization, createBoxDto.image)
       const image = resolvedImage.ref
-      const needsFreshBox = requiresFreshBox(createBoxDto, organization, resolvedImage)
+      const needsFreshBox =
+        Boolean(options.initialSnapshotId) || requiresFreshBox(createBoxDto, organization, resolvedImage)
 
       if (createBoxDto.volumes && createBoxDto.volumes.length > 0) {
         const volumeIdOrNames = createBoxDto.volumes.map((v) => v.volumeId)
@@ -304,6 +306,7 @@ export class BoxService {
       const box = new Box(region.id, createBoxDto.name)
 
       box.organizationId = organization.id
+      box.initialSnapshotId = options.initialSnapshotId
 
       //  TODO: make configurable
       box.class = boxClass
@@ -364,7 +367,12 @@ export class BoxService {
       // before the insert: it has no way to give a slot back, so a create its
       // own input or placement refuses must not spend one. Only the box limit
       // and a name collision, which the insert itself settles, come after it.
-      const insertedBox = await this.persistOnAvailableRunner(box, { regions: [region.id], boxClass }, async () => {
+      const runnerParams: GetRunnerParams = {
+        ...(options.initialSnapshotId ? { apiVersion: '2' } : {}),
+        regions: [region.id],
+        boxClass,
+      }
+      const insertedBox = await this.persistOnAvailableRunner(box, runnerParams, async () => {
         await this.imageAdmissionService.spendColdPullBudget(organization, resolvedImage)
         return createBoxDto.name
           ? this.boxRepository.insert(box, options.maxCreatedBoxes)

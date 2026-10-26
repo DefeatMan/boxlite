@@ -21,6 +21,9 @@ export class BoxliteConfigController {
       capabilities: {
         // On wherever snapshot storage is configured (BOX_SNAPSHOT_ARCHIVE_PREFIX).
         snapshots_enabled: this.snapshotService.isEnabled(),
+        create_from_snapshot_enabled: this.snapshotService.isEnabled(),
+        snapshot_copy_enabled: false,
+        memory_snapshots_enabled: false,
         clone_enabled: false,
         export_enabled: false,
         import_enabled: false,
