@@ -409,6 +409,11 @@ powers the VM off — a client walking away from `docker attach` does not
 stop a container, and the lifetime cap bounds exec sessions, not the
 workload they run beside.
 
+An explicit execution kill still applies to the main session. If delivery fails,
+cleanup retries it before the main-session exemption, using the same execution
+handle. The pending kill blocks new attaches until delivery succeeds and evicts
+the session, or the session finishes and reaches normal retention cleanup.
+
 Reattaching inside the reconnect grace resets `SignaledHUP` and
 `SignaledTERM` so a subsequent disconnect starts a fresh clock.
 Durations accept Go's `time.ParseDuration` syntax (e.g. `5m`, `30s`,

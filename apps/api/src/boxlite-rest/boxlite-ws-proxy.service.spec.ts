@@ -65,7 +65,6 @@ describe('BoxliteWsProxyService', () => {
     const runnerService = {
       findOne: jest.fn().mockResolvedValue({ apiUrl: 'http://runner.local', apiKey: 'runner-key' }),
     }
-    const autoResume = { ensureReady: jest.fn().mockResolvedValue(undefined) }
     const userService = {
       findOne: jest.fn().mockResolvedValue({ id: 'user-1', role: 'user', email: 'dev@acme.test' }),
     }
@@ -79,7 +78,6 @@ describe('BoxliteWsProxyService', () => {
       organizationService as never,
       boxService as never,
       runnerService as never,
-      autoResume as never,
       userService as never,
       jwtStrategy as never,
       attachTickets,
@@ -94,7 +92,6 @@ describe('BoxliteWsProxyService', () => {
       organizationService,
       boxService,
       runnerService,
-      autoResume,
       userService,
       jwtStrategy,
       attachTickets,
@@ -103,7 +100,6 @@ describe('BoxliteWsProxyService', () => {
 
   it('rewrites public box ids to internal box ids before proxying attach upgrades to the runner', () => {
     new BoxliteWsProxyService(
-      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -133,9 +129,9 @@ describe('BoxliteWsProxyService', () => {
   // The box's init is the user's command, so resuming a stopped box to attach
   // to it would run the job again. The runner refuses a stopped box instead,
   // the way `boxlite serve` does.
-  it('proxies a main-session attach without resuming the box', async () => {
+  it('proxies a main-session attach to the runner', async () => {
     const harness = buildAuthHarness()
-    const { service, apiKeyService, organizationUserService, autoResume } = harness
+    const { service, apiKeyService, organizationUserService } = harness
     apiKeyService.getApiKeyByValue.mockResolvedValue({
       organizationId: 'org-1',
       userId: 'user-1',
@@ -157,39 +153,8 @@ describe('BoxliteWsProxyService', () => {
       Buffer.alloc(0),
     )
 
-    expect(autoResume.ensureReady).not.toHaveBeenCalled()
     expect(proxyHandler.upgrade).toHaveBeenCalled()
     expect(socket.destroy).not.toHaveBeenCalled()
-  })
-
-  it('does not upgrade the websocket when strict AutoResume fails', async () => {
-    const harness = buildAuthHarness()
-    const { service, apiKeyService, organizationUserService, autoResume } = harness
-    apiKeyService.getApiKeyByValue.mockResolvedValue({
-      organizationId: 'org-1',
-      userId: 'user-1',
-      expiresAt: null,
-      permissions: [OrganizationResourcePermission.WRITE_BOXES],
-    })
-    organizationUserService.findOne.mockResolvedValue({ organizationId: 'org-1', userId: 'user-1' })
-    harness.boxService.findOneByIdOrName.mockResolvedValue({
-      id: 'box-uuid',
-      runnerId: 'runner-1',
-      autoResume: true,
-    })
-    autoResume.ensureReady.mockRejectedValue(new Error('start failed'))
-    const socket = { write: jest.fn(), destroy: jest.fn() }
-    const proxyHandler = jest.mocked(createProxyMiddleware).mock.results.at(-1)?.value
-
-    await (service as unknown as BoxliteWsProxyService).upgrade(
-      authRequest('blk_live_test'),
-      socket as never,
-      Buffer.alloc(0),
-    )
-
-    expect(autoResume.ensureReady).toHaveBeenCalledWith('box-uuid', expect.objectContaining({ id: 'org-1' }))
-    expect(proxyHandler.upgrade).not.toHaveBeenCalled()
-    expect(socket.destroy).toHaveBeenCalled()
   })
 
   it('authenticates API key bearer tokens for websocket attach', async () => {

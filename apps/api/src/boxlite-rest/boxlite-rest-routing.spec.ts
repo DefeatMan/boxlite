@@ -341,32 +341,27 @@ describe('BoxLite REST routing', () => {
       {} as any,
       {} as any,
       {} as any,
-      {} as any,
     )
 
     // `boxlite run` follows the box's main session, whose path names no execution.
-    expect(service.matchAttachPath('/api/v1/boxes/box-1/attach')).toEqual({ boxId: 'box-1', isMainSession: true })
+    expect(service.matchAttachPath('/api/v1/boxes/box-1/attach')).toEqual({ boxId: 'box-1' })
     expect(service.matchAttachPath('/api/v1/default/boxes/box-1/attach?stdin=0')).toEqual({
       boxId: 'box-1',
       tenant: 'default',
-      isMainSession: true,
     })
     expect(service.matchAttachPath('/api/v1/boxes/box-1/executions/exec-1/attach')).toEqual({
       boxId: 'box-1',
       execId: 'exec-1',
-      isMainSession: false,
     })
     expect(service.matchAttachPath('/api/v1/default/boxes/box-1/executions/exec-1/attach?ticket=t')).toEqual({
       boxId: 'box-1',
       execId: 'exec-1',
       tenant: 'default',
-      isMainSession: false,
     })
   })
 
   it('does not route HTTP duplex tunnels through the websocket proxy', () => {
     const service = new BoxliteWsProxyService(
-      {} as any,
       {} as any,
       {} as any,
       {} as any,

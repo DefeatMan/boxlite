@@ -19,7 +19,6 @@ import type { ApiKey } from '../api-key/api-key.entity'
 import { BoxService } from '../box/services/box.service'
 import { RunnerService } from '../box/services/runner.service'
 import type { Runner } from '../box/entities/runner.entity'
-import { BoxAutoResumeService } from '../box/services/box-auto-resume.service'
 import { hasOrganizationResourcePermissions } from '../organization/guards/organization-resource-action.guard'
 import { OrganizationResourcePermission } from '../organization/enums/organization-resource-permission.enum'
 import { AttachTicketService } from '../box/services/attach-ticket.service'
@@ -46,7 +45,7 @@ type RunnerUpgradeRequest = IncomingMessage & {
 const ATTACH_PATH =
   /^\/api\/v1\/(?:(?<tenant>[^/]+)\/)?boxes\/(?<boxId>[^/]+)(?:\/executions\/(?<execId>[^/?]+))?\/attach(?:\?.*)?$/
 
-type AttachMatch = { boxId: string; execId?: string; tenant?: string; isMainSession: boolean }
+type AttachMatch = { boxId: string; execId?: string; tenant?: string }
 type AttachAuth = { organization: Organization; ticketBoxId?: string }
 
 // `/attach` streams to a session's stdin — an execution's or the box init's — so a
@@ -77,7 +76,6 @@ export class BoxliteWsProxyService {
     private readonly organizationService: OrganizationService,
     private readonly boxService: BoxService,
     private readonly runnerService: RunnerService,
-    private readonly autoResume: BoxAutoResumeService,
     private readonly userService: UserService,
     // Exported by AuthModule (already imported here). Resolves to `undefined`
     // when `skipConnections` is set, so the JWT path guards on it.
@@ -117,19 +115,17 @@ export class BoxliteWsProxyService {
 
   /**
    * Box, execution and optional tenant/org id when the URL is an `/attach` WS
-   * upgrade, and whether it targets the box's main session rather than an
-   * execution. The tenant is the organization for JWT and ticket auth (an API
-   * key carries its own org).
+   * upgrade. A main-session URL has no execution id. The tenant is the
+   * organization for JWT and ticket auth (an API key carries its own org).
    */
   matchAttachPath(url: string | undefined): AttachMatch | null {
     if (!url) return null
-    const groups = url.match(ATTACH_PATH)?.groups as Omit<AttachMatch, 'isMainSession'> | undefined
+    const groups = url.match(ATTACH_PATH)?.groups as AttachMatch | undefined
     if (!groups) return null
     return {
       boxId: groups.boxId,
       execId: groups.execId,
       tenant: groups.tenant,
-      isMainSession: groups.execId === undefined,
     }
   }
 
@@ -167,12 +163,8 @@ export class BoxliteWsProxyService {
         this.respondAndClose(socket, 401, 'Unauthorized')
         return
       }
-      // A main-session attach never wakes the box. Its init is the user's
-      // command, so resuming a stopped box to attach to it would run the job
-      // again; the runner refuses a stopped box instead, as `boxlite serve` does.
-      if (box.autoResume && !match.isMainSession) {
-        await this.autoResume.ensureReady(box.id, auth.organization)
-      }
+      // Never resume on attach: main sessions reconnect through execution
+      // URLs too, and starting the box would run its command again.
       // Mirror legacy toolbox path — opening a WS attach is user activity,
       // so the autostop cron does not reap a session that's still connected.
       // Best-effort: do not fail the upgrade if this errors.

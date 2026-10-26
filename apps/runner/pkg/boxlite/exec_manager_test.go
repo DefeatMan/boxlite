@@ -810,6 +810,40 @@ func TestReaperEvictsAnExitedMainSession(t *testing.T) {
 	}
 }
 
+func TestReaperRetriesExplicitMainSessionKill(t *testing.T) {
+	m := newQuietManager(t)
+	attempts := 0
+	transient := errors.New("temporary kill delivery failure")
+	stub := &stubExecHandle{killFn: func() error {
+		attempts++
+		if attempts == 1 {
+			return transient
+		}
+		return nil
+	}}
+	main := registerStub(t, m, "main-kill-retry", stub)
+	main.Main = true
+	main.BoxID = "box-1"
+
+	if err := m.Kill(main.ID); !errors.Is(err, transient) {
+		t.Fatalf("expected the first kill to fail, got %v", err)
+	}
+	if main.MarkConnected() {
+		t.Fatal("a pending kill must reject new attaches")
+	}
+	m.runCleanupOnce(time.Now())
+	if _, killed := stub.snapshot(); killed != 2 {
+		t.Fatalf("explicit main-session kill must retry, got %d attempts", killed)
+	}
+	if _, tracked := m.Get(main.ID); tracked {
+		t.Fatal("a successful kill retry must evict the main session")
+	}
+	m.runCleanupOnce(time.Now().Add(time.Minute))
+	if _, killed := stub.snapshot(); killed != 2 {
+		t.Fatalf("an evicted session must not be killed again, got %d attempts", killed)
+	}
+}
+
 // TestAttachMainSkipsAnExitedSession: a main session is found by box id, and a
 // box id survives a restart — so a finished session from the previous run
 // still matches. Handing it back would attach the client to the old run's dead

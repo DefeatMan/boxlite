@@ -430,9 +430,11 @@ are not permission-bounded; every API key is bounded by the permissions it
 carries. The WebSocket `/attach` upgrade enforces `write:boxes` inline — an
 upgrade never passes through the organization guard — using the same admin and
 owner exemptions, so it resolves the caller's system role just as the HTTP path
-does. An execution attach wakes an AutoResume box first; the box-level attach does
-not, because the box's init is the user's command and waking a stopped box would
-run it again, so the runner refuses a stopped box instead.
+does. Neither attach route nor execution status, signal, resize, or kill wakes
+an AutoResume box. Main sessions reconnect through execution URLs too; restarting
+the box would rerun its command without restoring the old session. The runner
+returns retained session state or its existing refusal. These requests still
+record activity; starting a new exec and transferring files retain AutoResume.
 A browser, which cannot set `Authorization` on a WebSocket, instead sends a
 `?ticket=` bought from `POST /api/box/{boxIdOrName}/attach-tickets`. Spending it
 re-checks the ticket's credential the same way:

@@ -706,13 +706,22 @@ func (m *ExecManager) evaluateExec(now time.Time, e *ManagedExec, reconnectGrace
 	default:
 	}
 
-	// 1b) A main session is never an orphan and never stale: it is the box's
+	// Retry explicit kills before applying the main-session exemption. A
+	// failed DELETE leaves ReapingKill set, so it must still reach delivery.
+	e.attachMu.Lock()
+	pendingKill := e.ReapingKill
+	e.attachMu.Unlock()
+	if pendingKill {
+		m.killAndEvict(e)
+		return
+	}
+
+	// A main session is never an orphan and never stale: it is the box's
 	// init, so killing it powers the VM off and destroys the box. A client
 	// walking away from `docker attach` does not stop the container, and
 	// neither may this; nor may the lifetime cap, which exists to bound *exec*
-	// sessions, not the workload they run beside. Every branch below signals or
-	// kills, so Main stops here — the done-eviction above still applies to it,
-	// because evicting an init that has already exited kills nothing.
+	// sessions, not the workload they run beside. Explicit kill retries and
+	// done-eviction above still apply; automatic signalling below does not.
 	if e.Main {
 		return
 	}
@@ -724,16 +733,6 @@ func (m *ExecManager) evaluateExec(now time.Time, e *ManagedExec, reconnectGrace
 		e.attachMu.Unlock()
 		slog.Warn("boxlite: session lifetime cap reached, killing exec",
 			"exec_id", e.ID, "age", now.Sub(e.created))
-		m.killAndEvict(e)
-		return
-	}
-
-	// 2b) Retry kill for entries marked doomed by a prior tick or a
-	// failed DELETE handler.
-	e.attachMu.Lock()
-	pendingKill := e.ReapingKill
-	e.attachMu.Unlock()
-	if pendingKill {
 		m.killAndEvict(e)
 		return
 	}
